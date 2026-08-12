@@ -439,9 +439,9 @@ def test_world_geography():
 
     check("seven named locations", len(M.LOCATIONS), 7)
     check("six road segments", len(M.SEGMENTS), 6)
-    check("eight spur roads", len(M.SPURS), 8)
+    check("sixteen spur roads", len(M.SPURS), 16)
     check("spurs are 90 seconds deep", M.SPUR_SECONDS, 90.0)
-    check("320 plots of land in total", sum(s.plots for s in M.SPURS), 320)
+    check("640 plots of land in total", sum(s.plots for s in M.SPURS), 640)
 
     # Protected zones: no combat, no theft, police present -- and a spur inherits
     # its junction's protection.

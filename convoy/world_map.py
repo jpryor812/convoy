@@ -1,4 +1,4 @@
-"""The world: one dangerous road, seven places on it, eight spurs hanging off it.
+"""The world: one dangerous road, seven places on it, sixteen spurs hanging off it.
 
 Geography comes from the World tab (seven named locations, a single road from
 Refinery Row to Town, ~5 minutes end to end at Medium speed, spur roads that
@@ -173,7 +173,7 @@ for _s in SEGMENTS:
     SEGMENT_BY_PAIR[(_s.b, _s.a)] = _s
 
 # ---------------------------------------------------------------------------
-# Eight spur roads
+# Sixteen spur roads
 # ---------------------------------------------------------------------------
 
 
@@ -198,9 +198,10 @@ SPUR_SECONDS = 90.0
 #   starter home        4 plots   (+1 per storage or garage tier)
 #   starter mine/farm   8 plots   (+4 per expansion)
 #
-# 8 spurs x 40 plots = 320 plots. The state's mine and farm take 16 of them, so
-# 304 remain -- enough for roughly 30 working sites plus 15 homes, which is
-# generous without being unlimited. Land on the good spurs is meant to run out.
+# 16 spurs x 40 plots = 640 plots. The state's mine and farm take 16, leaving
+# 624 -- enough for ~40 working sites AND ~75 homes at once, so land stops being
+# the binding constraint. At 320 plots the previous layout filled completely by
+# hour 48 and squeezed homes out entirely; this leaves real headroom.
 PLOTS_PER_SPUR = 40
 HOME_BASE_PLOTS = 4
 SITE_BASE_PLOTS = 8
@@ -211,22 +212,46 @@ SITE_EXPANSION_PLOTS = 4
 PLOT_CONSUMING_BUSINESSES = ("Mining Operation", "Farm")
 
 SPURS: list[Spur] = [
+    # Refinery Row -- three spurs, the industrial north. The state's mine and
+    # farm sit on the first two, closest to the smelters.
     Spur("Copper Gulch", "Refinery Row", SPUR_SECONDS, PLOTS_PER_SPUR,
          "Ore country, minutes from the smelters. The government mine works the head of the gulch."),
     Spur("Millrace Farms", "Refinery Row", SPUR_SECONDS, PLOTS_PER_SPUR,
          "Irrigated bottomland fed by the mill race. The government farm holds the best of it."),
+    Spur("Slagfoot Yards", "Refinery Row", SPUR_SECONDS, PLOTS_PER_SPUR,
+         "Tailings and cinder flats below the refineries. Cheap ground, filthy air, ore underfoot."),
+    # North Protected Zone -- safe ground behind the garrison wall.
     Spur("Garrison Fields", "North Protected Zone", SPUR_SECONDS, PLOTS_PER_SPUR,
          "Smallholdings under the garrison's eye. Safe, and priced like it."),
+    Spur("Watchman's Lane", "North Protected Zone", SPUR_SECONDS, PLOTS_PER_SPUR,
+         "A quiet row of holdings inside the northern writ. Nothing happens here, which is the point."),
+    # The Hills -- broken country, the classic ambush ground.
     Spur("Blindfold Draw", "The Hills", SPUR_SECONDS, PLOTS_PER_SPUR,
          "A dead-end draw in the hills. Good stone, bad neighbours."),
+    Spur("Rockfall Cut", "The Hills", SPUR_SECONDS, PLOTS_PER_SPUR,
+         "A scar of loose scree and boulders. Rich in stone and clay, and impossible to watch."),
+    # The Crossing -- the river and its flats.
     Spur("Ferryman's Bend", "The Crossing", SPUR_SECONDS, PLOTS_PER_SPUR,
          "River flats above the bridge. Clay, water, and a view of everyone who crosses."),
+    Spur("Wash Hollow", "The Crossing", SPUR_SECONDS, PLOTS_PER_SPUR,
+         "Silt bottoms below the ford. Floods in season, grows anything the rest of the year."),
+    # The Climb -- the mountain shoulder.
     Spur("Eagle's Rest", "The Climb", SPUR_SECONDS, PLOTS_PER_SPUR,
          "Cut into the mountainside. Hard ground, hard living, and it sees everything."),
+    Spur("Scree Terrace", "The Climb", SPUR_SECONDS, PLOTS_PER_SPUR,
+         "Stepped ledges hacked from the slope. Iron in the rock and a long way down."),
+    # South Protected Zone -- the desirable southern addresses.
     Spur("Southgate Commons", "South Protected Zone", SPUR_SECONDS, PLOTS_PER_SPUR,
          "Orchards and cottages behind the southern wall. The desirable address."),
+    Spur("Orchard Walk", "South Protected Zone", SPUR_SECONDS, PLOTS_PER_SPUR,
+         "Walled gardens and grain plots inside the southern writ. Safe, fertile, and sought after."),
+    # Town -- three spurs, closest to every buyer in the world.
     Spur("Kiln Row", "Town", SPUR_SECONDS, PLOTS_PER_SPUR,
          "Workshops and yards on the town's edge. Closest to a buyer, dearest to hold."),
+    Spur("Potters Yard", "Town", SPUR_SECONDS, PLOTS_PER_SPUR,
+         "Clay pits and drying sheds a stone's throw from the market square."),
+    Spur("Drovers End", "Town", SPUR_SECONDS, PLOTS_PER_SPUR,
+         "Paddocks and grain stores where the carts come in. Crowded, and worth it."),
 ]
 
 SPUR_BY_NAME: dict[str, Spur] = {s.name: s for s in SPURS}
@@ -337,9 +362,9 @@ FULL_ROAD_SECONDS = sum(s.seconds for s in SEGMENTS)
 TOTAL_PLOTS = sum(s.plots for s in SPURS)
 
 assert 290 <= FULL_ROAD_SECONDS <= 310, FULL_ROAD_SECONDS
-assert len(SPURS) == 8
+assert len(SPURS) == 16
 assert len(LOCATIONS) == 7
-assert TOTAL_PLOTS == 320, TOTAL_PLOTS
+assert TOTAL_PLOTS == 640, TOTAL_PLOTS
 
 
 def plots_used(world, spur_name: str) -> int:

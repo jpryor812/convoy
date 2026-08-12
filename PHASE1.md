@@ -109,6 +109,39 @@ will drift. `tests/test_conformance.py` pins every one of them.
 | 17 | **The world** (`convoy/world_map.py`). Seven places on one road with elevation and terrain; six segments each carrying their own concealment / vantage / exposure; two protected waystations plus Town where combat and theft are impossible; eight spur roads 90 seconds deep holding 40 plots each. Production sits north, market sits south, so goods must cross all three dangerous segments to reach a buyer. | World tab, location graph |
 | 18 | **Plots are land, not slots.** A starter home takes 4 plots (+1 per storage or garage tier), a starter mine or farm takes 8 (+4 per expansion at 250 Denari). 320 plots exist in total; the state's mine and farm take 16. Mines and farms exist only down spurs; every other business sits on the main road. | World State Schema |
 | 19 | **Sites stockpile finitely** — 30 units of yard per plot, so a starter site holds 240. When the yard fills, production stalls until someone hauls it away. This is what makes carts, expansion, and distance-to-market matter. | none |
+| 20 | **16 spur roads, 640 plots** (2026-08-12). At 8 spurs / 320 plots the land filled completely by hour 48 — 40 farms consumed every plot exactly and squeezed homes out entirely. At 16 spurs land peaks at 78% (h72) and settles at 57%, leaving room for ~68 homes. Land is now contested, not exhausted. | World tab |
+
+### Why nobody buys a home — an open balance question
+
+No agent bought a property in any run, at any duration. The cause is not
+(only) that the rule agents lack a buy-home rule. **A home is strictly
+negative-EV under the current numbers:**
+
+| | |
+|---|---|
+| purchase price | 500 Denari |
+| Net Worth change on purchase | **0** — cash −500, asset +500 |
+| property tax | 5% of assessed value every 24h |
+| tax over a 120-hour run | **−125 Denari** (−500 if fully upgraded) |
+| what you get | 20 units of storage, a respawn point |
+
+A starter mine or farm already holds 240 units on site, and a Donkey Cart
+carries 100. So the 20 units a base home adds are worth nothing, and the agent
+pays 125 Denari for the privilege. A rational agent — human or model — declines.
+
+The deeper cause is that **NPC prices are fixed**, so stored goods never
+appreciate. With no price movement there is never a reason to hold inventory
+rather than sell it immediately, which means storage itself has no value. Homes
+are the second-order casualty of that.
+
+Two things would change it, and one arrives on its own:
+
+1. **Phase 3 theft** gives storage its purpose — a home becomes where you put
+   goods so pirates cannot take them, and a garage becomes where a vehicle is
+   safe. This may fix homes without any balance change.
+2. **Property tax on a base home** is worth revisiting regardless. Exempting the
+   first few plots, or taxing only improvements, would stop the starter home
+   being a pure loss.
 
 **Consequence of #6 worth watching:** combat becomes partly a latency contest. A
 high-effort reasoning model that takes 8s to answer gets out-swung by a 1s model
