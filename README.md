@@ -53,6 +53,7 @@ python3 tests/test_conformance.py        # implementation vs. the spreadsheet's 
 python3 tests/test_staffing_load.py      # live-engine output vs. the diminishing-returns curve
 python3 tests/test_social.py             # chat isolation, invite-only guilds, P2P trade
 python3 tests/test_property_and_tools.py # property upgrades, Upgraded Tools
+python3 tests/test_safehouse.py          # stolen-goods laundering, weekly property tax
 ```
 
 Every conformance test asserts a number the workbook states explicitly, so a

@@ -27,6 +27,21 @@ class Activity:
 
 
 @dataclass
+class StolenStack:
+    """Hot goods sitting in a safehouse, waiting out the 24-hour cure."""
+
+    item: str
+    qty: int
+    stashed_at: float
+
+    def ready_at(self) -> float:
+        return self.stashed_at + D.SAFEHOUSE_CURE_HOURS * 3600.0
+
+    def is_clean(self, now: float) -> bool:
+        return now >= self.ready_at()
+
+
+@dataclass
 class Agent:
     id: str
     name: str
@@ -36,6 +51,9 @@ class Agent:
     location: str = "Town"
     in_transit: tuple[str, str, float] | None = None   # (origin, dest, progress 0-1)
     inventory: dict[str, int] = field(default_factory=dict)
+    # Hot goods. Kept OUT of `inventory` so every sell/trade path excludes them
+    # automatically -- they must be laundered in a safehouse first.
+    stolen: dict[str, int] = field(default_factory=dict)
     equipped_weapon: str = "Slingshot"
     equipped_tools: bool = False   # Upgraded Tools: +extraction speed while equipped
     equipped_armor: dict[str, str | None] = field(
@@ -75,7 +93,21 @@ class Agent:
         return D.ON_FOOT_CAPACITY
 
     def carried_units(self) -> int:
-        return sum(self.inventory.values())
+        """Everything on your person, hot goods included -- loot takes up room."""
+        return sum(self.inventory.values()) + sum(self.stolen.values())
+
+    def add_stolen(self, item: str, qty: int = 1) -> None:
+        self.stolen[item] = self.stolen.get(item, 0) + qty
+
+    def remove_stolen(self, item: str, qty: int = 1) -> bool:
+        have = self.stolen.get(item, 0)
+        if have < qty:
+            return False
+        if have == qty:
+            del self.stolen[item]
+        else:
+            self.stolen[item] = have - qty
+        return True
 
     def net_worth(self, world: "World") -> float:
         prop_value = 0.0
@@ -276,6 +308,7 @@ class Property:
     rented_to: str | None = None
     purchase_price: float = D.PROPERTY_BASE_COST
     stored: dict[str, int] = field(default_factory=dict)   # home storage
+    safehouse: list[StolenStack] = field(default_factory=list)
     plots: int = 4        # land taken on the spur; +1 per storage/garage tier
 
     def assessed_value(self) -> float:

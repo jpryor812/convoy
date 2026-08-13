@@ -56,9 +56,37 @@ RP_PER_RESEARCHER_HOUR = 8.0
 
 DEFAULT_WAGE_TAX = 0.05
 DEFAULT_SALES_TAX = 0.05
-DEFAULT_PROPERTY_TAX = 0.05
 TAX_MIN, TAX_MAX = 0.0, 0.25
-PROPERTY_TAX_PERIOD_HOURS = 24.0
+
+# PROPERTY TAX is ANNUAL, billed weekly (designer decision, 2026-08-12). The
+# workbook's "5% charged every 24 real hours" made a starter home a pure loss:
+# net-worth neutral to buy, then -125 Denari of tax across a 120-hour run for 20
+# units of storage. As an annual rate it is 5%/52 = ~0.096% per weekly bill --
+# roughly half a Denari a week on a 500 Denari home.
+#
+# Note for the validation run: the first bill falls at hour 168, so a 120-hour
+# run collects NO property tax at all. That is intended, not a bug.
+DEFAULT_PROPERTY_TAX = 0.05          # ANNUAL rate; policy still bounds it 0-25%
+WEEKS_PER_YEAR = 52.0
+PROPERTY_TAX_PERIOD_HOURS = 168.0    # billed weekly
+
+
+def property_tax_per_bill(annual_rate: float) -> float:
+    """The fraction of assessed value taken by one weekly bill."""
+    return annual_rate / WEEKS_PER_YEAR
+
+
+# ---------------------------------------------------------------------------
+# Stolen goods & safehouses
+# ---------------------------------------------------------------------------
+
+# Loot cannot be sold or traded straight off the road. Stolen goods must sit in
+# a SAFEHOUSE -- a property you own -- for 24 continuous hours before they can be
+# moved on. This does three things at once: it puts a real cost and delay on
+# piracy, it gives home storage its first genuine purpose, and it means a thief
+# without a home has nowhere to launder and must either sell to a fence with one
+# or hold hot goods they cannot spend.
+SAFEHOUSE_CURE_HOURS = 24.0
 
 RESPAWN_SECONDS = 60.0
 ON_FOOT_CAPACITY = 5

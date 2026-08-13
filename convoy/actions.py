@@ -24,6 +24,7 @@ from .state import (
     Employment,
     Guild,
     Property,
+    StolenStack,
     Transaction,
     TradeOffer,
     VehicleInstance,
@@ -1175,6 +1176,97 @@ def decline_trade(world: World, log: EventLog, agent: Agent, offer_id: str) -> R
     offer.status = "declined"
     log.emit(world.sim_time, "trade_declined", actor=agent.id, subject=offer_id)
     return True, "declined"
+
+
+# ---------------------------------------------------------------------------
+# SAFEHOUSE -- laundering stolen goods
+# ---------------------------------------------------------------------------
+
+def receive_stolen(world: World, log: EventLog, agent: Agent, item: str, qty: int) -> Result:
+    """Take possession of hot goods. Phase 3 theft and looting call this.
+
+    Stolen goods land OUTSIDE normal inventory, so every sell and trade path
+    refuses them automatically until they have been laundered.
+    """
+    if agent.carried_units() + qty > agent.carry_capacity(world):
+        return False, "not enough room to carry it"
+    agent.add_stolen(item, qty)
+    log.emit(
+        world.sim_time, "stolen_goods_taken", actor=agent.id, location=agent.location,
+        item=item, qty=qty,
+    )
+    return True, f"took {qty}x {item} (hot -- must be laundered)"
+
+
+def stash_in_safehouse(
+    world: World, log: EventLog, agent: Agent, item: str, qty: int
+) -> Result:
+    """Put hot goods in your own property to start the 24-hour cure.
+
+    A thief with no home has nowhere to launder -- they either hold goods they
+    cannot spend, or find someone with a safehouse willing to fence for them.
+    """
+    prop = world.properties.get(agent.owned_property) if agent.owned_property else None
+    if prop is None:
+        return False, "you have no property to use as a safehouse"
+    if prop.location != agent.location:
+        return False, "not at your safehouse"
+    qty = min(qty, agent.stolen.get(item, 0))
+    if qty <= 0:
+        return False, f"no stolen {item} on you"
+
+    used = sum(prop.stored.values()) + sum(s.qty for s in prop.safehouse)
+    space = prop.storage_capacity() - used
+    qty = min(qty, space)
+    if qty <= 0:
+        return False, "safehouse is full"
+
+    agent.remove_stolen(item, qty)
+    prop.safehouse.append(StolenStack(item=item, qty=qty, stashed_at=world.sim_time))
+    ready = (world.sim_time + D.SAFEHOUSE_CURE_HOURS * 3600.0) / 3600.0
+    log.emit(
+        world.sim_time, "stolen_goods_stashed", actor=agent.id, subject=prop.id,
+        location=agent.location, item=item, qty=qty, clean_at_hour=round(ready, 1),
+    )
+    return True, f"stashed {qty}x {item}; clean in {D.SAFEHOUSE_CURE_HOURS:.0f}h"
+
+
+def collect_from_safehouse(world: World, log: EventLog, agent: Agent) -> Result:
+    """Retrieve everything that has finished its 24 hours. Now ordinary goods."""
+    prop = world.properties.get(agent.owned_property) if agent.owned_property else None
+    if prop is None:
+        return False, "you have no property"
+    if prop.location != agent.location:
+        return False, "not at your safehouse"
+
+    ready = [s for s in prop.safehouse if s.is_clean(world.sim_time)]
+    if not ready:
+        pending = len(prop.safehouse)
+        return False, (
+            f"nothing has cured yet ({pending} stack(s) still hot)" if pending
+            else "safehouse is empty"
+        )
+
+    space = agent.carry_capacity(world) - agent.carried_units()
+    taken: dict[str, int] = {}
+    for stack in list(ready):
+        if space <= 0:
+            break
+        move = min(stack.qty, space)
+        agent.add_item(stack.item, move)      # laundered: ordinary inventory now
+        stack.qty -= move
+        space -= move
+        taken[stack.item] = taken.get(stack.item, 0) + move
+        if stack.qty <= 0:
+            prop.safehouse.remove(stack)
+
+    if not taken:
+        return False, "no room to carry any of it"
+    log.emit(
+        world.sim_time, "stolen_goods_laundered", actor=agent.id, subject=prop.id,
+        location=agent.location, items=taken,
+    )
+    return True, f"collected laundered goods: {taken}"
 
 
 def store_at_home(

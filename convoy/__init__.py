@@ -13,5 +13,6 @@ __all__ = [
     "events",
     "rule_agents",
     "state",
+    "world_map",
     "world_setup",
 ]

@@ -111,7 +111,27 @@ will drift. `tests/test_conformance.py` pins every one of them.
 | 19 | **Sites stockpile finitely** — 30 units of yard per plot, so a starter site holds 240. When the yard fills, production stalls until someone hauls it away. This is what makes carts, expansion, and distance-to-market matter. | none |
 | 20 | **16 spur roads, 640 plots** (2026-08-12). At 8 spurs / 320 plots the land filled completely by hour 48 — 40 farms consumed every plot exactly and squeezed homes out entirely. At 16 spurs land peaks at 78% (h72) and settles at 57%, leaving room for ~68 homes. Land is now contested, not exhausted. | World tab |
 
-### Why nobody buys a home — an open balance question
+| 21 | **Property tax is ANNUAL, billed weekly** (2026-08-12). The workbook's "5% every 24 real hours" made a starter home a pure loss. At 5%/year billed weekly it is 0.096% per bill — **0.48 Denari a week** on a 500 Denari home instead of 25 a day. Note: the first bill falls at hour 168, so a 120-hour validation run collects no property tax at all. | Assumptions tab, Government & Insurance tab |
+| 22 | **Stolen goods must be laundered.** Loot lands in a separate `stolen` pool that no sale or trade path can touch, and must sit **24 continuous hours in a safehouse** — a property you own — before it becomes ordinary inventory. Hot goods still take up carrying capacity and still drop on death (staying hot for whoever picks them up). A thief with no home has nowhere to launder: they either hold goods they cannot spend, or find someone with a safehouse willing to fence. | Actions tab, black-market note |
+
+### Why nobody buys a home — largely resolved
+
+The two changes above address most of it. A home is no longer a losing purchase
+(0.48/week rather than 25/day), and the safehouse gives home storage its first
+genuine purpose: it is the only place stolen goods can be laundered, which makes
+a property a precondition for profitable piracy rather than a decoration.
+
+Two further sources of home value exist by design but are outside what
+deterministic rule agents will ever exercise, and are noted here so they aren't
+mistaken for gaps: **cosmetic upgrades** (out of scope for a headless build), and
+**real estate as an investment** if land tightens as the population grows. The
+latter is now plausible — 640 plots against 75 agents leaves headroom, but a
+larger run would make location genuinely scarce.
+
+What follows is the original analysis, retained because the underlying
+observation about price dynamics still stands.
+
+### The original problem
 
 No agent bought a property in any run, at any duration. The cause is not
 (only) that the rule agents lack a buy-home rule. **A home is strictly
@@ -122,7 +142,7 @@ negative-EV under the current numbers:**
 | purchase price | 500 Denari |
 | Net Worth change on purchase | **0** — cash −500, asset +500 |
 | property tax | 5% of assessed value every 24h |
-| tax over a 120-hour run | **−125 Denari** (−500 if fully upgraded) |
+| tax over a 120-hour run | **−125 Denari** (−500 if fully upgraded) — *since fixed, see #21* |
 | what you get | 20 units of storage, a respawn point |
 
 A starter mine or farm already holds 240 units on site, and a Donkey Cart
@@ -134,14 +154,11 @@ appreciate. With no price movement there is never a reason to hold inventory
 rather than sell it immediately, which means storage itself has no value. Homes
 are the second-order casualty of that.
 
-Two things would change it, and one arrives on its own:
-
-1. **Phase 3 theft** gives storage its purpose — a home becomes where you put
-   goods so pirates cannot take them, and a garage becomes where a vehicle is
-   safe. This may fix homes without any balance change.
-2. **Property tax on a base home** is worth revisiting regardless. Exempting the
-   first few plots, or taxing only improvements, would stop the starter home
-   being a pure loss.
+Both halves of this were addressed on 2026-08-12: the tax became annual (#21)
+and the safehouse gave storage a purpose (#22). The remaining observation still
+holds, though — with NPC prices fixed there is still no *speculative* reason to
+store goods, only a legal one. If you ever want warehousing to be a strategy in
+its own right, prices have to move.
 
 **Consequence of #6 worth watching:** combat becomes partly a latency contest. A
 high-effort reasoning model that takes 8s to answer gets out-swung by a 1s model

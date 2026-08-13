@@ -171,10 +171,14 @@ class Engine:
             they did not.
         """
         w = self.world
+        # Hot goods drop with everything else -- and stay hot for whoever takes them.
         dropped_items = dict(agent.inventory)
+        for item, qty in agent.stolen.items():
+            dropped_items[item] = dropped_items.get(item, 0) + qty
         dropped_denari = agent.denari
         w.drop_loot(agent.location, dropped_items, dropped_denari)
         agent.inventory.clear()
+        agent.stolen.clear()
         agent.denari = 0.0
 
         payout = 0.0
@@ -460,7 +464,8 @@ class Engine:
         if w.sim_time < w.next_property_tax_at:
             return
         w.next_property_tax_at += D.PROPERTY_TAX_PERIOD_HOURS * 3600.0
-        rate = w.government.property_tax
+        # The stored rate is ANNUAL; a weekly bill takes 1/52 of it.
+        rate = D.property_tax_per_bill(w.government.property_tax)
         for prop in w.properties.values():
             owner = w.agents.get(prop.owner)
             if not owner:
