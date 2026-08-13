@@ -133,14 +133,18 @@ def test_hot_goods_drop_on_death_and_stay_hot():
     check("nothing left on the corpse", a.stolen, {})
 
 
-def test_property_tax_is_annual_billed_weekly():
-    """5% per year, billed weekly -- not 5% every 24 hours."""
-    check("annual rate", D.DEFAULT_PROPERTY_TAX, 0.05)
+def test_property_tax_is_weekly():
+    """0.5% per week -- not 5% every 24 hours."""
+    check("weekly rate", D.DEFAULT_PROPERTY_TAX, 0.005)
     check("billed weekly", D.PROPERTY_TAX_PERIOD_HOURS, 168.0)
-    per_bill = D.property_tax_per_bill(0.05)
-    check("per-bill fraction", round(per_bill, 6), round(0.05 / 52, 6))
-    # A 500 Denari home: ~0.48 per weekly bill, not 25 per day.
-    check("weekly bill on a 500 home", round(500 * per_bill, 2), 0.48)
+    check("annual equivalent", round(D.PROPERTY_TAX_ANNUAL_EQUIVALENT, 2), 0.26)
+    per_bill = D.property_tax_per_bill(D.DEFAULT_PROPERTY_TAX)
+    check("per-bill fraction", per_bill, 0.005)
+    # A 500 Denari home: 2.50 per weekly bill, not 25 per day.
+    check("weekly bill on a 500 home", round(500 * per_bill, 2), 2.50)
+    # Policy votes are bounded on the WEEKLY rate, not the old 0-25% daily bound.
+    check("policy clamps high", D.property_tax_per_bill(0.25), D.PROPERTY_TAX_MAX)
+    check("policy clamps low", D.property_tax_per_bill(-1.0), 0.0)
 
     w, log, a, prop = setup()
     start = a.denari

@@ -111,7 +111,7 @@ will drift. `tests/test_conformance.py` pins every one of them.
 | 19 | **Sites stockpile finitely** — 30 units of yard per plot, so a starter site holds 240. When the yard fills, production stalls until someone hauls it away. This is what makes carts, expansion, and distance-to-market matter. | none |
 | 20 | **16 spur roads, 640 plots** (2026-08-12). At 8 spurs / 320 plots the land filled completely by hour 48 — 40 farms consumed every plot exactly and squeezed homes out entirely. At 16 spurs land peaks at 78% (h72) and settles at 57%, leaving room for ~68 homes. Land is now contested, not exhausted. | World tab |
 
-| 21 | **Property tax is ANNUAL, billed weekly** (2026-08-12). The workbook's "5% every 24 real hours" made a starter home a pure loss. At 5%/year billed weekly it is 0.096% per bill — **0.48 Denari a week** on a 500 Denari home instead of 25 a day. Note: the first bill falls at hour 168, so a 120-hour validation run collects no property tax at all. | Assumptions tab, Government & Insurance tab |
+| 21 | **Property tax is 0.5% WEEKLY, billed weekly** (2026-08-12). The workbook's "5% every 24 real hours" made a starter home a pure loss. Now **2.50 Denari a week** on a 500 Denari home (10/week fully upgraded) — 26% annual equivalent, steep enough that idle property carries a real cost, ~50x lighter than the daily rule. The Government tab's 0-25% policy bound was written for the daily rate and would be 1300%/year as a weekly one, so policy votes are bounded separately at 0-2% weekly. **Flagged for review.** Note: the first bill falls at hour 168, so a 120-hour validation run collects no property tax at all. | Assumptions tab, Government & Insurance tab |
 | 22 | **Stolen goods must be laundered.** Loot lands in a separate `stolen` pool that no sale or trade path can touch, and must sit **24 continuous hours in a safehouse** — a property you own — before it becomes ordinary inventory. Hot goods still take up carrying capacity and still drop on death (staying hot for whoever picks them up). A thief with no home has nowhere to launder: they either hold goods they cannot spend, or find someone with a safehouse willing to fence. | Actions tab, black-market note |
 
 ### Why nobody buys a home — largely resolved
@@ -154,8 +154,8 @@ appreciate. With no price movement there is never a reason to hold inventory
 rather than sell it immediately, which means storage itself has no value. Homes
 are the second-order casualty of that.
 
-Both halves of this were addressed on 2026-08-12: the tax became annual (#21)
-and the safehouse gave storage a purpose (#22). The remaining observation still
+Both halves of this were addressed on 2026-08-12: the tax moved to a weekly
+rate (#21) and the safehouse gave storage a purpose (#22). The remaining observation still
 holds, though — with NPC prices fixed there is still no *speculative* reason to
 store goods, only a legal one. If you ever want warehousing to be a strategy in
 its own right, prices have to move.

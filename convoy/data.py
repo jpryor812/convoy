@@ -58,22 +58,36 @@ DEFAULT_WAGE_TAX = 0.05
 DEFAULT_SALES_TAX = 0.05
 TAX_MIN, TAX_MAX = 0.0, 0.25
 
-# PROPERTY TAX is ANNUAL, billed weekly (designer decision, 2026-08-12). The
-# workbook's "5% charged every 24 real hours" made a starter home a pure loss:
-# net-worth neutral to buy, then -125 Denari of tax across a 120-hour run for 20
-# units of storage. As an annual rate it is 5%/52 = ~0.096% per weekly bill --
-# roughly half a Denari a week on a 500 Denari home.
+# PROPERTY TAX is a WEEKLY rate, billed weekly (designer decision, 2026-08-12).
+#
+# The workbook's "5% charged every 24 real hours" made a starter home a pure
+# loss: net-worth neutral to buy, then -125 Denari of tax across a 120-hour run
+# for 20 units of storage nobody needed. This is 0.5% per week instead -- 2.50
+# Denari a week on a 500 Denari home, and 10 a week on a fully upgraded one.
+# Steep enough that idle property is a real carrying cost, ~50x lighter than the
+# original daily rule.
 #
 # Note for the validation run: the first bill falls at hour 168, so a 120-hour
-# run collects NO property tax at all. That is intended, not a bug.
-DEFAULT_PROPERTY_TAX = 0.05          # ANNUAL rate; policy still bounds it 0-25%
+# run collects NO property tax at all. That is intended, not a bug -- the tax
+# only bites on a horizon longer than this validation window.
+DEFAULT_PROPERTY_TAX = 0.005         # WEEKLY rate (26% annual equivalent)
 WEEKS_PER_YEAR = 52.0
 PROPERTY_TAX_PERIOD_HOURS = 168.0    # billed weekly
+PROPERTY_TAX_ANNUAL_EQUIVALENT = DEFAULT_PROPERTY_TAX * WEEKS_PER_YEAR
+
+# The Government tab bounds property tax 0-25%. That bound was written for the
+# old daily rate; as a WEEKLY rate 25% would be 1300% a year, so policy votes are
+# bounded separately here. Flagged for review.
+PROPERTY_TAX_MIN, PROPERTY_TAX_MAX = 0.0, 0.02   # 0-2% weekly == 0-104% annual
 
 
-def property_tax_per_bill(annual_rate: float) -> float:
-    """The fraction of assessed value taken by one weekly bill."""
-    return annual_rate / WEEKS_PER_YEAR
+def property_tax_per_bill(weekly_rate: float) -> float:
+    """Fraction of assessed value taken by one weekly bill.
+
+    The stored rate is already per-week, so this is the identity -- it exists so
+    the billing cadence has exactly one place to change.
+    """
+    return max(PROPERTY_TAX_MIN, min(PROPERTY_TAX_MAX, weekly_rate))
 
 
 # ---------------------------------------------------------------------------

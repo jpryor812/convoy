@@ -464,7 +464,7 @@ class Engine:
         if w.sim_time < w.next_property_tax_at:
             return
         w.next_property_tax_at += D.PROPERTY_TAX_PERIOD_HOURS * 3600.0
-        # The stored rate is ANNUAL; a weekly bill takes 1/52 of it.
+        # The stored rate is already per-week; this clamps it to policy bounds.
         rate = D.property_tax_per_bill(w.government.property_tax)
         for prop in w.properties.values():
             owner = w.agents.get(prop.owner)
