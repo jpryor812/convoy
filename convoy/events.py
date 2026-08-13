@@ -80,6 +80,8 @@ SIGNIFICANCE: dict[str, Significance] = {
     "travel": Significance.LOW,
     "decision": Significance.LOW,
     "tax_collected": Significance.LOW,
+    "road_tax_collected": Significance.MEDIUM,
+    "policy_enacted": Significance.HIGH,
     "diary": Significance.LOW,
 }
 

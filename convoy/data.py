@@ -91,6 +91,71 @@ def property_tax_per_bill(weekly_rate: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# ROAD TAX -- the daily levy that funds roads and police
+# ---------------------------------------------------------------------------
+#
+# The three taxes now do distinct jobs (designer decision, 2026-08-12):
+#
+#   SALES TAX    5%, at the point of sale
+#   WAGE TAX     5%, on wages paid
+#   PROPERTY TAX 0.5% weekly, on assessed property -- a carrying cost
+#   ROAD TAX     1% DAILY, the public-works levy
+#
+# This replaces the workbook's "bundled infrastructure policies move Wage +
+# Sales + Property together". Roads and police now have their own funding line,
+# so a vote to build something has a visible, single price rather than being
+# smeared across three unrelated taxes.
+#
+# BASE: assessed on Net Worth, the metric the game already ranks agents by.
+# STATED ASSUMPTION, FLAGGED -- see PHASE1.md. At 1% daily a 120-hour run costs
+# an agent roughly 5% of their wealth, which is material without being ruinous.
+ROAD_TAX_DAILY = 0.01
+ROAD_TAX_PERIOD_HOURS = 24.0
+ROAD_TAX_MIN, ROAD_TAX_MAX = 0.0, 0.05     # 0-5% daily, by vote
+
+
+@dataclass(frozen=True)
+class RoadPolicy:
+    """A public work the population can vote for, and what it costs per day.
+
+    Rate deltas are proportional quarter-points on the 1% base rather than the
+    workbook's 1-percentage-point steps, which were sized for a 5% base and
+    would double the levy in a single vote here.
+    """
+
+    name: str
+    rate_delta: float          # added to the daily road tax
+    convoy_speed: float = 0.0  # multiplier delta, e.g. +0.10 == 10% faster
+    police_tier: int = 0       # sets police tier if higher than current
+    second_route: bool = False
+    blurb: str = ""
+
+
+ROAD_POLICIES: dict[str, RoadPolicy] = {
+    p.name: p
+    for p in [
+        RoadPolicy("Better Roads", +0.0025, convoy_speed=+0.10,
+                   blurb="Graded and drained. Convoys move 10% faster."),
+        RoadPolicy("Less Road Funding", -0.0025, convoy_speed=-0.10,
+                   blurb="Let them wash out. Cheaper, and 10% slower going."),
+        RoadPolicy("New Road Project", +0.0075, second_route=True,
+                   blurb="A second route exists. Harder for pirates to predict."),
+        RoadPolicy("Police Tier 1", +0.0025, police_tier=1,
+                   blurb="One officer, 60 second response. Until this passes, no bounty is possible."),
+        RoadPolicy("Police Tier 2", +0.0025, police_tier=2,
+                   blurb="Two officers, 45 second response, two dispatches at once."),
+        RoadPolicy("Police Tier 3", +0.0025, police_tier=3,
+                   blurb="Three officers, 30 second response, three dispatches at once."),
+    ]
+}
+
+
+def road_tax_per_bill(daily_rate: float) -> float:
+    """Fraction of Net Worth taken by one daily road-tax bill."""
+    return max(ROAD_TAX_MIN, min(ROAD_TAX_MAX, daily_rate))
+
+
+# ---------------------------------------------------------------------------
 # Stolen goods & safehouses
 # ---------------------------------------------------------------------------
 

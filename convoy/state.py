@@ -482,16 +482,59 @@ class Government:
     wage_tax: float = D.DEFAULT_WAGE_TAX
     sales_tax: float = D.DEFAULT_SALES_TAX
     property_tax: float = D.DEFAULT_PROPERTY_TAX
+    road_tax: float = D.ROAD_TAX_DAILY    # daily levy on Net Worth, funds roads/police
     police_tier: int = 0
     treasury: float = 0.0
     bounty_multiplier: float = 1.0
     convoy_speed_modifier: float = 1.0
+    second_route: bool = False
     active_policies: list[str] = field(default_factory=list)
     proposals: dict[str, Proposal] = field(default_factory=dict)
     history: list[dict[str, Any]] = field(default_factory=list)
 
     def collect(self, amount: float) -> None:
         self.treasury += amount
+
+    def enact(self, policy_name: str) -> tuple[bool, str]:
+        """Apply a road/police policy: adjust the daily levy and the service.
+
+        Voting itself is Phase 3; this is the effect side, so a passed vote has
+        somewhere to land.
+        """
+        policy = D.ROAD_POLICIES.get(policy_name)
+        if policy is None:
+            return False, f"no such policy {policy_name!r}"
+        if policy_name in self.active_policies:
+            return False, f"{policy_name} is already in force"
+        if policy.police_tier and policy.police_tier != self.police_tier + 1:
+            return False, (
+                f"police tiers are cumulative -- need tier {self.police_tier + 1} first"
+            )
+
+        self.road_tax = D.road_tax_per_bill(self.road_tax + policy.rate_delta)
+        self.convoy_speed_modifier += policy.convoy_speed
+        if policy.police_tier:
+            self.police_tier = policy.police_tier
+        if policy.second_route:
+            self.second_route = True
+        self.active_policies.append(policy_name)
+        self.history.append({"policy": policy_name, "road_tax": self.road_tax})
+        return True, f"{policy_name} enacted; road tax now {self.road_tax:.2%}/day"
+
+    def reverse(self, policy_name: str) -> tuple[bool, str]:
+        """Undo a policy -- restores both the service level and its tax delta."""
+        policy = D.ROAD_POLICIES.get(policy_name)
+        if policy is None or policy_name not in self.active_policies:
+            return False, "not in force"
+        self.road_tax = D.road_tax_per_bill(self.road_tax - policy.rate_delta)
+        self.convoy_speed_modifier -= policy.convoy_speed
+        if policy.police_tier:
+            self.police_tier = policy.police_tier - 1
+        if policy.second_route:
+            self.second_route = False
+        self.active_policies.remove(policy_name)
+        self.history.append({"reversed": policy_name, "road_tax": self.road_tax})
+        return True, f"{policy_name} reversed; road tax now {self.road_tax:.2%}/day"
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +580,7 @@ class World:
     # Items and Denari dropped on death, lootable by anyone at that location.
     ground_loot: dict[str, dict] = field(default_factory=dict)
     next_property_tax_at: float = D.PROPERTY_TAX_PERIOD_HOURS * 3600.0
+    next_road_tax_at: float = D.ROAD_TAX_PERIOD_HOURS * 3600.0
     _seq: int = 0
 
     def drop_loot(self, location: str, items: dict[str, int], denari: float) -> None:

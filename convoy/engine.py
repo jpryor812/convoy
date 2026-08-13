@@ -109,6 +109,7 @@ class Engine:
         self._pay_wages(hours)
         self._research(hours)
         self._property_tax()
+        self._road_tax()
         self._expire_social()
         self._check_solvency()
         self._respawn()
@@ -507,6 +508,41 @@ class Engine:
                 kept.extend(msgs[-cap:])
             kept.sort(key=lambda m: m.sim_time)
             w.chat = kept
+
+    def _road_tax(self) -> None:
+        """The daily public-works levy that funds roads and police.
+
+        Charged on Net Worth, so it falls on illiquid wealth as well as cash --
+        an agent sitting on assets still contributes to the road they use. Cash
+        is drawn down first; the remainder is written off rather than driving an
+        agent negative, since there is no debt mechanic.
+        """
+        w = self.world
+        if w.sim_time < w.next_road_tax_at:
+            return
+        w.next_road_tax_at += D.ROAD_TAX_PERIOD_HOURS * 3600.0
+
+        rate = D.road_tax_per_bill(w.government.road_tax)
+        if rate <= 0:
+            return
+
+        collected = 0.0
+        for agent in w.agents.values():
+            if not agent.alive:
+                continue
+            due = agent.net_worth(w) * rate
+            paid = min(due, max(agent.denari, 0.0))
+            if paid <= 0:
+                continue
+            agent.denari -= paid
+            collected += paid
+
+        w.government.collect(collected)
+        self.log.emit(
+            w.sim_time, "road_tax_collected", kind="road", rate=rate,
+            amount=round(collected, 2), police_tier=w.government.police_tier,
+            policies=list(w.government.active_policies),
+        )
 
     def _check_solvency(self) -> None:
         """24-hour grace period after cash hits zero, then the business closes."""

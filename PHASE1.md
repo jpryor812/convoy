@@ -111,8 +111,32 @@ will drift. `tests/test_conformance.py` pins every one of them.
 | 19 | **Sites stockpile finitely** — 30 units of yard per plot, so a starter site holds 240. When the yard fills, production stalls until someone hauls it away. This is what makes carts, expansion, and distance-to-market matter. | none |
 | 20 | **16 spur roads, 640 plots** (2026-08-12). At 8 spurs / 320 plots the land filled completely by hour 48 — 40 farms consumed every plot exactly and squeezed homes out entirely. At 16 spurs land peaks at 78% (h72) and settles at 57%, leaving room for ~68 homes. Land is now contested, not exhausted. | World tab |
 
+| 23 | **Road tax: 1% DAILY on Net Worth**, funding roads and police (2026-08-12). The workbook bundled infrastructure funding across Wage + Sales + Property together; public works now have their own line, so a vote to build something has one visible price. Policy tiers move it in quarter-points: Police T1/T2/T3 and Better Roads +0.25% each, New Road Project +0.75%, Less Road Funding −0.25% (and 10% slower convoys). Reversing a policy restores both the rate and the service. **The base is a stated assumption — see below.** | Government & Insurance tab, replaces the bundled-policy rows |
 | 21 | **Property tax is 0.5% WEEKLY, billed weekly** (2026-08-12). The workbook's "5% every 24 real hours" made a starter home a pure loss. Now **2.50 Denari a week** on a 500 Denari home (10/week fully upgraded) — 26% annual equivalent, steep enough that idle property carries a real cost, ~50x lighter than the daily rule. The Government tab's 0-25% policy bound was written for the daily rate and would be 1300%/year as a weekly one, so policy votes are bounded separately at 0-2% weekly. **Flagged for review.** Note: the first bill falls at hour 168, so a 120-hour validation run collects no property tax at all. | Assumptions tab, Government & Insurance tab |
 | 22 | **Stolen goods must be laundered.** Loot lands in a separate `stolen` pool that no sale or trade path can touch, and must sit **24 continuous hours in a safehouse** — a property you own — before it becomes ordinary inventory. Hot goods still take up carrying capacity and still drop on death (staying hot for whoever picks them up). A thief with no home has nowhere to launder: they either hold goods they cannot spend, or find someone with a safehouse willing to fence. | Actions tab, black-market note |
+
+### The four taxes, and one open question
+
+| tax | rate | base | cadence |
+|---|---|---|---|
+| Sales | 5% | transaction value | at point of sale |
+| Wage | 5% | wages paid | continuously |
+| Property | 0.5% | assessed property value | weekly (first bill h168) |
+| **Road** | **1%** | **Net Worth** | **daily** |
+
+**Open question — the road tax base.** The instruction was "1% daily tax for
+roads" without naming what the 1% is of. I assessed it on **Net Worth**, because
+it is the metric the game already computes for every agent and it makes illiquid
+wealth contribute to the road it uses. At 1% daily a 120-hour run costs an agent
+roughly 5% of their wealth — material without being ruinous, and it is the one
+recurring tax that actually collects inside the validation window (the weekly
+property bill does not). Two alternatives, if either was the intent:
+
+- **1% of property value daily** — 5 Denari/day on a starter home. Narrower, and
+  only lands on homeowners, which would make property ownership costly again.
+- **A per-trip toll on cargo value** — thematically the purest "road" tax, and it
+  would price the dangerous middle segments directly, but it needs the convoy
+  system, so it is Phase 3 at the earliest.
 
 ### Why nobody buys a home — largely resolved
 

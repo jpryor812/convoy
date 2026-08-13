@@ -162,6 +162,65 @@ def test_property_tax_is_weekly():
           round(prop.assessed_value() * per_bill, 2))
 
 
+def test_road_tax_is_daily_on_net_worth():
+    """1% daily public-works levy, funding roads and police."""
+    check("daily rate", D.ROAD_TAX_DAILY, 0.01)
+    check("billed daily", D.ROAD_TAX_PERIOD_HOURS, 24.0)
+
+    w, log, a, _p = setup(with_home=False, denari=1000.0)
+    eng = Engine(w, log, type("N", (), {"decide": lambda *x: None})(),
+                 EngineConfig(speed=1e9))
+    nw = a.net_worth(w)
+    w.sim_time = 24 * HOUR
+    eng._road_tax()
+    check("charged 1% of net worth", round(1000.0 - a.denari, 2), round(nw * 0.01, 2))
+    check("treasury received it", round(w.government.treasury, 2), round(nw * 0.01, 2))
+
+    # Never drives an agent negative -- there is no debt mechanic.
+    a.denari = 0.5
+    w.sim_time = 48 * HOUR
+    eng._road_tax()
+    check("cannot go negative", a.denari >= 0, True)
+
+
+def test_road_policies_move_the_levy_and_the_service():
+    """Upgrades cost more per day; reversing restores both rate and service."""
+    from convoy.state import Government
+
+    g = Government()
+    check("baseline levy", g.road_tax, 0.01)
+    check("no police until voted", g.police_tier, 0)
+
+    ok, _ = g.enact("Police Tier 2")
+    check("police tiers are cumulative", ok, False)
+
+    g.enact("Police Tier 1")
+    check("tier 1 in force", g.police_tier, 1)
+    check("levy rose", round(g.road_tax, 4), 0.0125)
+
+    g.enact("Better Roads")
+    check("convoys 10% faster", round(g.convoy_speed_modifier, 2), 1.10)
+    check("levy rose again", round(g.road_tax, 4), 0.015)
+
+    ok, _ = g.enact("Better Roads")
+    check("cannot enact twice", ok, False)
+
+    g.reverse("Better Roads")
+    check("speed restored", round(g.convoy_speed_modifier, 2), 1.00)
+    check("levy restored", round(g.road_tax, 4), 0.0125)
+
+    # Cutting funding below baseline is allowed, and slows the roads.
+    g2 = Government()
+    g2.enact("Less Road Funding")
+    check("cheaper levy", round(g2.road_tax, 4), 0.0075)
+    check("slower roads", round(g2.convoy_speed_modifier, 2), 0.90)
+
+    g3 = Government()
+    g3.enact("New Road Project")
+    check("second route exists", g3.second_route, True)
+    check("and it is expensive", round(g3.road_tax, 4), 0.0175)
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
@@ -172,7 +231,7 @@ def main() -> int:
         for f in FAILURES:
             print(f"  ! {f}")
         return 1
-    print("Hot goods cannot be sold until laundered; property tax is annual.")
+    print("Hot goods need laundering; property tax weekly; road tax daily.")
     return 0
 
 
