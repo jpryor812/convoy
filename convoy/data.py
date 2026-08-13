@@ -54,7 +54,13 @@ STORE_MAX_EMPLOYEES = 2         # Businesses tab, store-type businesses only
 BANKRUPTCY_GRACE_HOURS = 24.0
 RP_PER_RESEARCHER_HOUR = 8.0
 
-DEFAULT_WAGE_TAX = 0.05
+# INCOME TAX -- 3% of every paycheck (designer decision, 2026-08-12), down from
+# the workbook's 5%. Withheld from gross wages before the worker is paid, so it
+# lands on the earner rather than the employer. Applies to every wage the world
+# pays, NPC hires included; an owner self-staffing draws no wage, so there is no
+# paycheck to tax. The workbook calls this "Wage Tax" -- same thing, and the
+# field keeps that name so it stays greppable against the Assumptions tab.
+DEFAULT_WAGE_TAX = 0.03
 DEFAULT_SALES_TAX = 0.05
 TAX_MIN, TAX_MAX = 0.0, 0.25
 

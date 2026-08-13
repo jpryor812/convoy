@@ -119,10 +119,16 @@ will drift. `tests/test_conformance.py` pins every one of them.
 
 | tax | rate | base | cadence |
 |---|---|---|---|
-| Sales | 5% | transaction value | at point of sale |
-| Wage | 5% | wages paid | continuously |
+| Income | **3%** | every paycheck, withheld from gross | continuously |
+| Sales | 5% | transaction value, buyer pays on top | at point of sale |
 | Property | 0.5% | assessed property value | weekly (first bill h168) |
 | **Road** | **1%** | **Net Worth** | **daily** |
+
+Income tax is the workbook's "Wage Tax" at 3% rather than 5% (2026-08-12). It is
+withheld from gross, so it falls on the earner, and applies to every wage the
+world pays including NPC hires. An owner self-staffing draws no wage, so there
+is no paycheck to tax. A Refinery Worker on the government wage takes home
+36.64/hr of a 37.78 gross.
 
 **Open question — the road tax base.** The instruction was "1% daily tax for
 roads" without naming what the 1% is of. I assessed it on **Net Worth**, because

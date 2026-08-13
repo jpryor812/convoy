@@ -397,10 +397,16 @@ def test_carrying_capacity():
 
 
 def test_taxes():
-    check("wage tax default", D.DEFAULT_WAGE_TAX, 0.05)
-    net, tax = E.apply_wage_tax(100.0, 0.05)
-    check("net wage", net, 95.0)
-    check("wage tax", tax, 5.0)
+    """Income tax is 3% of every paycheck (2026-08-12), withheld from gross."""
+    check("income tax default", D.DEFAULT_WAGE_TAX, 0.03)
+    net, tax = E.apply_wage_tax(100.0, D.DEFAULT_WAGE_TAX)
+    check("net wage", net, 97.0)
+    check("income tax withheld", tax, 3.0)
+    # A Refinery Worker on the government's smart wage takes home 36.64/hr.
+    gross = E.smart_wage("Refinery Worker")
+    net, tax = E.apply_wage_tax(gross, D.DEFAULT_WAGE_TAX)
+    check("refinery worker take-home", round(net, 2), 36.64)
+    check("sales tax default", D.DEFAULT_SALES_TAX, 0.05)
     check("tax clamped high", E.clamp_tax(0.99), 0.25)
     check("tax clamped low", E.clamp_tax(-1.0), 0.0)
 
