@@ -630,6 +630,14 @@ class Engine:
 
             if w.sim_time >= agent.activity.ends_at:
                 self._ask(agent, "activity_complete")
+                # If the decision left the agent idle, park it until the next
+                # scheduled re-evaluation. Without this an idle agent satisfies
+                # "activity complete" on EVERY tick and is asked once a simulated
+                # minute instead of once per checkpoint -- invisible with rule
+                # agents, which always assign an activity, but a 15x cost
+                # multiplier the moment a real model decides to wait.
+                if agent.activity.kind == "idle" and agent.activity.ends_at <= w.sim_time:
+                    agent.activity = Activity("idle", agent.next_reeval_at)
                 continue
 
             if w.sim_time >= agent.next_reeval_at:
