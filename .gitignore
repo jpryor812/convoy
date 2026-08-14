@@ -1,6 +1,11 @@
 # Simulation output — regenerated on every run, never committed
 runs/
 
+# Secrets — never commit. .env.example is the safe, checked-in template.
+.env
+.env.*
+!.env.example
+
 # Python
 __pycache__/
 *.py[cod]

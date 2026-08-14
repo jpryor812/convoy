@@ -35,6 +35,7 @@ from typing import Any
 
 from . import observe as O
 from . import schemas as S
+from .config import load_env
 from .events import EventLog
 from .state import Agent, World
 
@@ -79,6 +80,7 @@ class LLMPolicy:
 
     def __post_init__(self) -> None:
         if self.api_key is None:
+            load_env()          # a .env at the repo root, if there is one
             self.api_key = os.environ.get("OPENROUTER_API_KEY")
         if not self.api_key and not self.dry_run:
             raise RuntimeError(

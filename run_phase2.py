@@ -33,6 +33,7 @@ from pathlib import Path
 
 from convoy import data as D
 from convoy import llm
+from convoy.config import load_env
 from convoy.engine import Engine, EngineConfig
 from convoy.events import EventLog, Significance
 from convoy.state import Agent, World
@@ -155,9 +156,13 @@ def main() -> int:
     ap.add_argument("--max-actions", type=int, default=llm.MAX_ACTIONS_PER_DECISION)
     args = ap.parse_args()
 
+    load_env()
     if not args.dry_run and not os.environ.get("OPENROUTER_API_KEY"):
         print("OPENROUTER_API_KEY is not set.\n")
-        print("  export OPENROUTER_API_KEY='sk-or-...'\n")
+        print("Either create a .env file at the repo root:\n")
+        print("    cp .env.example .env      # then edit it and paste your key\n")
+        print("or export it for this shell:\n")
+        print("    export OPENROUTER_API_KEY='sk-or-...'\n")
         print("Or run with --dry-run to build prompts without calling the API.")
         return 2
 

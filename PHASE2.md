@@ -12,9 +12,16 @@ decisions taken while building it, and what to do next.
 
 ```bash
 python3 run_phase2.py --dry-run          # builds every prompt, calls nothing
-export OPENROUTER_API_KEY='sk-or-...'
+
+cp .env.example .env                      # then paste your key into .env
 python3 run_phase2.py                     # 3 agents, 15 decisions each
 ```
+
+The key comes from a `.env` at the repo root, loaded by `convoy/config.py` (a
+~20-line stdlib loader, since this project has no third-party dependencies and
+Python does not read `.env` on its own). A real environment variable overrides
+the file, so `OPENROUTER_API_KEY=... python3 run_phase2.py` works without
+editing it. `.env` is gitignored and `test_schemas.py` asserts that it is.
 
 Defaults: 3 agents on `openai/gpt-5.6-luna`, 15 decisions each, up to 4 actions
 per decision. At Luna's prices that is a fraction of a cent.

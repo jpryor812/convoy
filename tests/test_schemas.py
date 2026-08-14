@@ -219,6 +219,52 @@ def test_llm_policy_demands_a_key():
             os.environ["OPENROUTER_API_KEY"] = saved
 
 
+def test_env_loader():
+    """A .env must load, and a real environment variable must still win."""
+    import os
+    import tempfile
+    from convoy.config import load_env
+
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / ".env"
+        path.write_text(
+            '# a comment\nOPENROUTER_API_KEY="sk-or-fromfile"\n'
+            'export CONVOY_TEST_PLAIN=plain\nnot_a_pair\n',
+            encoding="utf-8",
+        )
+        saved = os.environ.pop("OPENROUTER_API_KEY", None)
+        try:
+            loaded = load_env(path)
+            check("quoted value is unquoted", loaded["OPENROUTER_API_KEY"], "sk-or-fromfile")
+            check("export prefix tolerated", loaded["CONVOY_TEST_PLAIN"], "plain")
+            ok("junk line skipped", "not_a_pair" not in loaded)
+
+            # A real environment variable must override the file, so
+            # OPENROUTER_API_KEY=... python3 run_phase2.py works without editing it.
+            os.environ["OPENROUTER_API_KEY"] = "sk-or-from-shell"
+            load_env(path)
+            check("real env wins", os.environ["OPENROUTER_API_KEY"], "sk-or-from-shell")
+        finally:
+            os.environ.pop("CONVOY_TEST_PLAIN", None)
+            os.environ.pop("OPENROUTER_API_KEY", None)
+            if saved is not None:
+                os.environ["OPENROUTER_API_KEY"] = saved
+
+    check("absent .env is not an error", load_env(Path(d) / "gone.env"), {})
+
+
+def test_env_file_is_gitignored():
+    """The one failure here that cannot be undone: a key pushed to GitHub."""
+    import subprocess
+
+    root = Path(__file__).resolve().parent.parent
+    result = subprocess.run(
+        ["git", "check-ignore", ".env"], cwd=root, capture_output=True, text=True
+    )
+    ok(".env is gitignored", result.returncode == 0, "add '.env' to .gitignore")
+    ok(".env.example is checked in", (root / ".env.example").is_file())
+
+
 def test_tool_call_parsing_is_defensive():
     from convoy.llm import _parse_tool_call
 
