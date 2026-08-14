@@ -86,16 +86,40 @@ def dismount(world: World, log: EventLog, agent: Agent) -> Result:
 
 
 def wait(world: World, log: EventLog, agent: Agent, seconds: float) -> Result:
+    """Do nothing until `seconds` have passed.
+
+    Terminal by convention: `LLMPolicy` ends the decision here rather than
+    asking again. Measured, 36% of all actions in the first live run came AFTER
+    a wait in the same turn, and every one of them cost a round trip to say
+    "and I am still waiting".
+    """
     agent.activity = Activity("idle", world.sim_time + seconds)
     return True, f"waiting {seconds:.0f}s"
+
+
+# Actions that mean "I am done deciding". Continuing past one buys nothing and
+# costs an API call, which at Phase 3 volume is the difference between $87 and
+# $171 against a $94 budget.
+TERMINAL_ACTIONS = frozenset({"wait"})
 
 
 # ---------------------------------------------------------------------------
 # LABOR
 # ---------------------------------------------------------------------------
 
+def employee_cap(biz: Business) -> int | None:
+    """How many production staff a business may hold. None == uncapped.
+
+    Ownership, not type: the government is a backstop employer and is held to
+    a small cap, while anything a player builds may hire freely.
+    """
+    if biz.is_government:
+        return D.GOVERNMENT_MAX_EMPLOYEES
+    return None
+
+
 def apply_for_job(
-    world: World, log: EventLog, agent: Agent, business_id: str, role: str,
+    world: World, log: EventLog, agent: Agent, business_id: str, role: str = "",
     as_researcher: bool = False,
 ) -> Result:
     biz = world.businesses.get(business_id)
@@ -107,6 +131,13 @@ def apply_for_job(
         return False, "not at this business"
 
     spec = biz.spec
+    # Omitting the role means "whatever this place hires". Requiring an exact
+    # string turned 9 of 13 applications in the 2026-08-14 runs into rejections
+    # for naming a real role that this particular business does not employ.
+    if not role and not as_researcher:
+        if not spec.production_roles:
+            return False, f"{biz.type} does not hire production staff"
+        role = spec.production_roles[0]
     # Research is a PLAYER-ONLY capability (designer decision, 2026-08-12) --
     # government businesses never unlock tiers, so the state can never out-research
     # the market it exists to backstop.
@@ -122,8 +153,9 @@ def apply_for_job(
     # PRODUCTION staff only -- applying it to researchers would block the
     # high-research store strategy entirely.
     if not as_researcher:
-        if spec.max_employees is not None and len(biz.production_staff()) >= spec.max_employees:
-            return False, "no vacancy"
+        cap = employee_cap(biz)
+        if cap is not None and len(biz.production_staff()) >= cap:
+            return False, f"no vacancy ({len(biz.production_staff())}/{cap} filled)"
 
     # Wage rules (designer decisions, 2026-08-11):
     #   * An OWNER staffing their own business draws no wage -- they are paid by
@@ -135,7 +167,7 @@ def apply_for_job(
     if agent.id == biz.owner:
         wage = 0.0
     elif biz.is_government:
-        wage = E.smart_wage(role)
+        wage = E.government_wage(role)
     else:
         wage = max(biz.retail_prices.get(f"wage:{role}", E.smart_wage(role)), E.wage_floor(role))
 
@@ -174,6 +206,13 @@ def start_shift(world: World, log: EventLog, agent: Agent, hours: float = 4.0) -
         return False, "employer closed"
     if biz.location != agent.location:
         return False, "not at workplace"
+    # Already on this shift. Without this the call silently overwrites the
+    # activity and pushes ends_at forward, so a model that re-asserts its plan
+    # restarts the clock -- 15% of all actions in the first live run.
+    if (agent.activity.kind == "work"
+            and agent.activity.detail.get("business") == business_id):
+        remaining = (agent.activity.ends_at - world.sim_time) / 3600.0
+        return False, f"already working this shift, {remaining:.1f}h left"
 
     agent.activity = Activity(
         "work", world.sim_time + hours * 3600.0,
@@ -421,8 +460,9 @@ def hire_npc_employee(
     # PRODUCTION staff only -- applying it to researchers would block the
     # high-research store strategy entirely.
     if not as_researcher:
-        if spec.max_employees is not None and len(biz.production_staff()) >= spec.max_employees:
-            return False, "no vacancy"
+        cap = employee_cap(biz)
+        if cap is not None and len(biz.production_staff()) >= cap:
+            return False, f"no vacancy ({len(biz.production_staff())}/{cap} filled)"
 
     wage = E.npc_wage(role)
     biz.roster.append(Employment("NPC", role, wage, as_researcher, is_npc=True))
@@ -822,7 +862,12 @@ def buy_meal(world: World, log: EventLog, agent: Agent, business_id: str | None 
             return False, f"{tavern.name} cannot serve {meal} (needs Quality tier {spec.required_tier})"
     else:
         meal = E.best_meal_for_tier(quality_tier, prefer)
-    price = E.meal_price(meal)
+    # The tavern's OWN price, not the base rate. Using E.meal_price here meant
+    # every tavern in the world charged identically, so a player tavern could
+    # not undercut the state and there was no reason to found one. The state
+    # charges the marked-up NPC rate; a player charges whatever they set, down
+    # to the 60% floor.
+    price = tavern.price_for(meal)
     tax = E.sales_tax_on(price, world.government.sales_tax)
     total = price + tax
     if agent.denari < total:
@@ -843,10 +888,13 @@ def buy_meal(world: World, log: EventLog, agent: Agent, business_id: str | None 
 
 def eat_best_available(world: World, log: EventLog, agent: Agent) -> Result:
     """Self-prep if we're holding the ingredients, otherwise buy at a local tavern."""
-    ok, msg = eat_self_prep(world, log, agent)
+    ok, msg = buy_meal(world, log, agent)
     if ok:
         return ok, msg
-    return buy_meal(world, log, agent)
+    return False, (
+        f"{msg}. Food is served at Taverns only -- travel to one to eat. "
+        f"The state's Tavern is at {world_map.GOVERNMENT_SITES['Tavern / Inn']}."
+    )
 
 
 # ---------------------------------------------------------------------------

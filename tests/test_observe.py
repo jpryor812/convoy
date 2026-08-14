@@ -271,10 +271,17 @@ def test_payload_stays_within_budget():
     brief = O.static_briefing()
     rendered = O.render(O.observe(w, log, a, "reevaluation"))
 
-    # The briefing is cached, so its real per-call cost is ~1/10th of this.
+    # Raised from 4,000 to 4,400 on 2026-08-14. The briefing grew from 3,425 by
+    # ~575 tokens, and every addition was a fix for a measured failure in the
+    # live runs: business locations (agents ate in a Town with no tavern), the
+    # role table (9 of 13 job applications rejected), and the wage table
+    # (everyone took the lowest-paid role in the world without knowing it).
+    # Measured cache hit rate is 96-97%, so the marginal cost of the extra
+    # tokens is roughly 4% of them -- about 23 tokens per call. The guard is
+    # still here to catch drift, just calibrated to what the briefing now does.
     ok(
-        "briefing under 4k tokens",
-        len(brief) // 4 < 4000,
+        "briefing under 4.4k tokens",
+        len(brief) // 4 < 4400,
         f"~{len(brief) // 4} tokens",
     )
     ok(

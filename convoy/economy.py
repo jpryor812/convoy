@@ -131,6 +131,11 @@ def smart_wage(role: str) -> float:
     return D.SMART_WAGES[role]
 
 
+def government_wage(role: str) -> float:
+    """What the state pays. A narrow band, well under the smart wage."""
+    return D.GOVERNMENT_WAGES[role]
+
+
 def npc_wage(role: str) -> float:
     return D.NPC_WAGES[role]
 

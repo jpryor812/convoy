@@ -162,14 +162,25 @@ def test_researcher_pool_is_uncapped_at_stores():
     if hired != 6:
         FAILURES.append(f"researcher pool capped at {hired}, should be uncapped")
 
-    # Production staff at the same store must still cap at 2.
+    # A PLAYER-owned store is uncapped (designer decision, 2026-08-14): the
+    # headcount limit belongs to the government backstop, not to anything a
+    # player builds, so out-hiring the state is a strategy that can be tried.
     prod = 0
     for _ in range(5):
         ok, _ = A.hire_npc_employee(world, log, owner, biz.id, "Blacksmith")
         if ok:
             prod += 1
-    if prod != 2:
-        FAILURES.append(f"production staff cap should be 2, got {prod}")
+    if prod != 5:
+        FAILURES.append(f"player-owned production staff should be uncapped, got {prod}")
+
+    # The government business of the same type still caps.
+    gov = Business(
+        id="G9001", type="Weaponsmith / Armory", name="Government Store",
+        owner="Government", location="Town", cash=1e9,
+    )
+    world.businesses[gov.id] = gov
+    if A.employee_cap(gov) != D.GOVERNMENT_MAX_EMPLOYEES:
+        FAILURES.append(f"government cap should be {D.GOVERNMENT_MAX_EMPLOYEES}")
     print(f"  researchers hired at a 2-employee store: {hired} (uncapped)")
     print(f"  production staff hired at the same store: {prod} (capped)")
 

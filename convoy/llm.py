@@ -33,6 +33,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import actions as A
+from . import data as D
 from . import observe as O
 from . import schemas as S
 from .config import load_env
@@ -48,6 +50,17 @@ MAX_ACTIONS_PER_DECISION = 4
 REQUEST_TIMEOUT_S = 90.0
 MAX_RETRIES = 3
 BACKOFF_BASE_S = 2.0
+
+# A decision is a tool call and at most a sentence of reasoning, so the model
+# never needs much room. Sending no limit at all is what bit the first live run:
+# OpenRouter reserves the model's FULL completion window (65,536 tokens) against
+# the key's remaining credit and returns 402 when the balance cannot cover it,
+# which fails every call on a key that is not nearly empty.
+MAX_COMPLETION_TOKENS = 4096
+
+# New OpenRouter accounts are capped per model (10 rpm on Luna). One 429 costs
+# three retries and a wasted decision, so the calls are paced instead.
+REQUESTS_PER_MINUTE = 10.0
 
 
 @dataclass
@@ -75,8 +88,11 @@ class LLMPolicy:
     api_key: str | None = None
     max_actions: int = MAX_ACTIONS_PER_DECISION
     dry_run: bool = False              # build prompts, make no network calls
+    max_completion_tokens: int = MAX_COMPLETION_TOKENS
+    requests_per_minute: float = REQUESTS_PER_MINUTE   # 0 disables pacing
     usage: dict[str, Usage] = field(default_factory=dict)
     _prefix: tuple[str, list[dict[str, Any]]] | None = None
+    _last_call_at: float = 0.0
 
     def __post_init__(self) -> None:
         if self.api_key is None:
@@ -117,6 +133,7 @@ class LLMPolicy:
 
             calls = reply.get("tool_calls") or []
             messages.append(reply)
+            stop = False
 
             if not calls:
                 # The model chose to say something rather than act. That is a
@@ -136,7 +153,18 @@ class LLMPolicy:
                 else:
                     result = S.dispatch(world, self.log, agent, name, args)
                 acted += 1
+                if name in A.TERMINAL_ACTIONS:
+                    stop = True
                 self._record_action(agent)
+                # Every call, refusals included. Only exceptions emit
+                # action_error, so without this an engine refusal ("you are
+                # already employed") leaves no trace at all -- and what agents
+                # TRY is the whole point of the harness run.
+                self.log.emit(
+                    world.sim_time, "action_call", actor=agent.id,
+                    action=name or "<unparseable>", ok=result[0],
+                    detail_text=str(result[1])[:200],
+                )
                 # Feed the outcome back: an agent that tried to sell what it is
                 # not carrying should learn why, not silently retry forever.
                 messages.append({
@@ -145,6 +173,8 @@ class LLMPolicy:
                     "content": json.dumps({"ok": result[0], "detail": result[1]}),
                 })
 
+            if stop:
+                return
             if acted >= self.max_actions:
                 return
 
@@ -158,7 +188,11 @@ class LLMPolicy:
             "messages": messages,
             "tools": tools,
             "tool_choice": "auto",
+            "max_tokens": self.max_completion_tokens,
         }
+        effort = D.EFFORT_BY_MODEL.get(agent.model)
+        if effort:
+            payload["reasoning"] = {"effort": effort}
         body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             API_URL,
@@ -172,6 +206,7 @@ class LLMPolicy:
         )
 
         for attempt in range(MAX_RETRIES):
+            self._pace()
             try:
                 with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_S) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
@@ -193,13 +228,28 @@ class LLMPolicy:
                     return None
                 time.sleep(BACKOFF_BASE_S * (2 ** attempt))
 
-            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            # OSError, not just URLError: a connection reset mid-body happens
+            # AFTER urlopen() returns, so it arrives during resp.read() as a bare
+            # ConnectionResetError and is not wrapped. That killed a live run at
+            # 1.5 simulated hours. URLError and TimeoutError are both OSError
+            # subclasses, so this covers the whole family.
+            except (OSError, json.JSONDecodeError) as exc:
                 if attempt == MAX_RETRIES - 1:
                     self._fail(agent, f"{type(exc).__name__}: {exc}")
                     return None
                 time.sleep(BACKOFF_BASE_S * (2 ** attempt))
 
         return None
+
+    def _pace(self) -> None:
+        """Hold the request rate under the account's per-model limit."""
+        if not self.requests_per_minute:
+            return
+        gap = 60.0 / self.requests_per_minute
+        wait = self._last_call_at + gap - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        self._last_call_at = time.monotonic()
 
     # -- accounting --------------------------------------------------------
 

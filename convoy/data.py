@@ -51,6 +51,13 @@ MAX_EMPLOYEES_PRODUCTION_UNUSED = 3
 WORKER_DECAY_PER_HEAD = 0.95    # Businesses tab: per-worker rate x 0.95^(n-1)
 STORE_MAX_EMPLOYEES = 2         # Businesses tab, store-type businesses only
 
+# The state is an employer of last resort, not a career (designer decision,
+# 2026-08-14). Capping it forces agents to choose between a small safe wage and
+# founding something of their own, which is the behaviour the run exists to
+# observe. Player-owned businesses are deliberately UNCAPPED so that out-hiring
+# the government is a strategy that can actually be tried.
+GOVERNMENT_MAX_EMPLOYEES = 2
+
 BANKRUPTCY_GRACE_HOURS = 24.0
 RP_PER_RESEARCHER_HOUR = 8.0
 
@@ -542,6 +549,28 @@ NPC_WAGES: dict[str, float] = {
 SMART_WAGES = {r: w / NPC_WAGE_MULTIPLIER for r, w in NPC_WAGES.items()}
 WAGE_FLOORS = {r: w * MIN_WAGE_PCT_OF_SMART for r, w in SMART_WAGES.items()}
 
+# What the STATE pays (designer decision, 2026-08-14). Deliberately a narrow
+# band, and deliberately separate from SMART_WAGES -- which still sets the
+# reference rate and the legal floor for player employers, and still prices NPC
+# hires. The state used to pay 17.78-37.78, so a Refinery Worker could out-earn
+# most ventures by standing still; compressing it leaves the top end of the
+# labour market for players to compete over.
+GOVERNMENT_WAGE_RANGE = (15.0, 25.0)
+
+
+def _government_scale() -> dict[str, float]:
+    """Linearly rescale the smart wages into the state's band, order intact."""
+    lo_pay, hi_pay = GOVERNMENT_WAGE_RANGE
+    lo, hi = min(SMART_WAGES.values()), max(SMART_WAGES.values())
+    span = hi - lo
+    return {
+        role: round(lo_pay + (0.0 if span == 0 else (w - lo) / span) * (hi_pay - lo_pay), 2)
+        for role, w in SMART_WAGES.items()
+    }
+
+
+GOVERNMENT_WAGES: dict[str, float] = _government_scale()
+
 WAGE_ROLES = tuple(NPC_WAGES)
 
 # Skill Progression -- (min_hours, speed_bonus, label); speed only.
@@ -754,6 +783,16 @@ MODEL_ROSTER: list[ModelSlot] = [
     ModelSlot("Grok 4.3", "x-ai/grok-4.3", 15, "minimal", True, 1.25, 2.50),
     ModelSlot("GPT-5.6 Luna", "openai/gpt-5.6-luna", 15, "medium", True, 0.10, 0.60),
 ]
+
+# The roster pins a reasoning effort per model, and it is part of the experiment
+# -- it must actually reach the API. Measured 2026-08-14, one real decision each:
+# DeepSeek default 69.6s vs 21.0s at "low"; Grok default 5.9s vs 4.0s at
+# "minimal". Sending nothing means every model silently runs at its provider
+# default, which matches the spec for none of them.
+EFFORT_BY_MODEL: dict[str, str] = {
+    s.openrouter_id: s.reasoning_effort
+    for s in MODEL_ROSTER if s.reasoning_effort
+}
 
 # COMBAT MODEL -- designer override of the Combat & Heroes tab (2026-08-11).
 #

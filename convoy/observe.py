@@ -124,17 +124,76 @@ def _static_economy() -> str:
     for recipe in list(D.REFINING_RECIPES.values()) + list(D.CRAFTING_RECIPES.values()):
         ins = " + ".join(f"{q}x {i}" for i, q in recipe.inputs.items())
         lines.append(f"  {ins} -> {recipe.output} (at a {recipe.produced_at})")
+
+    # Which roles a business type hires is static, and NOT telling agents was a
+    # measured failure: 9 of 13 job applications in the 2026-08-14 harness runs
+    # were rejected for inventing a role ("Laborer is not a role at General
+    # Store"). apply_for_job takes an exact role string, so a guess is a wasted
+    # decision -- and a wasted API call.
+    # Where the state's businesses stand never changes, so withholding it only
+    # made agents rediscover the map by walking. That contradicts this module's
+    # own rule -- static economic facts are common knowledge -- and it is why
+    # agents kept trying to eat in Town, where there is no tavern.
+    # Location and roles in ONE table: both key on business type, and listing
+    # the eleven type names twice cost ~120 tokens of the cached prefix for no
+    # extra information.
+    lines.append("")
+    lines.append(
+        f"BUSINESSES. No experience is needed for anything: any role, and "
+        f"founding any business, is open from hour one. Omit the role when you "
+        f"apply to get whatever that place hires. Government businesses sit at "
+        f"the sites below, always buy what you bring and sell at the prices "
+        f"above -- but hire at most {D.GOVERNMENT_MAX_EMPLOYEES} each: a "
+        f"backstop, not a career. One YOU found may hire as many as you can pay. "
+        f"Other players' businesses are not listed; find those by trading there."
+    )
+    lines.append(f"  {'type':<32}{'government site':<22}hires")
+    for name, spec in sorted(D.BUSINESS_TYPES.items()):
+        place = M.GOVERNMENT_SITES.get(name, "-")
+        roles = ", ".join(spec.production_roles) if spec.production_roles else "nobody"
+        tail = " + Researcher" if spec.can_research else ""
+        lines.append(f"  {name:<32}{place:<22}{roles}{tail}")
+
+    # Roles pay very differently -- Refinery Worker is 2.1x Store Clerk -- and
+    # agents were choosing blind. In the 2026-08-14 runs everyone took the
+    # lowest-paid role in the world (Store Clerk, 17.78) because it happened to
+    # be where they spawned; the one agent who took Miner finished with more
+    # than double everyone else's net worth. That is a wage table doing the work
+    # of a strategy, so the table belongs in front of them.
+    lines.append("")
+    lines.append(
+        "WAGES per hour. The state pays a narrow band. A player employer may set "
+        "any wage at or above the floor, so outbidding the state for staff is "
+        "open to you:"
+    )
+    lines.append(f"  {'role':<18}{'state':>8}{'floor':>8}")
+    for role in D.WAGE_ROLES:
+        lines.append(
+            f"  {role:<18}{D.GOVERNMENT_WAGES[role]:>8.2f}{D.WAGE_FLOORS[role]:>8.2f}"
+        )
+    lines.append("")
+    lines.append(
+        "SKILL is tracked SEPARATELY FOR EACH ROLE and only ever speeds you up: "
+        + ", ".join(
+            f"{label} at {hours:.0f}h (+{bonus:.0%})"
+            for hours, bonus, label in D.SKILL_TIERS
+        )
+        + ". Changing role starts the new role at Novice -- the hours you built "
+        "up elsewhere keep their own tier and are waiting if you go back."
+    )
     return "\n".join(lines)
 
 
 def _static_rules() -> str:
     lines = ["", "HOW THINGS WORK", ""]
     lines.append(
-        f"SUSTENANCE. A meal keeps you Normal for its window (a basic Meal is "
-        f"{D.MEALS['Meal'].window_hours:.0f}h if you buy one, {D.SELF_PREP_WINDOW_HOURS:.0f}h "
-        f"if you cook it yourself from "
-        + " + ".join(f"{q}x {i}" for i, q in D.SELF_PREP_INPUTS.items())
-        + f"). After the window you go Hungry ({D.HUNGRY_SPEED_PENALTY:.0%} slower) for "
+        f"SUSTENANCE. Food is sold at TAVERNS only -- you cannot cook. The "
+        f"state's Tavern ({M.GOVERNMENT_SITES['Tavern / Inn']}) charges "
+        f"{E.npc_sell_price('Meal'):.2f} for a Meal: Normal for "
+        f"{D.MEALS['Meal'].window_hours:.0f}h. A player Tavern may charge as "
+        f"little as {E.player_price_floor('Meal'):.2f} and can research Quality "
+        f"for meals that last longer, heal, or speed your work. "
+        f"After the window you go Hungry ({D.HUNGRY_SPEED_PENALTY:.0%} slower) for "
         f"{D.HUNGRY_STAGE_HOURS:.0f}h, then Starving ({D.STARVING_SPEED_PENALTY:.0%} slower, "
         f"-{D.STARVING_HP_HIT:.0f} HP) for {D.STARVING_STAGE_HOURS:.0f}h, then you die. "
         f"You cannot accumulate wealth while dead. Eat before it is urgent -- being "

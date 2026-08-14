@@ -207,6 +207,12 @@ def test_llm_policy_demands_a_key():
     import os
 
     saved = os.environ.pop("OPENROUTER_API_KEY", None)
+    # Emptying the environment is not enough: __post_init__ calls load_env(),
+    # which reads the repo's own .env straight back in. Without stubbing that,
+    # this test passes only on a machine that has never been configured to run
+    # the thing it is testing.
+    real_load_env = llm.load_env
+    llm.load_env = lambda *a, **k: {}
     try:
         raised = False
         try:
@@ -215,6 +221,7 @@ def test_llm_policy_demands_a_key():
             raised = "OPENROUTER_API_KEY" in str(exc)
         ok("missing key fails loudly at startup", raised)
     finally:
+        llm.load_env = real_load_env
         if saved is not None:
             os.environ["OPENROUTER_API_KEY"] = saved
 

@@ -37,7 +37,17 @@ from .events import EventLog
 from .state import Agent, World
 
 # Read helpers, not actions -- their output is already in the observation.
-_NOT_ACTIONS = frozenset({"visible_chat", "accessible_goods"})
+# `eat_self_prep` is deliberately NOT offered (designer decision, 2026-08-14).
+# Cooking Grain + Water cost 4.80 for the same 12h window a tavern charges 16.00
+# for, so no tavern could ever win a customer and the whole Tavern business line
+# was dead on arrival. Food is a tavern trade now.
+_NOT_ACTIONS = frozenset({
+    "visible_chat", "accessible_goods", "eat_self_prep",
+    # A helper, not an action -- and its (biz) signature would have been handed
+    # (world, log, agent) by the dispatcher. Introspection exposes every public
+    # function in the module, so anything that is not a real action must say so.
+    "employee_cap",
+})
 
 # Engine-internal: loot transfer is driven by the combat/death path, not chosen.
 _ENGINE_ONLY = frozenset({"receive_stolen"})
@@ -125,8 +135,10 @@ DESCRIPTIONS: dict[str, str] = {
         "boost production. 'prefer' picks the line when you do not name a meal."
     ),
     "eat_best_available": (
-        "Eat the best thing available right now, whatever that is. Use when "
-        "hungry and not fussy -- being dead ends all earning."
+        "Cook 1x Grain + 1x Water if you are carrying them, otherwise buy a "
+        "meal from a Tavern where you stand. It does NOT work with neither -- "
+        "carry the ingredients or buy a Meal from a store first. Being dead "
+        "ends all earning."
     ),
     # -- social -------------------------------------------------------------
     "post_world_chat": "Say something every living agent can read.",
@@ -221,6 +233,13 @@ def _param_schema(action: str, param: inspect.Parameter) -> dict[str, Any]:
     if param.name.endswith("_id"):
         schema["description"] = (
             "An id from your current observation. Do not invent one."
+        )
+    # The enum lists every role in the world, but a given business hires only a
+    # few of them, and a wrong guess is a wasted decision. Omitting it is the
+    # safe move, so say so where the model is actually looking.
+    if action == "apply_for_job" and param.name == "role":
+        schema["description"] = (
+            "Optional. Omit this to be given whatever role that business hires."
         )
     return schema
 

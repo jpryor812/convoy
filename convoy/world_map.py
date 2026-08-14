@@ -81,8 +81,12 @@ LOCATIONS_SPEC: list[Location] = [
     ),
     Location(
         "Town", "hub", 30, True,
-        "The market. Every store, the stables, the tavern and the town square "
-        "where the dead reappear. Protected ground -- deals are struck, not taken.",
+        # The tavern is at South Protected Zone, not here -- see GOVERNMENT_SITES.
+        # This line used to claim it was in Town, and agents believed it: every
+        # eat_best_available call in the 2026-08-14 harness runs failed with
+        # "no tavern here" because the briefing sent them to the wrong place.
+        "The market. Every store, the stables and the town square where the dead "
+        "reappear. Protected ground -- deals are struck, not taken.",
     ),
 ]
 
