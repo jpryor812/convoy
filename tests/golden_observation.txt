@@ -1,0 +1,42 @@
+HOUR 20.0. You were woken because: reevaluation.
+
+YOU
+  id: A0001
+  name: Tester
+  denari: 500.0
+  net_worth: 1348.0
+  location: Kiln Row
+  health: 100.0
+  hunger: Normal, 0.0h since eating
+  doing: idle
+  carrying:
+    Iron: 4
+    Grain: 2
+  capacity: 100
+  vehicle: Donkey Cart
+  weapon: Slingshot
+  businesses:
+    - id=B0001, name=Tester's Farm, type=Farm, location=Kiln Row, cash=120.0, workers=0, researchers=0, research_tier=0, unspent_rp=0.0
+      stock: Grain=30
+
+WHERE YOU ARE
+  agents:
+    - id=A0002, name=Neighbour
+  businesses:
+    - id=B0001, name=Tester's Farm, type=Farm, owner=A0001
+
+WHAT YOU CAN DO FROM HERE
+  - 1 business(es) here to buy from or sell to (listed above); 1 player-owned and may hire.
+  - This is spur land: 32 of 40 plots free. You can found a mine or farm (8 plots) or buy a home (4 plots) here.
+  - Carrying 6/100 units.
+
+CURRENT TAX RATES
+  sales: 0.05
+  income: 0.03
+  property_weekly: 0.005
+  road_daily: 0.01
+  police_tier: 0
+
+RECENTLY
+  - [018:00] hired                  A0001          role=Farmhand wage=12.0
+  - [019:00] business_founded       A0001          business_type=Farm cost=300
