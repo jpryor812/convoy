@@ -62,7 +62,12 @@ DESCRIPTIONS: dict[str, str] = {
     ),
     "mount": "Mount a vehicle you own, to carry far more and travel faster.",
     "dismount": "Get off your vehicle and continue on foot.",
-    "wait": "Do nothing for a while. Use when waiting on production or a trade.",
+    "wait": (
+        "Do nothing for a while, and end this turn. Use when waiting on "
+        "production or a trade. You are re-checked every 15 minutes regardless, "
+        "so anything shorter than 900s is rounded up to it. Waiting does NOT "
+        "interrupt a shift or a journey already under way -- those continue."
+    ),
     # -- employment ---------------------------------------------------------
     "apply_for_job": (
         "Apply for a job at a business here. Government businesses always hire. "

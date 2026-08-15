@@ -618,6 +618,15 @@ class Engine:
             if not agent.alive:
                 continue
 
+            # `in_transit` and a 'travel' activity must agree. They are cleared
+            # together below and nowhere else, so if anything ever leaves them
+            # out of sync the agent is stranded: its location never updates and
+            # `in_transit` never clears, leaving it "travelling" while standing
+            # still. Recover instead of stranding -- an agent that is no longer
+            # on the road is simply where it started.
+            if agent.in_transit and agent.activity.kind != "travel":
+                agent.in_transit = None
+
             if agent.activity.kind == "travel" and w.sim_time >= agent.activity.ends_at:
                 _o, dest, _p = agent.in_transit or (agent.location, agent.location, 1.0)
                 agent.location = dest

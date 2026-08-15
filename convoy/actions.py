@@ -92,7 +92,38 @@ def wait(world: World, log: EventLog, agent: Agent, seconds: float) -> Result:
     asking again. Measured, 36% of all actions in the first live run came AFTER
     a wait in the same turn, and every one of them cost a round trip to say
     "and I am still waiting".
+
+    WAITING MUST NEVER CANCEL WHAT IS ALREADY UNDERWAY. `agent.activity` is a
+    single slot, so an unconditional write here silently destroyed whatever the
+    agent had just committed to:
+
+      * a 'work' activity -- wages accrue ONLY while kind == 'work', so an
+        agent that started a shift and then waited clocked itself straight back
+        out and earned nothing;
+      * a 'travel' activity -- the engine moves the agent and clears
+        `in_transit` only from its travel branch, so a cancelled journey could
+        neither arrive nor reset. The agent stood at its origin, permanently
+        "in transit", forever.
+
+    Both were live in the 2026-08-14 72-hour run: 9 of 12 agents were stranded
+    mid-journey and the whole population was earning a fraction of its wage.
     """
+    live = agent.activity
+    if live.kind in ("work", "travel") and live.ends_at > world.sim_time:
+        left = (live.ends_at - world.sim_time) / 3600.0
+        doing = "on shift" if live.kind == "work" else "travelling"
+        return True, f"still {doing}, {left:.1f}h left -- it continues while you wait"
+
+    # A wait shorter than the re-evaluation interval is worse than useless. The
+    # engine wakes an idle agent at its next scheduled re-evaluation regardless,
+    # so a shorter wait cannot buy less time -- but an `ends_at` in the near
+    # future ALSO trips the activity_complete branch, manufacturing an extra
+    # decision that nobody asked for. 596 of the 1,245 waits in the aborted
+    # 2026-08-14 run were under the interval, and 45% of every decision in that
+    # run was self-inflicted churn. Clamping is honest: it makes the parameter
+    # mean what the engine will actually do.
+    floor = D.REEVALUATION_INTERVAL_MIN * 60.0
+    seconds = max(float(seconds), floor)
     agent.activity = Activity("idle", world.sim_time + seconds)
     return True, f"waiting {seconds:.0f}s"
 
