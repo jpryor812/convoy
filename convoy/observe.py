@@ -120,10 +120,18 @@ def _static_economy() -> str:
         r = D.RESOURCES[name]
         lines.append(f"  {name:<16} {r.base_rate_hr:>4.0f}/hr at a {r.source} ({r.rarity})")
     lines.append("")
-    lines.append("Refining and crafting (inputs -> output):")
+    # Time per unit now scales with value, so it is no longer one number an
+    # agent can assume -- a Meal is 15 minutes and an Iron Sword is 12 hours.
+    lines.append(
+        "Refining and crafting (inputs -> output, and worker-hours per unit -- "
+        "the more valuable the good, the longer it takes):"
+    )
     for recipe in list(D.REFINING_RECIPES.values()) + list(D.CRAFTING_RECIPES.values()):
         ins = " + ".join(f"{q}x {i}" for i, q in recipe.inputs.items())
-        lines.append(f"  {ins} -> {recipe.output} (at a {recipe.produced_at})")
+        hrs = D.production_hours(recipe.output)
+        lines.append(
+            f"  {ins} -> {recipe.output} ({hrs:.2f}h, at a {recipe.produced_at})"
+        )
 
     # Which roles a business type hires is static, and NOT telling agents was a
     # measured failure: 9 of 13 job applications in the 2026-08-14 harness runs
@@ -137,6 +145,24 @@ def _static_economy() -> str:
     # Location and roles in ONE table: both key on business type, and listing
     # the eleven type names twice cost ~120 tokens of the cached prefix for no
     # extra information.
+    # Rules the agent cannot deduce and will otherwise discover only by being
+    # refused. Every previous run wasted decisions this way -- eating in a Town
+    # with no tavern, applying for roles a business does not hire.
+    lines.append("")
+    lines.append(
+        "WHAT YOU CAN BUY. Shops sell FINISHED goods to people: meals, weapons, "
+        "armour, tools, vehicles, property upgrades. RAW AND REFINED goods -- "
+        + ", ".join(sorted(D.INTERMEDIATE_GOODS)[:6]) + " and the like -- are "
+        "feedstock and are sold to businesses, not over the counter. You can "
+        "only buy them if you OWN a business that uses them as an input."
+    )
+    lines.append("")
+    lines.append(
+        "SHOPS NEED SOMEBODY IN THEM. A player-owned business can only sell "
+        "while its owner or an employee is standing at it. Walk away and it "
+        "stops trading. Government businesses are always staffed."
+    )
+
     lines.append("")
     lines.append(
         f"BUSINESSES. No experience is needed for anything: any role, and "
@@ -486,6 +512,26 @@ def observe(
         ),
         "weapon": agent.equipped_weapon,
     }
+    # Vehicles an agent OWNS, with their ids. Without this the id exists only
+    # inside the engine: `mount` needs one, the schema tells the model never to
+    # invent an id, and nothing in the observation ever supplied one. Every
+    # mount attempt in the 2026-08-15 run failed with "not your vehicle" -- 15
+    # vehicles and 4,174 denari, 58% of the economy's capital, unusable.
+    if agent.owned_vehicles:
+        you["your_vehicles"] = [
+            {
+                "id": vid,
+                "type": v.type,
+                "location": v.location,
+                "cargo_capacity": D.VEHICLES[v.type].cargo_capacity,
+                "carrying": dict(v.cargo),
+                "mounted": vid == agent.mounted_vehicle,
+                "condition": v.condition,
+            }
+            for vid in agent.owned_vehicles
+            if (v := world.vehicles.get(vid)) is not None
+        ]
+
     if agent.stolen:
         you["stolen_uncured"] = dict(agent.stolen)
     if agent.current_job:

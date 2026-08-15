@@ -155,7 +155,7 @@ class StandardRules:
         item = _sellable(agent)
         if item in D.SELF_PREP_INPUTS and agent.hours_since_last_meal > 4:
             return False
-        buyer = _nearest(world, agent, "General Store")
+        buyer = _nearest(world, agent, "Refinery")
         if buyer is None or item is None:
             return False
         if not _goto(world, log, agent, buyer.location):

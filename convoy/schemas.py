@@ -43,10 +43,10 @@ from .state import Agent, World
 # was dead on arrival. Food is a tavern trade now.
 _NOT_ACTIONS = frozenset({
     "visible_chat", "accessible_goods", "eat_self_prep",
-    # A helper, not an action -- and its (biz) signature would have been handed
+    # Helpers, not actions -- and their signatures would have been handed
     # (world, log, agent) by the dispatcher. Introspection exposes every public
     # function in the module, so anything that is not a real action must say so.
-    "employee_cap",
+    "employee_cap", "is_staffed",
 })
 
 # Engine-internal: loot transfer is driven by the combat/death path, not chosen.

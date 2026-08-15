@@ -52,7 +52,7 @@ def setup():
     w.vehicles["V1"] = v
     a.owned_vehicles.append("V1")
     biz = Business(
-        id="B0001", type="General Store", name="Store", owner="Government",
+        id="B0001", type="Tavern / Inn", name="Store", owner="Government",
         location="Town",
     )
     biz.inventory = {"Grain": 50}

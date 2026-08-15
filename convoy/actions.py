@@ -200,7 +200,7 @@ def apply_for_job(
     elif biz.is_government:
         wage = E.government_wage(role)
     else:
-        wage = max(biz.retail_prices.get(f"wage:{role}", E.smart_wage(role)), E.wage_floor(role))
+        wage = max(biz.wages.get(role, E.smart_wage(role)), E.wage_floor(role))
 
     biz.roster.append(Employment(agent.id, role, wage, as_researcher))
     agent.current_job = (business_id, role, wage)
@@ -267,6 +267,41 @@ def end_shift(world: World, log: EventLog, agent: Agent) -> Result:
 # TRADING & MARKET
 # ---------------------------------------------------------------------------
 
+def is_staffed(world: World, biz: Business) -> bool:
+    """Is there anybody here to serve you?
+
+    A shop cannot trade with nobody behind the counter (designer decision,
+    2026-08-15). Government businesses are staffed by exemption -- they are the
+    market backstop and must never close. For a player's shop it takes the owner
+    or an employee standing at the business, or an NPC hire, who is always on.
+    """
+    if biz.is_government:
+        return True
+    owner = world.agents.get(biz.owner)
+    if owner and owner.alive and owner.location == biz.location:
+        return True
+    for emp in biz.roster:
+        if emp.is_npc:
+            return True
+        staff = world.agents.get(emp.agent_id)
+        if staff and staff.alive and staff.location == biz.location:
+            return True
+    return False
+
+
+def _uses_as_input(agent: Agent, world: World, item: str) -> bool:
+    """Does this agent own a business that consumes `item`?"""
+    for bid in agent.owned_businesses:
+        biz = world.businesses.get(bid)
+        if not biz or biz.closed:
+            continue
+        for out in biz.spec.outputs:
+            recipe = D.REFINING_RECIPES.get(out) or D.CRAFTING_RECIPES.get(out)
+            if recipe and item in recipe.inputs:
+                return True
+    return False
+
+
 def buy_from_business(
     world: World, log: EventLog, agent: Agent, business_id: str, item: str, qty: int = 1
 ) -> Result:
@@ -277,6 +312,16 @@ def buy_from_business(
         return False, "not at this business"
     if qty <= 0:
         return False, "bad quantity"
+    if not is_staffed(world, biz):
+        return False, f"{biz.name} is unattended -- nobody is there to sell to you"
+    # Feedstock moves between businesses, not over a shop counter. An agent may
+    # still buy it as INPUT for a business they own, which is the only way to
+    # supply a workshop until business-to-business trade exists.
+    if D.is_intermediate(item) and not _uses_as_input(agent, world, item):
+        return False, (
+            f"{item} is an intermediate good, sold to businesses that refine or "
+            f"craft with it, not over the counter. Shops sell finished goods."
+        )
     if not biz.is_government and biz.inventory.get(item, 0) < qty:
         return False, f"{biz.name} has no {item}"
 
@@ -460,7 +505,7 @@ def set_wage(
     floor = E.wage_floor(role)
     if wage < floor:
         return False, f"below the wage floor for {role} ({floor:.2f})"
-    biz.retail_prices[f"wage:{role}"] = wage
+    biz.wages[role] = wage
     return True, f"{role} wage set to {wage:.2f}"
 
 
@@ -883,6 +928,8 @@ def buy_meal(world: World, log: EventLog, agent: Agent, business_id: str | None 
         tavern = taverns[0] if taverns else None
     if not tavern or tavern.closed:
         return False, "no tavern here"
+    if not is_staffed(world, tavern):
+        return False, f"{tavern.name} is unattended -- nobody is serving"
 
     quality_tier = 0 if tavern.is_government else tavern.research.quality_tier
     if meal is not None:

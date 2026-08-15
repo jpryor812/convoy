@@ -57,7 +57,7 @@ def test_hot_goods_are_not_sellable():
     check("but they weigh on you", a.carried_units(), 10)
 
     store = __import__("convoy.state", fromlist=["Business"]).Business(
-        id="B1", type="General Store", name="Store", owner="Government",
+        id="B1", type="Tavern / Inn", name="Store", owner="Government",
         location="Kiln Row",
     )
     w.businesses["B1"] = store
@@ -94,7 +94,7 @@ def test_safehouse_cure_takes_24_hours():
 
     # And now it sells like anything else.
     store = __import__("convoy.state", fromlist=["Business"]).Business(
-        id="B1", type="General Store", name="Store", owner="Government",
+        id="B1", type="Tavern / Inn", name="Store", owner="Government",
         location="Kiln Row",
     )
     w.businesses["B1"] = store

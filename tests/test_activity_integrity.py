@@ -165,6 +165,68 @@ def test_short_waits_are_clamped():
     )
 
 
+def test_setting_a_wage_does_not_poison_the_price_table():
+    """A player business with a wage set must still be observable.
+
+    Wages used to share `retail_prices` with item prices under a "wage:<role>"
+    key. The observation walks that dict expecting tradeable items, so the
+    first agent to stand next to a player-owned business that had set a wage
+    killed the run with KeyError: no base price defined for 'wage:Miner'.
+    """
+    from convoy import observe as O
+    world, log, a = setup()
+    a.location = "Copper Gulch" if __import__("convoy.data", fromlist=["d"]).is_spur("Copper Gulch") else a.location
+    a.denari = 5000.0
+
+    okc, msg = A.start_business(world, log, a, "Mining Operation", seed_cash=100.0)
+    ok("founded a business for the test", okc, msg)
+    if not okc:
+        return
+    biz = world.businesses[a.owned_businesses[-1]]
+
+    ok("wage set", A.set_wage(world, log, a, biz.id, "Miner", 30.0)[0])
+    ok("wage is NOT in retail_prices", not any(k.startswith("wage:") for k in biz.retail_prices),
+       str(biz.retail_prices))
+    ok("wage is in its own dict", biz.wages.get("Miner") == 30.0, str(biz.wages))
+
+    # The call that used to explode.
+    try:
+        O.render(O.observe(world, log, a, "reevaluation"))
+        ok("observing a business with a wage set does not raise", True)
+    except Exception as exc:                                  # noqa: BLE001
+        ok("observing a business with a wage set does not raise", False, f"{type(exc).__name__}: {exc}")
+
+    # And the wage must still actually be paid to a hire.
+    from convoy.state import Agent
+    hire = Agent(id="A9999", name="hire", model="rb", location=biz.location)
+    world.agents[hire.id] = hire
+    okh, msg = A.apply_for_job(world, log, hire, biz.id, "Miner")
+    ok("hired at the set wage", okh and abs(hire.current_job[2] - 30.0) < 1e-6, msg)
+
+
+def test_owned_vehicle_ids_are_observable():
+    """An agent must be able to learn the id of a vehicle it owns.
+
+    `mount` takes a vehicle_id and the tool schema tells the model never to
+    invent an id -- but the observation never carried one, so all 12 mount
+    attempts in the 2026-08-15 run failed with "not your vehicle" and every
+    vehicle bought was dead capital.
+    """
+    from convoy import observe as O
+    world, log, a = setup()
+    a.denari = 5000.0
+    a.location = "Town"
+    A.buy_vehicle(world, log, a, "Camel")
+    vid = a.owned_vehicles[0]
+
+    rendered = O.render(O.observe(world, log, a, "reevaluation"))
+    ok("the vehicle id appears in the observation", vid in rendered, vid)
+
+    okm, msg = A.mount(world, log, a, vid)
+    ok("the agent can mount what it can see", okm, msg)
+    ok("capacity rose with the mount", a.carry_capacity(world) > 5, str(a.carry_capacity(world)))
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in tests:

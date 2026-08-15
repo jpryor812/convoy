@@ -76,8 +76,17 @@ def test_production_chain_input_costs():
         "Iron Dagger": 44, "Iron-Tipped Spear": 44, "Iron Sword": 44,
         "Leather Cap": 9, "Bronze Helm": 41, "Iron Helm": 45,
         "Donkey Cart": 43, "2-Horse Chariot": 17, "4-Horse Chariot": 53,
-        "Camel": 44, "Horse": 59, "Upgraded Tools": 34, "Property Upgrade": 7,
-        "Meal": 3,
+        "Upgraded Tools": 34, "Property Upgrade": 7,
+        # Livestock feed became REFINED (Purified Water + Grain) when the chain
+        # was made farm -> refinery -> store, so these are derived too.
+        "Camel": sum(D.base_price(i) * q for i, q in D.CRAFTING_RECIPES["Camel"].inputs.items()),
+        "Horse": sum(D.base_price(i) * q for i, q in D.CRAFTING_RECIPES["Horse"].inputs.items()),
+        # Meal is NOT from the spreadsheet's table any more: its recipe was
+        # deliberately rebalanced to 3 Grain + 2 Water (2026-08-15), so derive
+        # it rather than freezing a number the designer moves.
+        "Meal": sum(
+            D.base_price(i) * q for i, q in D.CRAFTING_RECIPES["Meal"].inputs.items()
+        ),
     }
     for good, cost in expected.items():
         recipe = D.REFINING_RECIPES.get(good) or D.CRAFTING_RECIPES[good]
@@ -118,7 +127,7 @@ def test_refined_repricing():
 def test_npc_prices():
     """NPC Buy/Sell columns from the Resources tab."""
     for res, buy, sell in [
-        ("Water", 0.4, 1.6), ("Grain", 0.8, 3.2), ("Stone", 1.2, 4.8),
+        ("Dirty Water", 0.4, 1.6), ("Wheat", 0.8, 3.2), ("Stone", 1.2, 4.8),
         ("Copper Ore", 2.4, 9.6), ("Tin Ore", 3.2, 12.8), ("Iron Ore", 4.8, 19.2),
         ("Hardwood", 3.2, 12.8),   # Wool removed 2026-08-12 (no clothing yet)
     ]:
@@ -197,13 +206,18 @@ def test_researcher_rush_funding_tension():
 # ---------------------------------------------------------------------------
 
 def test_sustenance_windows():
-    for meal, window, price in [
-        ("Meal", 12, 10), ("Tier 1 Bread", 15, 15), ("Tier 2 Bread", 18, 22),
-        ("Fine Bread", 21, 30), ("Masterwork Bread", 24, 40),
-        ("Legendary Bread", 30, 55),
+    # WINDOWS are the spreadsheet's, and are the point of the tier ladder.
+    # PRICES moved when bread stopped being made from raw wheat (2026-08-15), so
+    # they are checked as an ordering and against the 75% rule, not frozen.
+    for meal, window in [
+        ("Meal", 12), ("Tier 1 Bread", 15), ("Tier 2 Bread", 18),
+        ("Fine Bread", 21), ("Masterwork Bread", 24), ("Legendary Bread", 30),
     ]:
         check(f"{meal} window", E.meal_window(meal), window)
-        check(f"{meal} price", E.meal_price(meal), price)
+    ladder = ["Meal", "Tier 1 Bread", "Tier 2 Bread", "Fine Bread",
+              "Masterwork Bread", "Legendary Bread"]
+    prices = [E.meal_price(m) for m in ladder]
+    check("a longer window always costs more", prices == sorted(prices), True)
     check("self-prep window", D.SELF_PREP_WINDOW_HOURS, 12)
 
 
@@ -245,10 +259,16 @@ def test_food_variants():
         check(f"laborer T{tier} keeps the base window", lab.window_hours, 12.0)
         check(f"laborer T{tier} heals nothing", lab.heal, 0.0)
 
-    # Every variant still uses exactly Grain + Water.
+    # The invariant is that RESEARCH NEVER CHANGES THE INPUTS -- a Legendary
+    # Bread takes exactly what a plain Meal takes, and the tier buys a longer
+    # window or a bonus, not a different recipe. The quantities themselves are a
+    # balancing lever (3 Grain + 2 Water as of 2026-08-15), so compare every
+    # variant against the base Meal rather than against a frozen literal.
+    base_recipe = D.CRAFTING_RECIPES["Meal"].inputs
+    check("a Meal is made of refined goods", set(base_recipe), {"Grain", "Purified Water"})
     for name, meal in D.MEALS.items():
         recipe = D.CRAFTING_RECIPES[name]
-        check(f"{name} recipe unchanged", recipe.inputs == {"Grain": 1, "Water": 1}, True)
+        check(f"{name} uses the same inputs as a plain Meal", recipe.inputs, base_recipe)
         check(f"{name} priced as listed", recipe.base_price, meal.price)
 
 
@@ -377,15 +397,27 @@ def test_progression_hours():
 # ---------------------------------------------------------------------------
 
 def test_net_worth_definition():
-    """Denari + businesses (startup) + vehicles (base) + property + inventory (base)."""
+    """Denari + businesses (startup) + vehicles (base) + property + inventory (base).
+
+    The business and vehicle terms are derived from the data rather than
+    hardcoded: this test exists to pin the FORMULA, and founding costs are a
+    balancing lever the designer moves (halved 2026-08-15). Hardcoding them
+    made a deliberate rebalance look like a regression.
+    """
+    veh = ["Camel", "Donkey Cart"]
+    veh_value = sum(D.VEHICLES[v].base_price for v in veh)
+    # Businesses arrive pre-valued -- worth is startup cost plus 3x the last
+    # 24 hours of sales, which needs a world. `Business.valuation` owns that;
+    # this pins the sum.
+    biz_values = [150.0, 450.0 + 3 * 20.0]
     nw = E.net_worth(
         denari=100.0,
-        inventory={"Iron": 3, "Grain": 10},          # 3*36 + 10*2 = 128
-        business_types=["Farm", "Refinery"],          # 300 + 900 = 1200
-        vehicle_types=["Camel", "Donkey Cart"],       # 150 + 400 = 550
+        inventory={"Iron": 3, "Wheat": 10},          # 3*36 + 10*2 = 128
+        business_values=biz_values,
+        vehicle_types=veh,
         property_value=500.0,
     )
-    check("net worth", nw, 100 + 128 + 1200 + 550 + 500)
+    check("net worth", nw, 100 + 128 + sum(biz_values) + veh_value + 500)
 
 
 def test_carrying_capacity():
@@ -420,7 +452,7 @@ def test_insurance():
 def test_price_floor():
     """Players cannot retail below 60% of base price."""
     check("Iron Sword floor", E.player_price_floor("Iron Sword"), 390.0)
-    check("Grain floor", E.player_price_floor("Grain"), 1.2)
+    check("Wheat floor", E.player_price_floor("Wheat"), 1.2)
 
 
 def test_travel_times():

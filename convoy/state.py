@@ -116,7 +116,7 @@ class Agent:
         return E.net_worth(
             self.denari,
             self.inventory,
-            [world.businesses[b].type for b in self.owned_businesses],
+            [world.businesses[b].valuation(world) for b in self.owned_businesses],
             [world.vehicles[v].type for v in self.owned_vehicles],
             prop_value,
         )
@@ -168,6 +168,14 @@ class Business:
     roster: list[Employment] = field(default_factory=list)
     inventory: dict[str, int] = field(default_factory=dict)
     retail_prices: dict[str, float] = field(default_factory=dict)
+    # Wages live in their OWN dict. They used to be stuffed into retail_prices
+    # under a "wage:<role>" key, and anything that walked that dict expecting
+    # tradeable items -- the observation's local-price table did -- asked for
+    # the base price of "wage:Miner" and took the whole simulation down with a
+    # KeyError. That could only ever fire once a player owned a business AND
+    # set a wage, so it survived 60 simulated hours before killing the run on
+    # 2026-08-15. One dict, one meaning.
+    wages: dict[str, float] = field(default_factory=dict)     # role -> per hour
     research: ResearchState = field(default_factory=ResearchState)
     active_production: str | None = None      # what this business is currently making
     insolvent_since: float | None = None
@@ -246,6 +254,22 @@ class Business:
         if set_price is None:
             return E.npc_sell_price(item)
         return max(set_price, E.player_price_floor(item))
+
+    def daily_revenue(self, world: "World") -> float:
+        return world.market.revenue_since(self.id, world.sim_time - 24 * 3600.0)
+
+    def valuation(self, world: "World") -> float:
+        """What this business is worth: what it cost, plus what it earns.
+
+        Startup cost alone made a business a static number that never reflected
+        whether it traded; 3x daily sales alone valued a brand-new business at
+        zero, so founding one destroyed net worth on the spot and punished the
+        behaviour the run exists to observe. Both terms together mean a business
+        is worth its purchase price on day one and grows with what it does.
+        """
+        spec = D.BUSINESS_TYPES.get(self.type)
+        base = spec.startup_cost if spec else 0.0
+        return base + D.BUSINESS_REVENUE_MULTIPLE * self.daily_revenue(world)
 
     def buy_price_for(self, item: str) -> float:
         """What this business pays a player selling `item` to it."""
@@ -384,6 +408,21 @@ class Market:
 
     def record(self, t: Transaction) -> None:
         self.transactions.append(t)
+
+    def revenue_since(self, seller: str, since: float) -> float:
+        """What `seller` took in from sales at or after `since`.
+
+        Walks backwards and stops at the cutoff: transactions are appended in
+        time order, and this is called once per business per observation, so a
+        full scan would grow with the length of the run.
+        """
+        total = 0.0
+        for t in reversed(self.transactions):
+            if t.sim_time < since:
+                break
+            if t.seller == seller:
+                total += t.unit_price * t.qty
+        return total
 
     def recent_avg_price(self, item: str, since: float) -> float | None:
         rows = [t for t in self.transactions if t.item == item and t.sim_time >= since]

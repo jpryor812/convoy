@@ -112,7 +112,7 @@ def test_player_prices_appear_only_when_they_deviate():
 
     w, log, a = setup()
     rival = Business(
-        id="B0002", type="General Store", name="Rival Store", owner="A0002",
+        id="B0002", type="Tavern / Inn", name="Rival Store", owner="A0002",
         location="Kiln Row",
     )
     w.businesses[rival.id] = rival

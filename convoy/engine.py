@@ -390,9 +390,9 @@ class Engine:
         return on_hand + buy
 
     def _base_rate_for(self, output: str) -> float:
-        if output in D.RESOURCES:
-            return D.RESOURCES[output].base_rate_hr
-        return D.CRAFT_BASE_RATE_HR
+        # One rule for everything that is MADE: time per unit scales with value.
+        # Extraction keeps the spreadsheet's own rates -- see production_rate_hr.
+        return D.production_rate_hr(output)
 
     def _pay_wages(self, hours: float) -> None:
         w = self.world

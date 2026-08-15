@@ -108,8 +108,8 @@ def test_tools_speed_up_extraction_only():
             eng.tick(60.0)
         return biz.inventory.get(product, 0) + biz.production_buffer
 
-    farm_base = output("Farm", "Grain", False)
-    farm_tools = output("Farm", "Grain", True)
+    farm_base = output("Farm", "Wheat", False)
+    farm_tools = output("Farm", "Wheat", True)
     check("farm base rate", round(farm_base, 2), 72.0)
     check("tools give +25% on a farm", round(farm_tools, 2), round(72.0 * 1.25, 2))
 

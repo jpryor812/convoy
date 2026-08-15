@@ -42,7 +42,7 @@ def measure_output(headcount: int, hours: float = 1.0) -> float:
 
     biz = Business(
         id="B0001", type="Farm", name="Load Test Farm", owner="A0001",
-        location="Town", cash=1e9, active_production="Grain",
+        location="Town", cash=1e9, active_production="Wheat",
     )
     world.businesses[biz.id] = biz
 
@@ -63,7 +63,7 @@ def measure_output(headcount: int, hours: float = 1.0) -> float:
     for _ in range(ticks):
         engine.tick(60.0)
 
-    return biz.inventory.get("Grain", 0) + biz.production_buffer
+    return biz.inventory.get("Wheat", 0) + biz.production_buffer
 
 
 def check(label: str, actual, expected, tol: float) -> None:
@@ -73,7 +73,7 @@ def check(label: str, actual, expected, tol: float) -> None:
 
 def test_live_output_matches_table():
     """Measured engine output vs the Businesses tab multiplier, across the curve."""
-    base = D.RESOURCES["Grain"].base_rate_hr      # 72/hr for a single Novice worker
+    base = D.RESOURCES["Wheat"].base_rate_hr      # 72/hr for a single Novice worker
     print(f"{'n':>4} {'measured/hr':>12} {'expected/hr':>12} {'multiplier':>11} {'table':>8}")
     for n in (1, 2, 3, 4, 5, 10, 15, 19, 20, 25, 30):
         measured = measure_output(n)
@@ -110,7 +110,7 @@ def test_sustenance_penalty_applies_live():
     log = EventLog(None, echo_min=99)
     biz = Business(
         id="B0001", type="Farm", name="Hungry Farm", owner="A0001",
-        location="Town", cash=1e9, active_production="Grain",
+        location="Town", cash=1e9, active_production="Wheat",
     )
     world.businesses[biz.id] = biz
     agent = Agent(id="A0001", name="W", model="rule-based", location="Town")
@@ -127,7 +127,7 @@ def test_sustenance_penalty_applies_live():
     for _ in range(60):
         engine.tick(60.0)
 
-    produced = biz.inventory.get("Grain", 0) + biz.production_buffer
+    produced = biz.inventory.get("Wheat", 0) + biz.production_buffer
     check("hungry worker produces 90%", produced, 72 * 0.90, tol=0.05)
     print(f"  hungry worker: {produced:.2f}/hr vs 72.00 baseline "
           f"({produced / 72:.1%})")
@@ -194,7 +194,7 @@ def test_research_efficiency_changes_output():
         log = EventLog(None, echo_min=99)
         biz = Business(
             id="B0001", type="Farm", name="F", owner="A0001", location="Town",
-            cash=1e9, active_production="Grain",
+            cash=1e9, active_production="Wheat",
         )
         biz.research.efficiency_tier = efficiency_tier
         world.businesses[biz.id] = biz
@@ -206,7 +206,7 @@ def test_research_efficiency_changes_output():
         eng = Engine(world, log, NullPolicy(), EngineConfig(speed=1e9))
         for _ in range(60):
             eng.tick(60.0)
-        return biz.inventory.get("Grain", 0) + biz.production_buffer
+        return biz.inventory.get("Wheat", 0) + biz.production_buffer
 
     base = farm_output(0)
     check("no research == base rate", base, 72.0, tol=0.05)

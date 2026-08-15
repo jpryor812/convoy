@@ -270,15 +270,20 @@ def inventory_value(inventory: dict[str, int]) -> float:
 def net_worth(
     denari: float,
     inventory: dict[str, int],
-    business_types: list[str],
+    business_values: list[float],
     vehicle_types: list[str],
     property_value: float = 0.0,
 ) -> float:
-    """Denari + businesses (startup cost) + vehicles (base price)
-    + property (purchase + upgrades) + inventory (base price)."""
+    """Denari + businesses + vehicles (base price)
+    + property (purchase + upgrades) + inventory (base price).
+
+    Businesses arrive already valued, because their worth depends on trade over
+    the last 24 hours and this function is deliberately world-free. See
+    `Business.valuation`.
+    """
     return (
         denari
-        + sum(D.BUSINESS_TYPES[b].startup_cost for b in business_types)
+        + sum(business_values)
         + sum(D.VEHICLES[v].base_price for v in vehicle_types)
         + property_value
         + inventory_value(inventory)

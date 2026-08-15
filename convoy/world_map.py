@@ -270,7 +270,6 @@ GOVERNMENT_SITES: dict[str, str] = {
     "Refinery": "Refinery Row",
     "Mining Operation": "Copper Gulch",
     "Farm": "Millrace Farms",
-    "General Store": "Town",
     "Home Improvement Store": "Town",
     "Mining/Farming Equipment Store": "Town",
     "Weaponsmith / Armory": "Town",

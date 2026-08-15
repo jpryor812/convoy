@@ -58,6 +58,10 @@ STORE_MAX_EMPLOYEES = 2         # Businesses tab, store-type businesses only
 # the government is a strategy that can actually be tried.
 GOVERNMENT_MAX_EMPLOYEES = 2
 
+# A business is worth its startup cost plus this multiple of its last 24 hours
+# of sales (designer decision, 2026-08-15).
+BUSINESS_REVENUE_MULTIPLE = 3.0
+
 BANKRUPTCY_GRACE_HOURS = 24.0
 RP_PER_RESEARCHER_HOUR = 8.0
 
@@ -201,7 +205,7 @@ CHAT_VISIBLE_DEFAULT = 30       # messages shown to an agent per decision
 # Quality research unlocks longer-window breads). Rest is NOT a separate mechanic
 # -- Sustenance is the only survival system.
 
-SELF_PREP_INPUTS = {"Grain": 1, "Water": 1}
+SELF_PREP_INPUTS = {"Grain": 1, "Purified Water": 1}   # unused: eat_self_prep is retired
 SELF_PREP_WINDOW_HOURS = 12.0
 
 
@@ -220,13 +224,17 @@ class Meal:
 
 
 # The Sustenance tab's duration ladder, verbatim.
+# Prices raised across the ladder (2026-08-15). Bread is no longer milled from
+# 3 denari of raw wheat and water: it takes 2 Grain + 1 Purified Water, both
+# REFINED, worth 10 together. The 75% rule therefore puts a floor of 17.5 on
+# every bread, so the whole line moves up and the tier spacing is preserved.
 _DURATION_LINE = [
-    ("Meal", 12.0, 10.0, 0),
-    ("Tier 1 Bread", 15.0, 15.0, 1),
-    ("Tier 2 Bread", 18.0, 22.0, 2),
-    ("Fine Bread", 21.0, 30.0, 3),
-    ("Masterwork Bread", 24.0, 40.0, 4),
-    ("Legendary Bread", 30.0, 55.0, 5),
+    ("Meal", 12.0, 18.0, 0),
+    ("Tier 1 Bread", 15.0, 24.0, 1),
+    ("Tier 2 Bread", 18.0, 32.0, 2),
+    ("Fine Bread", 21.0, 44.0, 3),
+    ("Masterwork Bread", 24.0, 58.0, 4),
+    ("Legendary Bread", 30.0, 78.0, 5),
 ]
 
 # DESIGNER ADDITION (2026-08-12): researchable food variants.
@@ -249,8 +257,8 @@ for _name, _win, _price, _tier in _DURATION_LINE:
 
 # Tier -> (quality %, price). The percentages mirror the Research tab's tier pool
 # (5/10/15/20/25%); prices match the duration bread of the same tier.
-_VARIANT_TIERS = [(1, 0.05, 15.0), (2, 0.10, 22.0), (3, 0.15, 30.0),
-                  (4, 0.20, 40.0), (5, 0.25, 55.0)]
+_VARIANT_TIERS = [(1, 0.05, 24.0), (2, 0.10, 32.0), (3, 0.15, 44.0),
+                  (4, 0.20, 58.0), (5, 0.25, 78.0)]
 _MAX_HP = 100.0
 
 for _tier, _pct, _price in _VARIANT_TIERS:
@@ -296,8 +304,12 @@ class Resource:
 RESOURCES: dict[str, Resource] = {
     r.name: r
     for r in [
-        Resource("Water", "Common", "Farm", 1, 72),
-        Resource("Grain", "Common", "Farm", 2, 72),
+        # EVERY chain runs farm/mine -> refinery -> store -> person (designer
+        # decision, 2026-08-15). A farm therefore grows WHEAT and draws DIRTY
+        # WATER; neither is edible. A refinery mills the one into Grain and
+        # purifies the other, and only then can a tavern bake with them.
+        Resource("Dirty Water", "Common", "Farm", 1, 72),
+        Resource("Wheat", "Common", "Farm", 2, 72),
         Resource("Wood", "Common", "Mining Operation", 2, 72),
         Resource("Stone", "Common", "Mining Operation", 3, 72),
         Resource("Clay", "Common", "Mining Operation", 2, 72),
@@ -311,6 +323,8 @@ RESOURCES: dict[str, Resource] = {
         # none is needed for this build -- so it was a farmable, sellable good
         # that nothing consumed. Restore this line when clothing is designed.
         # Resource("Wool", "Common", "Farm", 5, 72),
+        Resource("Purified Water", "Common", "Refinery", 2, 15, refined=True),
+        Resource("Grain", "Common", "Refinery", 4, 15, refined=True),
         Resource("Charcoal", "Uncommon", "Refinery", 4, 15, refined=True),
         Resource("Tanned Leather", "Uncommon", "Refinery", 9, 15, refined=True),
         Resource("Bronze", "Uncommon", "Refinery", 32, 15, refined=True),
@@ -335,8 +349,10 @@ class Recipe:
 
 
 REFINING_RECIPES: dict[str, Recipe] = {
+    "Purified Water": Recipe("Purified Water", {"Dirty Water": 1}, "Refinery", 2),
+    "Grain": Recipe("Grain", {"Wheat": 1}, "Refinery", 4),
     "Charcoal": Recipe("Charcoal", {"Wood": 1}, "Refinery", 4),
-    "Tanned Leather": Recipe("Tanned Leather", {"Hide": 1, "Water": 1}, "Refinery", 9),
+    "Tanned Leather": Recipe("Tanned Leather", {"Hide": 1, "Dirty Water": 1}, "Refinery", 9),
     "Bronze": Recipe("Bronze", {"Copper Ore": 1, "Tin Ore": 1, "Charcoal": 1}, "Refinery", 32),
     "Iron": Recipe("Iron", {"Iron Ore": 1, "Charcoal": 1}, "Refinery", 36),
 }
@@ -368,15 +384,21 @@ CRAFTING_RECIPES: dict[str, Recipe] = {
         Recipe("Donkey Cart", {"Wood": 1, "Bronze": 1, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 400),
         Recipe("2-Horse Chariot", {"Hardwood": 1, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 700),
         Recipe("4-Horse Chariot", {"Iron": 1, "Hardwood": 1, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 1600),
-        Recipe("Camel", {"Water": 15, "Grain": 10, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 150),
-        Recipe("Horse", {"Water": 20, "Grain": 15, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 200),
+        Recipe("Camel", {"Purified Water": 15, "Grain": 10, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 150),
+        Recipe("Horse", {"Purified Water": 20, "Grain": 15, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 200),
         # Other stores
         Recipe("Upgraded Tools", {"Wood": 1, "Bronze": 1}, "Mining/Farming Equipment Store", 130),
         Recipe("Property Upgrade", {"Stone": 1, "Clay": 1, "Wood": 1}, "Home Improvement Store", 50),
-        # Tavern food. Every tier uses the same Grain + Water recipe -- Research
-        # changes the Sustenance window and price, never the inputs (Research tab).
+        # Tavern food. Every tier uses the same recipe -- Research changes the
+        # Sustenance window and price, never the inputs (Research tab).
+        #
+        # 3 Grain + 2 Water, up from 1 + 1 (designer decision, 2026-08-15). At
+        # one of each, a Meal turned 3 denari of input into a base price of 10
+        # and, being the fastest thing in the game to make, earned 23/hr against
+        # 5-12/hr for the refining chain -- the most profitable good in the world
+        # was bread. The heavier recipe also gives farms a real customer.
         *[
-            Recipe(_m.name, {"Grain": 1, "Water": 1}, "Tavern / Inn", _m.price)
+            Recipe(_m.name, {"Grain": 2, "Purified Water": 1}, "Tavern / Inn", _m.price)
             for _m in MEALS.values()
         ],
     ]
@@ -385,7 +407,57 @@ CRAFTING_RECIPES: dict[str, Recipe] = {
 # Crafting throughput. The spreadsheet gives per-hour rates only for extraction and
 # refining; final assembly has no stated rate. Stated assumption, flagged for review:
 # a final good takes the same worker-hour budget as one refined unit (15/hr base).
-CRAFT_BASE_RATE_HR = 15.0
+CRAFT_BASE_RATE_HR = 15.0            # superseded by the curve below; kept greppable
+
+# PRODUCTION TIME SCALES WITH VALUE (designer decision, 2026-08-15).
+#
+# A flat 15 units/hour for everything meant a Blacksmith produced 15 Iron Swords
+# an hour -- 16,575 denari of output per worker-hour against a 24 denari wage,
+# roughly 700x anything else in the economy. One Weaponsmith out-earned the rest
+# of the world combined.
+#
+# Time per unit is now a power law on base price, calibrated to two anchors the
+# designer set: a Meal (base 10) takes 15 minutes, an Iron Sword (base 650)
+# takes 12 hours. That gives an exponent of ~0.93 -- very nearly proportional to
+# value, which is what flattens profit-per-hour across the whole chain.
+#
+# EXTRACTION IS DELIBERATELY EXCLUDED. Raw resources have no inputs, so under
+# this curve they earn less per hour than the state pays for them and a mine
+# could not survive on state sales alone. Extraction moves onto the curve in the
+# same change as business-to-business trade, not before -- otherwise nothing can
+# bootstrap.
+CRAFT_TIME_COEFFICIENT = 0.0296
+CRAFT_TIME_EXPONENT = 0.927
+
+
+# WHO A GOOD IS FOR (designer decision, 2026-08-15).
+#
+# INTERMEDIATE goods -- ore, grain, hide, bronze, iron -- are feedstock. They
+# move business to business: a mine sells ore to a refinery, a refinery sells
+# metal to a weaponsmith. A person has no use for a lump of Tin Ore, and letting
+# them buy one is why agents spent the last run purchasing Grain they could not
+# cook and selling it back at a 76% loss.
+#
+# FINAL goods -- weapons, armour, meals, vehicles, tools, property upgrades --
+# are what a person walks into a shop and buys.
+INTERMEDIATE_GOODS: frozenset[str] = frozenset(RAW_RESOURCES) | frozenset(REFINED_RESOURCES)
+# FINAL_GOODS is derived once ALL_ITEMS exists, further down this file.
+
+
+def is_intermediate(item: str) -> bool:
+    return item in INTERMEDIATE_GOODS
+
+
+def production_hours(item: str) -> float:
+    """Worker-hours to make one unit."""
+    return CRAFT_TIME_COEFFICIENT * base_price(item) ** CRAFT_TIME_EXPONENT
+
+
+def production_rate_hr(item: str) -> float:
+    """Units one Novice worker makes per hour, before skill and crowding."""
+    if item in RAW_RESOURCES:
+        return RESOURCES[item].base_rate_hr        # extraction, unchanged
+    return 1.0 / production_hours(item)
 
 # ---------------------------------------------------------------------------
 # Weapons / Armor / Vehicles tabs
@@ -490,44 +562,54 @@ class BusinessType:
     outputs: tuple[str, ...] = ()
 
 
+# Founding costs HALVED from the spreadsheet's figures (designer decision,
+# 2026-08-15). In the first 72-hour run only one agent in twelve managed to
+# found anything, on its fifth attempt at simulated hour 60 of 72 -- the
+# entry price was absorbing the whole run. Halving it is meant to move
+# ownership into the first day so the run can observe what owners DO.
 BUSINESS_TYPES: dict[str, BusinessType] = {
     b.name: b
     for b in [
         BusinessType(
-            "Mining Operation", 350, None, True, True, ("Laborer", "Miner"),
+            "Mining Operation", 175, None, True, True, ("Laborer", "Miner"),
             ("Wood", "Stone", "Clay", "Copper Ore", "Tin Ore", "Iron Ore", "Hardwood"),
         ),
         BusinessType(
-            "Farm", 300, None, True, True, ("Farmhand", "Laborer"),
-            ("Water", "Grain", "Hide"),        # Wool removed with the resource
+            "Farm", 150, None, True, True, ("Farmhand", "Laborer"),
+            ("Dirty Water", "Wheat", "Hide"),  # Wool removed with the resource
         ),
         BusinessType(
-            "Refinery", 900, None, True, True, ("Refinery Worker",),
-            ("Charcoal", "Tanned Leather", "Bronze", "Iron"),
+            "Refinery", 450, None, True, True, ("Refinery Worker",),
+            ("Purified Water", "Grain", "Charcoal", "Tanned Leather", "Bronze", "Iron"),
         ),
-        BusinessType("General Store", 500, STORE_MAX_EMPLOYEES, True, True, ("Store Clerk",)),
+        # The General Store is REMOVED (designer decision, 2026-08-15). It
+        # produced nothing and therefore retailed everything -- it is how agents
+        # were buying ore and wheat over a counter. Every finished good now has
+        # a shop that actually makes it: meals at a Tavern, weapons at the
+        # Weaponsmith, vehicles at the Stable, tools at the Equipment Store,
+        # upgrades at Home Improvement.
         BusinessType(
-            "Home Improvement Store", 500, STORE_MAX_EMPLOYEES, True, True, ("Store Clerk",),
+            "Home Improvement Store", 250, STORE_MAX_EMPLOYEES, True, True, ("Store Clerk",),
             ("Property Upgrade",),
         ),
         BusinessType(
-            "Mining/Farming Equipment Store", 550, STORE_MAX_EMPLOYEES, True, True, ("Store Clerk",),
+            "Mining/Farming Equipment Store", 275, STORE_MAX_EMPLOYEES, True, True, ("Store Clerk",),
             ("Upgraded Tools",),
         ),
         BusinessType(
-            "Weaponsmith / Armory", 700, STORE_MAX_EMPLOYEES, True, True, ("Blacksmith",),
+            "Weaponsmith / Armory", 350, STORE_MAX_EMPLOYEES, True, True, ("Blacksmith",),
             tuple(n for n, r in CRAFTING_RECIPES.items() if r.produced_at == "Weaponsmith / Armory"),
         ),
         BusinessType(
-            "Vehicle Dealer / Stable", 600, STORE_MAX_EMPLOYEES, True, True, ("Stablehand", "Store Clerk"),
+            "Vehicle Dealer / Stable", 300, STORE_MAX_EMPLOYEES, True, True, ("Stablehand", "Store Clerk"),
             tuple(n for n, r in CRAFTING_RECIPES.items() if r.produced_at == "Vehicle Dealer / Stable"),
         ),
         BusinessType(
-            "Tavern / Inn", 400, STORE_MAX_EMPLOYEES, True, True, ("Store Clerk",),
+            "Tavern / Inn", 200, STORE_MAX_EMPLOYEES, True, True, ("Store Clerk",),
             tuple(MEALS),
         ),
-        BusinessType("Private Security Contractor", 1000, None, True, False, ()),
-        BusinessType("Insurance Brokerage", 1500, 0, False, False, ()),
+        BusinessType("Private Security Contractor", 500, None, True, False, ()),
+        BusinessType("Insurance Brokerage", 750, 0, False, False, ()),
     ]
 }
 
@@ -588,7 +670,7 @@ for _res in ("Wood", "Stone", "Clay"):
     ROLE_FOR_OUTPUT[_res] = "Laborer"
 for _res in ("Copper Ore", "Tin Ore", "Iron Ore", "Hardwood"):
     ROLE_FOR_OUTPUT[_res] = "Miner"
-for _res in ("Water", "Grain", "Hide", "Wool"):
+for _res in ("Dirty Water", "Wheat", "Hide", "Wool"):
     ROLE_FOR_OUTPUT[_res] = "Farmhand"
 for _res in REFINED_RESOURCES:
     ROLE_FOR_OUTPUT[_res] = "Refinery Worker"
@@ -623,9 +705,8 @@ RESEARCH_TIERS: list[ResearchTier] = [
 # Researcher material burn, per researcher-hour, on top of wages.
 RESEARCH_MATERIAL: dict[str, tuple[str, float]] = {
     "Mining Operation": ("Wood", 0.5),
-    "Farm": ("Grain", 0.5),
+    "Farm": ("Wheat", 0.5),
     "Refinery": ("Charcoal", 0.5),
-    "General Store": ("Wood", 0.3),
     "Home Improvement Store": ("Stone", 0.5),
     "Mining/Farming Equipment Store": ("Wood", 0.5),
     "Weaponsmith / Armory": ("Bronze", 0.3),
@@ -841,3 +922,7 @@ def base_price(item: str) -> float:
 ALL_ITEMS = sorted(
     set(RESOURCES) | set(WEAPONS) | set(ARMOR) | set(VEHICLES) | set(CRAFTING_RECIPES)
 )
+
+# Everything that is not feedstock is something a person buys. Derived here
+# rather than beside INTERMEDIATE_GOODS because ALL_ITEMS only exists by now.
+FINAL_GOODS: frozenset[str] = frozenset(ALL_ITEMS) - INTERMEDIATE_GOODS
