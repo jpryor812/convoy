@@ -69,25 +69,29 @@ def test_production_chain_input_costs():
     reflect the 2026-08-11 repricing (Tanned Leather 7->9, Bronze 18->32,
     Iron 22->36), which cascades into every recipe consuming them.
     """
+    # Refinery steps are still the spreadsheet's. Workshop recipes are NOT: every
+    # one of them takes refined feedstock now (Lumber, Seasoned Hardwood, Cut
+    # Stone, Fired Brick) instead of raw timber and rock, so their input costs
+    # are derived. What is still asserted for them is the 75% margin rule, in
+    # test_every_good_clears_75pct_margin.
+    # Refinery steps and armour still match the workbook exactly.
     expected = {
         "Charcoal": 2, "Tanned Leather": 5, "Bronze": 18, "Iron": 16,
-        "Sling": 11, "Wooden Spear": 2, "Bronze Dagger": 34,
-        "Bronze-Tipped Spear": 34, "Bronze Sword": 34, "Bow": 17,
-        "Iron Dagger": 44, "Iron-Tipped Spear": 44, "Iron Sword": 44,
         "Leather Cap": 9, "Bronze Helm": 41, "Iron Helm": 45,
-        "Donkey Cart": 43, "2-Horse Chariot": 17, "4-Horse Chariot": 53,
-        "Upgraded Tools": 34, "Property Upgrade": 7,
-        # Livestock feed became REFINED (Purified Water + Grain) when the chain
-        # was made farm -> refinery -> store, so these are derived too.
-        "Camel": sum(D.base_price(i) * q for i, q in D.CRAFTING_RECIPES["Camel"].inputs.items()),
-        "Horse": sum(D.base_price(i) * q for i, q in D.CRAFTING_RECIPES["Horse"].inputs.items()),
-        # Meal is NOT from the spreadsheet's table any more: its recipe was
-        # deliberately rebalanced to 3 Grain + 2 Water (2026-08-15), so derive
-        # it rather than freezing a number the designer moves.
-        "Meal": sum(
-            D.base_price(i) * q for i, q in D.CRAFTING_RECIPES["Meal"].inputs.items()
-        ),
     }
+    # Everything made in a WORKSHOP is derived, not frozen. Their inputs are a
+    # design lever the designer has moved twice: bread and livestock feed became
+    # refined (Grain, Purified Water), and every timber, stone and clay input
+    # became refined (Lumber, Seasoned Hardwood, Cut Stone, Fired Brick) so that
+    # nothing reaches a shop without passing a refinery. The rule these must
+    # still obey is the 75% margin, asserted in test_every_good_clears_75pct_margin.
+    for good in ("Sling", "Wooden Spear", "Bronze Dagger", "Bronze-Tipped Spear",
+                 "Bronze Sword", "Bow", "Iron Dagger", "Iron-Tipped Spear",
+                 "Iron Sword", "Donkey Cart", "2-Horse Chariot", "4-Horse Chariot",
+                 "Camel", "Horse", "Upgraded Tools", "Property Upgrade", "Meal"):
+        expected[good] = sum(
+            D.base_price(i) * q for i, q in D.CRAFTING_RECIPES[good].inputs.items()
+        )
     for good, cost in expected.items():
         recipe = D.REFINING_RECIPES.get(good) or D.CRAFTING_RECIPES[good]
         actual = sum(D.base_price(i) * q for i, q in recipe.inputs.items())

@@ -67,6 +67,10 @@ class Agent:
     skill_hours: dict[str, float] = field(
         default_factory=lambda: {r: 0.0 for r in D.WAGE_ROLES}
     )
+    # A consignment this agent is hauling for a business, and its size. Goods
+    # under carriage never enter `inventory`, so they cannot be sold en route.
+    hauling: str | None = None
+    hauling_units: int = 0
     bounty_total: float = 0.0
     crimes: list[dict[str, Any]] = field(default_factory=list)
     guild: str | None = None
@@ -93,8 +97,15 @@ class Agent:
         return D.ON_FOOT_CAPACITY
 
     def carried_units(self) -> int:
-        """Everything on your person, hot goods included -- loot takes up room."""
-        return sum(self.inventory.values()) + sum(self.stolen.values())
+        """Everything on your person, hot goods included -- loot takes up room.
+
+        A consignment being hauled for someone else counts too, and is held as a
+        plain unit count rather than as inventory: goods under carriage are not
+        yours, so no sell path can reach them. Storing the count here rather
+        than looking it up in the world means every capacity check in the
+        codebase accounts for a load without knowing consignments exist.
+        """
+        return sum(self.inventory.values()) + sum(self.stolen.values()) + self.hauling_units
 
     def add_stolen(self, item: str, qty: int = 1) -> None:
         self.stolen[item] = self.stolen.get(item, 0) + qty
@@ -403,6 +414,35 @@ class Transaction:
 
 
 @dataclass
+class Consignment:
+    """Goods a business bought from another business, and the job of moving them.
+
+    The purchase and the haulage are one object on purpose. A store buys from a
+    refinery and the goods are immediately the store's -- paid for, out of the
+    seller's hands, and sitting at the seller's site waiting for someone to
+    carry them. The seller is finished and carries no delivery risk; if nobody
+    ever hauls it, that is the buyer's loss.
+
+    Money moves once, at order time: the buyer's business pays the seller for
+    the goods AND escrows the courier's fee, so a courier who completes the job
+    is always paid.
+    """
+
+    id: str
+    seller_business: str
+    buyer_business: str
+    item: str
+    qty: int
+    goods_price: float          # already paid to the seller
+    courier_fee: float          # escrowed by the buyer, released on delivery
+    origin: str
+    destination: str
+    created_at: float
+    status: str = "awaiting_courier"   # awaiting_courier|claimed|delivered|cancelled
+    courier: str | None = None
+
+
+@dataclass
 class Market:
     transactions: list[Transaction] = field(default_factory=list)
 
@@ -616,6 +656,7 @@ class World:
     government: Government = field(default_factory=Government)
     chat: list[ChatMessage] = field(default_factory=list)
     trade_offers: dict[str, "TradeOffer"] = field(default_factory=dict)
+    consignments: dict[str, "Consignment"] = field(default_factory=dict)
     # Items and Denari dropped on death, lootable by anyone at that location.
     ground_loot: dict[str, dict] = field(default_factory=dict)
     next_property_tax_at: float = D.PROPERTY_TAX_PERIOD_HOURS * 3600.0

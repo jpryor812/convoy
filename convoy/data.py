@@ -323,6 +323,13 @@ RESOURCES: dict[str, Resource] = {
         # none is needed for this build -- so it was a farmable, sellable good
         # that nothing consumed. Restore this line when clothing is designed.
         # Resource("Wool", "Common", "Farm", 5, 72),
+        # Timber, stone and clay used to go straight from a mine into a shop,
+        # which broke the one-way chain (designer decision, 2026-08-15). A
+        # refinery now stands between them and every workshop.
+        Resource("Lumber", "Common", "Refinery", 4, 15, refined=True),
+        Resource("Seasoned Hardwood", "Uncommon", "Refinery", 16, 15, refined=True),
+        Resource("Cut Stone", "Common", "Refinery", 6, 15, refined=True),
+        Resource("Fired Brick", "Common", "Refinery", 4, 15, refined=True),
         Resource("Purified Water", "Common", "Refinery", 2, 15, refined=True),
         Resource("Grain", "Common", "Refinery", 4, 15, refined=True),
         Resource("Charcoal", "Uncommon", "Refinery", 4, 15, refined=True),
@@ -349,6 +356,10 @@ class Recipe:
 
 
 REFINING_RECIPES: dict[str, Recipe] = {
+    "Lumber": Recipe("Lumber", {"Wood": 1}, "Refinery", 4),
+    "Seasoned Hardwood": Recipe("Seasoned Hardwood", {"Hardwood": 1}, "Refinery", 16),
+    "Cut Stone": Recipe("Cut Stone", {"Stone": 1}, "Refinery", 6),
+    "Fired Brick": Recipe("Fired Brick", {"Clay": 1}, "Refinery", 4),
     "Purified Water": Recipe("Purified Water", {"Dirty Water": 1}, "Refinery", 2),
     "Grain": Recipe("Grain", {"Wheat": 1}, "Refinery", 4),
     "Charcoal": Recipe("Charcoal", {"Wood": 1}, "Refinery", 4),
@@ -361,15 +372,15 @@ CRAFTING_RECIPES: dict[str, Recipe] = {
     r.output: r
     for r in [
         # Weapons -- Weaponsmith / Armory
-        Recipe("Sling", {"Tanned Leather": 1, "Wood": 1}, "Weaponsmith / Armory", 50),
-        Recipe("Wooden Spear", {"Wood": 1}, "Weaponsmith / Armory", 60),
-        Recipe("Bronze Dagger", {"Bronze": 1, "Wood": 1}, "Weaponsmith / Armory", 120),
-        Recipe("Bronze-Tipped Spear", {"Bronze": 1, "Wood": 1}, "Weaponsmith / Armory", 220),
-        Recipe("Bronze Sword", {"Bronze": 1, "Wood": 1}, "Weaponsmith / Armory", 250),
-        Recipe("Bow", {"Hardwood": 1, "Tanned Leather": 1}, "Weaponsmith / Armory", 300),
-        Recipe("Iron Dagger", {"Iron": 1, "Hardwood": 1}, "Weaponsmith / Armory", 350),
-        Recipe("Iron-Tipped Spear", {"Iron": 1, "Hardwood": 1}, "Weaponsmith / Armory", 550),
-        Recipe("Iron Sword", {"Iron": 1, "Hardwood": 1}, "Weaponsmith / Armory", 650),
+        Recipe("Sling", {"Tanned Leather": 1, "Lumber": 1}, "Weaponsmith / Armory", 50),
+        Recipe("Wooden Spear", {"Lumber": 1}, "Weaponsmith / Armory", 60),
+        Recipe("Bronze Dagger", {"Bronze": 1, "Lumber": 1}, "Weaponsmith / Armory", 120),
+        Recipe("Bronze-Tipped Spear", {"Bronze": 1, "Lumber": 1}, "Weaponsmith / Armory", 220),
+        Recipe("Bronze Sword", {"Bronze": 1, "Lumber": 1}, "Weaponsmith / Armory", 250),
+        Recipe("Bow", {"Seasoned Hardwood": 1, "Tanned Leather": 1}, "Weaponsmith / Armory", 300),
+        Recipe("Iron Dagger", {"Iron": 1, "Seasoned Hardwood": 1}, "Weaponsmith / Armory", 350),
+        Recipe("Iron-Tipped Spear", {"Iron": 1, "Seasoned Hardwood": 1}, "Weaponsmith / Armory", 550),
+        Recipe("Iron Sword", {"Iron": 1, "Seasoned Hardwood": 1}, "Weaponsmith / Armory", 650),
         # Armor -- Weaponsmith / Armory
         Recipe("Leather Cap", {"Tanned Leather": 1}, "Weaponsmith / Armory", 80),
         Recipe("Leather Vest", {"Tanned Leather": 1}, "Weaponsmith / Armory", 150),
@@ -381,14 +392,14 @@ CRAFTING_RECIPES: dict[str, Recipe] = {
         Recipe("Iron Cuirass", {"Iron": 1, "Tanned Leather": 1}, "Weaponsmith / Armory", 900),
         Recipe("Iron Greaves", {"Iron": 1, "Tanned Leather": 1}, "Weaponsmith / Armory", 500),
         # Vehicles -- Vehicle Dealer / Stable
-        Recipe("Donkey Cart", {"Wood": 1, "Bronze": 1, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 400),
-        Recipe("2-Horse Chariot", {"Hardwood": 1, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 700),
-        Recipe("4-Horse Chariot", {"Iron": 1, "Hardwood": 1, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 1600),
+        Recipe("Donkey Cart", {"Lumber": 1, "Bronze": 1, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 400),
+        Recipe("2-Horse Chariot", {"Seasoned Hardwood": 1, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 700),
+        Recipe("4-Horse Chariot", {"Iron": 1, "Seasoned Hardwood": 1, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 1600),
         Recipe("Camel", {"Purified Water": 15, "Grain": 10, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 150),
         Recipe("Horse", {"Purified Water": 20, "Grain": 15, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 200),
         # Other stores
-        Recipe("Upgraded Tools", {"Wood": 1, "Bronze": 1}, "Mining/Farming Equipment Store", 130),
-        Recipe("Property Upgrade", {"Stone": 1, "Clay": 1, "Wood": 1}, "Home Improvement Store", 50),
+        Recipe("Upgraded Tools", {"Lumber": 1, "Bronze": 1}, "Mining/Farming Equipment Store", 130),
+        Recipe("Property Upgrade", {"Cut Stone": 1, "Fired Brick": 1, "Lumber": 1}, "Home Improvement Store", 50),
         # Tavern food. Every tier uses the same recipe -- Research changes the
         # Sustenance window and price, never the inputs (Research tab).
         #
@@ -580,7 +591,8 @@ BUSINESS_TYPES: dict[str, BusinessType] = {
         ),
         BusinessType(
             "Refinery", 450, None, True, True, ("Refinery Worker",),
-            ("Purified Water", "Grain", "Charcoal", "Tanned Leather", "Bronze", "Iron"),
+            ("Purified Water", "Grain", "Lumber", "Seasoned Hardwood", "Cut Stone",
+             "Fired Brick", "Charcoal", "Tanned Leather", "Bronze", "Iron"),
         ),
         # The General Store is REMOVED (designer decision, 2026-08-15). It
         # produced nothing and therefore retailed everything -- it is how agents
@@ -804,14 +816,14 @@ GARAGE_TIERS = {1: (200.0, 1), 2: (450.0, 2), 3: (800.0, 3)}
 STORAGE_TIERS = {1: (150.0, 70), 2: (350.0, 170), 3: (700.0, 370)}
 
 GARAGE_TIER_INPUTS: dict[int, dict[str, int]] = {
-    1: {"Stone": 1, "Wood": 1},
-    2: {"Stone": 1, "Wood": 1, "Bronze": 1},
-    3: {"Stone": 1, "Iron": 1, "Wood": 1},
+    1: {"Cut Stone": 1, "Lumber": 1},
+    2: {"Cut Stone": 1, "Lumber": 1, "Bronze": 1},
+    3: {"Cut Stone": 1, "Iron": 1, "Lumber": 1},
 }
 STORAGE_TIER_INPUTS: dict[int, dict[str, int]] = {
-    1: {"Stone": 1, "Clay": 1},
-    2: {"Stone": 1, "Clay": 1, "Wood": 1},
-    3: {"Stone": 1, "Clay": 1, "Iron": 1},
+    1: {"Cut Stone": 1, "Fired Brick": 1},
+    2: {"Cut Stone": 1, "Fired Brick": 1, "Lumber": 1},
+    3: {"Cut Stone": 1, "Fired Brick": 1, "Iron": 1},
 }
 
 # One "Property Upgrade" kit from a Home Improvement Store substitutes for a

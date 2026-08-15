@@ -1,190 +1,293 @@
 # Phase 2 — real agents on real models
 
-Status: **built, tested offline, never run against the live API.**
+Status: **harness proven on live models; economy rebuilt around a real supply chain,
+and that rebuild has NOT yet been run against live agents.**
 
 Phase 1 (rule-based engine validation) is complete and clean — see [PHASE1.md](PHASE1.md).
-This document covers what was built to put real models behind the same seam, the
-decisions taken while building it, and what to do next.
+This document is the current state of the world. Where it disagrees with
+`convoy_bronze_age_economy.xlsx`, **this document and the code are right and the
+workbook is stale** — see §9.
 
 ---
 
 ## 1. How to run it
 
 ```bash
-python3 run_phase2.py --dry-run          # builds every prompt, calls nothing
-
-cp .env.example .env                      # then paste your key into .env
-python3 run_phase2.py                     # 3 agents, 15 decisions each
+python3 run_phase2.py --dry-run                    # builds every prompt, calls nothing
+python3 run_phase2.py                              # 3 agents, 15 decisions each
+python3 run_phase2.py --agents 12 --hours 72 --decisions 400 \
+  --rpm 10 --max-tokens 1024 --model openai/gpt-5.6-luna
 ```
 
-The key comes from a `.env` at the repo root, loaded by `convoy/config.py` (a
-~20-line stdlib loader, since this project has no third-party dependencies and
-Python does not read `.env` on its own). A real environment variable overrides
-the file, so `OPENROUTER_API_KEY=... python3 run_phase2.py` works without
-editing it. `.env` is gitignored and `test_schemas.py` asserts that it is.
+The key comes from a `.env` at the repo root, loaded by `convoy/config.py`. A real
+environment variable overrides the file.
 
-Defaults: 3 agents on `openai/gpt-5.6-luna`, 15 decisions each, up to 4 actions
-per decision. At Luna's prices that is a fraction of a cent.
+Flags that matter, all added after live runs found they were needed:
 
-All seven test suites pass and need no network:
+| flag | why it exists |
+|---|---|
+| `--hours` | duration used to be derived from the decision cap, so asking for 72 sim-hours meant setting a cap that then ran 94 |
+| `--rpm` | new OpenRouter accounts are capped at 10 req/min per model |
+| `--max-tokens` | without it OpenRouter reserves the model's FULL completion window against the key's balance and 402s |
+| `--model a,b` | comma-separated; agents are dealt round-robin |
+| `--day-hours` | simulated hours between narrated daily reports |
+
+All nine test suites pass and need no network:
 
 ```bash
 for t in tests/test_*.py; do python3 "$t" >/dev/null && echo "PASS $t" || echo "FAIL $t"; done
+python3 run_phase1.py | grep INVARIANT      # must say "all clean"
 ```
+
+**Run `run_phase1.py` after ANY change to `data.py`.** Its invariant checker has caught
+three separate mistakes that the unit tests did not, most recently a government farm still
+set to produce a good that had been moved to the refinery.
 
 ---
 
-## 2. What was built
+## 2. What exists
 
 | file | what it does |
 |---|---|
-| `convoy/observe.py` | Turns the world into what an agent sees |
-| `convoy/schemas.py` | The 45 agent actions as tool definitions, plus the dispatcher |
+| `convoy/observe.py` | turns the world into what an agent sees |
+| `convoy/schemas.py` | the 49 agent actions as tool definitions, plus the dispatcher |
 | `convoy/llm.py` | OpenRouter client and `LLMPolicy` |
-| `run_phase2.py` | The Phase 2 harness test |
-| `tests/test_observe.py` | 15 tests |
-| `tests/test_schemas.py` | 15 tests |
-| `tests/golden_observation.txt` | Snapshot of a rendered observation |
+| `convoy/chronicle.py` | hourly digests and LLM-narrated daily reports |
+| `run_phase2.py` | the harness |
+| `tests/` | nine suites, ~120 assertions |
 
 ### The static/dynamic split
 
-Everything an agent could be told divides by **whether it ever changes**, not by
-how much to ration:
-
-- **`static_briefing()`** — map, every NPC price, every recipe, all the rules.
-  Pure function: no world, no agent, no clock. ~3,425 tokens. Cached.
-- **`observe(world, log, agent, reason)`** — where you are, what you carry, who
-  is here, what just happened to you. ~965 tokens per decision.
-
-Measured, the map and the full NPC price table are ~1,070 tokens of pure
-constants. Rationing them would have saved nothing and left agents unable to
-know Iron outsells Grain without walking to a refinery — so early play would be
-noise, and the five-model comparison would partly measure who explored luckily.
-**Static economic facts are common knowledge; only world state is local.**
-
-Tax rates are deliberately dynamic — policy can move them mid-run — so the
-briefing explains the mechanism and the observation carries the current number.
-
-### Memory
-
-Agents would otherwise wake with total amnesia every 15 simulated minutes and
-re-derive their plan several hundred times, which reads as erratic reasoning but
-is really a missing observation. `memory_for()` returns the agent's own MEDIUM+
-events plus public HIGH news from the last hour.
-
-Diaries are a **fallback that only fills leftover space**, and repeated lines
-collapse with a count. Without that, ten identical `working as Farmhand` lines
-evicted the real history — this was caught and fixed during the build.
+`static_briefing()` is a pure function — no world, no agent, no clock — and is the cached
+system prompt. `observe(world, log, agent, reason)` is rebuilt per decision. Everything
+static is common knowledge; only world STATE is local.
 
 ### Tool-calling, not JSON
 
-**Ling 3.0 Flash has no structured outputs.** Prompt-and-parse-JSON would work
-for four models and fail for 15 of the 75 agents — and fail as malformed text,
-which looks like a bad model rather than a bad harness. Tool-calling is the only
-path all five share.
+Ling 3.0 Flash has no structured outputs, so tool-calling is the only path all five models
+share. Schemas are **generated by introspection** from the action signatures, so names,
+types and required-ness cannot drift from the functions.
 
-Schemas are **generated by introspection**, because every action has the shape
-`(world, log, agent, **params)`. Names, types and required-ness therefore cannot
-drift from the functions they describe. Only descriptions are hand-written.
-
-Enums are the guardrail: where the domain is static (items, places, business
-types, roles) they go in the schema, converting `sell 5 Silver` into an
-API-level rejection. Runtime IDs (`business_id`, `offer_id`, `target_id`) are
-deliberately **not** enums — they change constantly, and the observation is what
-tells an agent which ones exist.
+**Introspection exposes every public function in `actions.py`.** Three helpers were
+accidentally published as callable tools during this work (`employee_cap`, `is_staffed`,
+`open_courier_jobs`) — one with a signature the dispatcher would have called wrongly. Any
+non-action helper in that module MUST be listed in `_NOT_ACTIONS` or prefixed with `_`.
 
 ---
 
-## 3. Cost — and why caching is load-bearing
+## 3. The economy
 
-Measured, not estimated:
+**Every chain runs farm/mine → refinery → workshop → person, and nothing may skip a
+step.** A person can only buy finished goods; everything upstream moves business to
+business and has to be physically carried.
+
+### Stages
+
+- **Extraction** (Farm, Mining Operation — spur roads only). Ten raw goods. No inputs, so
+  this is the only stage that is profitable with no supplier.
+- **Refining** (Refinery — Refinery Row). Ten refined goods: Grain, Purified Water,
+  Lumber, Seasoned Hardwood, Cut Stone, Fired Brick, Charcoal, Tanned Leather, Bronze, Iron.
+- **Workshops** (Weaponsmith, Vehicle Dealer / Stable, Tavern / Inn, Equipment Store,
+  Home Improvement Store). Take refined feedstock only.
+- **People.** Finished goods only.
+
+### Changes made on 2026-08-15, all deliberate
+
+- **A farm grows Wheat and draws Dirty Water.** Neither is edible. A refinery mills one
+  into Grain and purifies the other. Bread is `2 Grain + 1 Purified Water`.
+- **Timber, stone and clay gained refined forms** (Lumber, Seasoned Hardwood, Cut Stone,
+  Fired Brick) so no workshop takes a raw material. A Bronze Sword needs Lumber, not a log.
+- **The General Store was deleted.** It produced nothing and therefore retailed everything,
+  which is how agents were buying ore over a counter.
+- **Food is sold at Taverns only.** `eat_self_prep` is retired — cooking cost 4.80 for the
+  same window a tavern charged 16.00 for, so no tavern could ever win a customer.
+- **Bread was repriced** 10 → 18 base (the ladder shifted with it) because refined inputs
+  cost 10 and every good must clear a 75% margin over its inputs.
+- **Founding costs halved.** Farm 150, Mine 175, Tavern 200, Refinery 450.
+- **Government wages compressed to 15.00–25.00**, held in `GOVERNMENT_WAGES`, separate
+  from `SMART_WAGES` which still sets player wage floors and NPC hire costs.
+- **The state hires at most 2 per business**, by ownership rather than type. Player
+  businesses are uncapped.
+- **A player's shop only sells while its owner or an employee stands in it.** State shops
+  are always staffed and never bankrupt — they are the market's floor and ceiling.
+
+### Production time scales with value
+
+`hours_per_unit = 0.0296 × base_price^0.927`, calibrated to two anchors: bread ≈15 min,
+Iron Sword 12 h. Before this, a flat 15 units/hour meant a Blacksmith produced 16,575
+denari of swords per worker-hour against a 24 denari wage — roughly 700× anything else.
+
+**EXTRACTION IS DELIBERATELY EXCLUDED.** On the curve, every raw good becomes
+loss-making against the state (−1.5 to −5.2/hr) and profitable only via B2B (+10 to
++13/hr). That makes the whole economy depend on a mechanic no live model has used yet.
+Flip it in `data.production_rate_hr` once B2B is proven.
+
+Note: bread's anchor drifted to **26 min** when its price rose to 18, since time follows
+price. Lower `CRAFT_TIME_COEFFICIENT` if 15 minutes matters.
+
+---
+
+## 4. Business-to-business trade and haulage
+
+The supply chain needs businesses to buy from each other, so:
+
+```
+order_from_business(my_business, seller_business, item, qty, courier_fee)
+accept_courier_job(id) → collect_consignment(id) → deliver_consignment(id)
+cancel_consignment(id)
+```
+
+One `Consignment` object carries both halves. **Ordering IS the purchase**: the buyer pays,
+the goods leave the seller immediately, and what remains is a haulage job at the seller's
+gate. The seller bears no delivery risk. Money moves once, at order time — the buyer pays
+for goods and **escrows the courier fee**, so anyone who completes a job is certain to be
+paid.
+
+Design decisions:
+
+- **Ordering is remote.** A shop owner must not abandon their counter to buy stock.
+- **A load moves whole or not at all**, so vehicle capacity decides which jobs an agent can
+  take. On foot it is 5 units.
+- **Cargo under carriage never enters the courier's inventory**, so it cannot be sold en
+  route — but it does count against carry capacity.
+- **The buyer pays from the BUSINESS's cash**, not their pocket. Fund it with `deposit`.
+
+`_source_inputs` in the engine used to auto-buy missing recipe inputs at base price out of
+nowhere. That was a Phase 1 shortcut and it would have made this entire system decorative.
+Player businesses now produce only from stock they hold; **government businesses keep the
+old behaviour on purpose** so the backstop never stalls.
+
+---
+
+## 5. Cost
+
+Measured on live runs, not estimated:
 
 | | tokens |
 |---|---|
-| static briefing | 3,425 |
-| tool schemas (45 actions) | 6,077 |
-| **cached prefix** | **9,502** |
-| observation per decision | ~965 |
+| static briefing | 4,509 |
+| tool schemas (49 actions) | 7,242 |
+| **cached prefix** | **11,751** |
+| observation per decision | ~360 |
 
-Full 120-hour, 75-agent run (54,000 calls):
+Measured cache hit rate: **93–97%** across every live run. Caching works.
 
-| | uncached | cached |
+**API calls per decision is the number that actually drives cost, and it is not 1.**
+Measured at 3.89 before fixes, **2.22 after**. The fixes were making `wait` terminal and
+refusing a redundant `start_shift`; together they removed 51% of all actions.
+
+| | calls | cost |
 |---|---|---|
-| **total** | **$293** | **$66** |
-| workbook budget | $144 | $94 |
+| Phase 3 (75 agents, 120h, ~36,000 decisions) | ~80,000 | **~$118** |
 
-**Caching is not an optimisation — it is what makes Phase 3 affordable.** And a
-cache that stops hitting fails silently, showing up only on the invoice. Hence:
+That is over the workbook's $94 budget, and the prefix has grown 24% since the original
+estimate. Options if it matters: trim the tool schemas (the item enum repeats across seven
+actions), or accept it.
 
-- the cached prefix is built **once** at `LLMPolicy.__post_init__` and reused
-  byte-identically for every agent and every call
-- it always goes **first**, because caching matches on prefix
-- `test_observe.py` asserts the briefing cannot vary or touch world state
-- `run_phase2.py` **fails the harness check if the cache hit rate is under 30%**
+A 12-agent, 72-hour run costs about **$1.50** and takes **8–14 hours of wall clock**.
+Calls are strictly serial; at 10 rpm the pacing floor and Luna's latency are about equal,
+so **removing the rate limit alone buys almost nothing** — only concurrency does, and that
+is a Phase 3 prerequisite (75 agents × 120h serial is 100+ hours of wall clock).
 
-Terra and Grok are $60 of the $66. The other three models total $5.73.
+### Model notes, measured
 
-The tool schemas came in at 6,077 tokens against my ~900 estimate — the item
-enum is repeated across 7 actions. Kept anyway: it is 34% of schema size, it is
-cached, and $66 is still under budget. Worth revisiting only if the number moves.
+| model | latency | cache | cost/call | verdict |
+|---|---|---|---|---|
+| Grok 4.3 (minimal) | **4.0s** | 66% | $0.0066 | fastest, 38× Luna's cost |
+| GPT-5.6 Luna | 5.6s | 97% | **$0.000179** | the workhorse |
+| DeepSeek V4 Flash | **69.6s** | — | — | unusable; 21s even at `low` effort |
+| Ling 3.0 Flash | 21s | 43% | $0.000589 | tool calls are fine, but 3.3× Luna's cost |
 
----
-
-## 4. A real bug this build surfaced
-
-`_decisions()` in `engine.py` woke an idle agent **every simulated minute**
-instead of every 15. An idle agent's `activity.ends_at` sits in the past, so the
-`activity_complete` branch fired every tick and `continue`d past the
-`next_reeval_at` gate.
-
-Invisible in Phase 1, because rule agents always assign an activity with a
-future end. But an LLM agent that reasonably decides to *wait* would have spun at
-**15× the modelled cost**. Fixed by parking a still-idle agent until its next
-scheduled re-evaluation. Phase 1 re-run after the fix: invariants clean.
-
-The lesson generalises: Phase 1's rule agents cannot exercise paths that only a
-real model takes. Expect more of these in the first live run.
+Ling and DeepSeek both look cheap on headline price and are not. `reasoning_effort` from
+`MODEL_ROSTER` is now actually sent — it was dead data, so every model ran at provider
+default and matched the spec for none of them.
 
 ---
 
-## 5. Open decisions
+## 6. Bugs found by running it
 
-| decision | current state |
+Each of these was invisible to the unit tests and only appeared under live models.
+
+**`wait` cancelled whatever the agent was already doing.** `agent.activity` is a single
+slot, and `wait` overwrote it unconditionally. Wages accrue only while `kind == "work"`, so
+an agent that started a shift and then waited clocked itself straight back out. Worse, the
+engine clears `in_transit` only from its travel branch, so a cancelled journey could
+neither arrive nor reset: **9 of 12 agents spent a 72-hour run permanently "in transit"
+while standing still.** Every action was correct alone; only the sequence was wrong.
+
+**Wages shared a dict with retail prices**, under a `wage:<role>` key. The observation walks
+that dict expecting tradeable items, so the first agent to stand near a player business that
+had set a wage killed the run with `KeyError: no base price defined for 'wage:Miner'`. It
+survived 60 simulated hours because no player business had ever existed before.
+
+**Vehicles were unusable.** `mount` needs a vehicle id, the schema tells the model never to
+invent one, and the observation never carried one. All 12 mount attempts failed; **15
+vehicles and 4,174 denari — 58% of the economy's capital — sat as dead assets.**
+
+**B2B shipped unusable for the same reason** — ordering is remote but agents could only see
+business ids at their own location. Owners now get a supplier directory.
+
+**The briefing lied about the tavern.** The Town description claimed it was there; it is at
+South Protected Zone. Every `eat_best_available` call in the first run failed.
+
+**Agents could not see which roles a business hires**, so 9 of 13 job applications were
+rejected for naming a real role at the wrong business.
+
+The lesson: **test sequences, not calls.** `tests/test_activity_integrity.py` and
+`tests/test_b2b_haulage.py` exist for this, and each was verified to FAIL against the
+original bug before being trusted.
+
+---
+
+## 7. What agents actually did
+
+Two 72-hour runs, 12 agents on Luna. Both economically null, for reasons now fixed.
+
+- Everyone took a government job and kept it. Nobody founded a business until hour 60,
+  on a fifth attempt.
+- Ten of twelve bought vehicles — correctly picking the Camel, best cargo per denari —
+  then never used them, because employees receive no goods and there was nothing to haul.
+- **Zero social actions in 1,331 decisions.** No chat, no guilds, no player-to-player
+  trade. The `CHAT` section was omitted entirely until somebody spoke, which is a
+  cold-start deadlock; it now renders a standing invitation.
+- Every trade an agent made lost money — repeatedly buying Grain and Water to cook with,
+  discovering they could not, and selling back at a 76% loss.
+
+---
+
+## 8. Open decisions
+
+| decision | state |
 |---|---|
-| **Road tax base** | Assessed on Net Worth. Alternatives: property value, or a per-trip cargo toll. |
-| **Property-tax policy bound** | Government tab's 0–25% was written for a *daily* rate; weekly votes bounded at 0–2%. |
-| **Actions per decision** | Capped at 4 (`MAX_ACTIONS_PER_DECISION`). Untested against real behaviour. |
-| **Memory depth** | 15 events, 1-hour public-news window. Guesses, not measurements. |
-| **Spreadsheet drift** | 23 recorded edits in PHASE1.md §1 still not applied to the workbook. |
+| **Extraction on the production curve** | held back until B2B is proven live (§3) |
+| **Iron Sword margin** | 1,150% over inputs; Bronze Sword 594%, Donkey Cart 789% |
+| **Phase 3 budget** | ~$118 against $94 |
+| **Concurrency** | not built; Phase 3 is not viable serially |
+| **Combat, theft, convoys, bounties, voting** | state classes exist, zero actions, zero engine support. The briefing describes crime; none of it can happen |
+| **Road danger figures** | removed from the briefing — they are inputs to an ambush model that does not exist. Restore with combat |
+| **Bread timing** | 26 min, not the 15 min anchor, after the reprice |
 
 ---
 
-## 6. What to do next
+## 9. The spreadsheet is stale
 
-**Run `run_phase2.py --dry-run` first.** It exercises the whole prompt path
-without spending anything.
+`convoy_bronze_age_economy.xlsx` has not been touched since 2026-08-12 and does not
+describe this world. It has no Wheat, no Purified Water, no Lumber, no couriers, a General
+Store that no longer exists, and a cost model off by roughly 2×. PHASE1.md already recorded
+23 edits never applied to it.
 
-Then the live run. It is a **harness test, not an economics test** — 3 agents
-for a few hours cannot tell you anything about the economy. It answers:
+**Treat `convoy/data.py` as the source of truth.** A generated reference of the whole
+economy — every business, good, recipe, time and price — can be rebuilt from the code at
+any time; that is more reliable than reconciling the workbook, which would drift again on
+the next balance change.
 
-1. Do tool calls come back well-formed and dispatch into the engine?
-2. **Does prompt caching actually engage?** (the number that decides whether
-   Phase 3 is affordable)
-3. Do agents do anything coherent — eat before starving, work before spending?
-4. What do they reach for that does not exist yet?
+---
 
-Question 4 matters most. Phase 1 built storage, upgrades and garages before
-discovering nobody had a reason to buy any of them. Watch what agents *try*.
+## 10. What to do next
 
-### Known Phase 3 gaps
-
-Deliberately not built, pending evidence that agents want them: store-a-vehicle
-(garages have slots nothing uses), invest-in-another-player's-business
-(Insurance Brokerage is unfundable at 1,500), repair vehicle, fire employee,
-buy/sell an existing business, rent property, per-craft quality allocation.
-
-### After the harness passes
-
-Widen to all five models, a few agents each, and check that **Ling in particular
-produces well-formed tool calls** — it is the model with no structured-output
-fallback, and the one most likely to need prompt adjustment.
+1. **A short live smoke, before anything long.** None of the supply chain, B2B or haulage
+   has been touched by a real model. Every serious bug above appeared only under live
+   agents, and this is the most intricate machinery in the project.
+2. Then a 12-agent, 72-hour run. Watch for: does anyone order stock, does anyone take a
+   haulage job, and does anyone speak now that there are prices and wages worth advertising.
+3. Then extraction onto the curve, and the five-model comparison.

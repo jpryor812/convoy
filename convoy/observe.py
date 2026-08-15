@@ -71,12 +71,17 @@ def _static_map() -> str:
         lines.append(f"  {loc.name} ({loc.kind}, {loc.elevation}m, {guard}) - {loc.blurb}")
     lines.append("")
     lines.append("Road segments, north to south (times at Medium speed):")
+    # The concealment/vantage/exposure figures are DELIBERATELY omitted. They
+    # are precise inputs to an ambush model that does not exist yet -- there is
+    # no combat or theft code in the engine -- so quoting them to agents spent
+    # ~120 cached tokens inviting them to plan around a risk that cannot occur.
+    # The blurbs keep the character of each stretch. Restore the numbers in the
+    # same change that lands combat.
     for seg in M.SEGMENTS:
-        flee = "" if seg.can_flee_offroad() else " NO ESCAPE OFF-ROAD"
+        flee = "" if seg.can_flee_offroad() else " No escape off-road."
         lines.append(
-            f"  {seg.name} ({seg.a} <-> {seg.b}): {seg.seconds:.0f}s, {seg.terrain}. "
-            f"concealment {seg.concealment:.2f}, vantage {seg.vantage:.2f}, "
-            f"exposure {seg.exposure:.2f}.{flee} {seg.blurb}"
+            f"  {seg.name} ({seg.a} <-> {seg.b}): {seg.seconds:.0f}s, "
+            f"{seg.terrain}.{flee} {seg.blurb}"
         )
     lines.append("")
     lines.append(
@@ -150,17 +155,32 @@ def _static_economy() -> str:
     # with no tavern, applying for roles a business does not hire.
     lines.append("")
     lines.append(
-        "WHAT YOU CAN BUY. Shops sell FINISHED goods to people: meals, weapons, "
-        "armour, tools, vehicles, property upgrades. RAW AND REFINED goods -- "
-        + ", ".join(sorted(D.INTERMEDIATE_GOODS)[:6]) + " and the like -- are "
-        "feedstock and are sold to businesses, not over the counter. You can "
-        "only buy them if you OWN a business that uses them as an input."
+        "WHAT PEOPLE BUY. Shops sell FINISHED goods: meals, weapons, armour, "
+        "tools, vehicles, upgrades. Feedstock -- ore, wheat, hide, metal -- is "
+        "never sold to a person. It moves business to business, one way:"
+    )
+    lines.append("  farm or mine  ->  refinery  ->  shop  ->  you")
+    lines.append("")
+    lines.append(
+        "ORDERING STOCK. order_from_business buys for a business you own, without "
+        "travelling. It pays from its OWN cash, so deposit first. The goods leave "
+        "the seller at once and wait at their gate for someone to HAUL them. The "
+        "carriage fee you set is held aside, so whoever delivers is always paid. "
+        "If nobody takes the job the goods never arrive -- your loss, not the "
+        "seller's."
     )
     lines.append("")
     lines.append(
-        "SHOPS NEED SOMEBODY IN THEM. A player-owned business can only sell "
-        "while its owner or an employee is standing at it. Walk away and it "
-        "stops trading. Government businesses are always staffed."
+        "HAULING. Open carriage jobs and their pay appear in your observation. "
+        "Claim one, collect at the pickup, deliver at the destination. A load "
+        "moves whole, so your vehicle decides which jobs you can take -- on foot "
+        f"it is {D.ON_FOOT_CAPACITY} units. Honest money with no capital, and the "
+        "only way goods cross the valley."
+    )
+    lines.append("")
+    lines.append(
+        "SHOPS NEED SOMEBODY IN THEM. A player business only sells while its "
+        "owner or an employee stands at it. Government shops are always staffed."
     )
 
     lines.append("")
@@ -617,12 +637,69 @@ def observe(
             "active_policies": list(gov.active_policies),
         },
         "memory": memory_for(log, agent, world.sim_time, memory_limit),
-        "chat": [m.format() for m in A.visible_chat(world, agent, limit=chat_limit)],
+        # An empty CHAT section is rendered as a standing invitation rather than
+        # omitted. Rendering nothing until somebody speaks is a deadlock: no
+        # agent talked in 1,331 decisions across two runs, and nothing in the
+        # observation ever suggested talking was possible. Now that shops set
+        # their own prices and wages, having somewhere to advertise them is the
+        # difference between a market and a set of strangers.
+        "chat": (
+            [m.format() for m in A.visible_chat(world, agent, limit=chat_limit)]
+            or ["(nobody has said anything yet -- world chat reaches every living "
+                "agent, and is how prices, wages and carriage jobs get known)"]
+        ),
     }
 
     local = _local_prices(world, agent)
     if local:
         obs["player_prices_here"] = local
+
+    # Ordering is REMOTE, so an owner needs the id of a seller they are nowhere
+    # near. Without this the whole B2B system is unusable: an agent can only see
+    # ids for businesses at their own location, and order_from_business takes an
+    # id it refuses to let them invent. Only shown to people who own something,
+    # since only they can order.
+    if agent.owned_businesses:
+        obs["where_to_buy_stock"] = [
+            {
+                "id": b.id, "name": b.name, "type": b.type, "at": b.location,
+                "sells": sorted(
+                    i for i in (b.spec.outputs or ())
+                    if b.is_government or b.inventory.get(i, 0) > 0
+                )[:5],
+            }
+            for b in world.businesses.values()
+            if not b.closed and b.spec.outputs and b.id not in agent.owned_businesses
+            and any(D.is_intermediate(i) for i in b.spec.outputs)
+        ]
+
+    # Haulage nobody has taken. Without this an agent could never FIND work --
+    # the same cold start that has kept every chat channel silent so far.
+    jobs = A.open_courier_jobs(world, agent)
+    if jobs:
+        obs["courier_jobs"] = jobs
+
+    # What the agent is carrying for someone else, and what their own
+    # businesses are still waiting on.
+    if agent.hauling:
+        con = world.consignments.get(agent.hauling)
+        if con:
+            obs["you"]["hauling"] = {
+                "id": con.id, "item": con.item, "qty": con.qty,
+                "deliver_to": con.destination, "pays": round(con.courier_fee, 2),
+            }
+    mine = [
+        {
+            "id": c.id, "item": c.item, "qty": c.qty, "status": c.status,
+            "waiting_at": c.origin, "for": c.destination,
+            "fee_offered": round(c.courier_fee, 2),
+        }
+        for c in world.consignments.values()
+        if c.status in ("awaiting_courier", "claimed")
+        and c.buyer_business in agent.owned_businesses
+    ]
+    if mine:
+        obs["your_orders_in_transit"] = mine
 
     return obs
 
@@ -680,6 +757,9 @@ def render(obs: dict[str, Any]) -> str:
         ("player_prices_here", "PLAYER PRICES HERE"),
         ("you_can", "WHAT YOU CAN DO FROM HERE"),
         ("taxes_now", "CURRENT TAX RATES"),
+        ("where_to_buy_stock", "WHERE TO ORDER FEEDSTOCK (you need not travel)"),
+        ("courier_jobs", "HAULAGE JOBS GOING BEGGING"),
+        ("your_orders_in_transit", "YOUR ORDERS NOT YET DELIVERED"),
         ("memory", "RECENTLY"),
         ("chat", "CHAT"),
     ]:

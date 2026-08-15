@@ -364,15 +364,24 @@ class Engine:
             )
 
     def _source_inputs(self, biz: Business, recipe: D.Recipe, wanted: int) -> int:
-        """Top up missing recipe inputs by auto-purchase at base price.
+        """How many units this business can actually make.
 
-        Returns how many units can actually be produced after sourcing. A business
-        with no cash falls back to whatever it already holds, so a starved,
-        broke factory still stalls rather than producing from nothing.
+        A PLAYER business makes only what its own stock allows. Feedstock has to
+        arrive by trade -- ordered from another business and hauled there -- so
+        auto-buying it here would make the whole supply chain optional: a
+        refinery with cash would never need a mine, and no courier would ever
+        have work. That shortcut was fine while there was no hauling leg to use;
+        there is one now (designer decision, 2026-08-15).
+
+        GOVERNMENT businesses keep the old behaviour on purpose. They are the
+        market's floor and ceiling and must never stall, so the state's refinery
+        is abstracted as infinitely supplied.
         """
         on_hand = min(biz.inventory.get(i, 0) // q for i, q in recipe.inputs.items())
         if on_hand >= wanted:
             return wanted
+        if not biz.is_government:
+            return on_hand
 
         unit_cost = sum(D.base_price(i) * q for i, q in recipe.inputs.items())
         shortfall = wanted - on_hand

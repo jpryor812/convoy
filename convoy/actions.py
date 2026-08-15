@@ -12,6 +12,8 @@ government, and social actions arrive in Phase 3.
 
 from __future__ import annotations
 
+from typing import Any
+
 from . import data as D
 from . import economy as E
 from . import world_map
@@ -20,6 +22,7 @@ from .state import (
     Activity,
     Agent,
     Business,
+    Consignment,
     ChatMessage,
     Employment,
     Guild,
@@ -289,19 +292,6 @@ def is_staffed(world: World, biz: Business) -> bool:
     return False
 
 
-def _uses_as_input(agent: Agent, world: World, item: str) -> bool:
-    """Does this agent own a business that consumes `item`?"""
-    for bid in agent.owned_businesses:
-        biz = world.businesses.get(bid)
-        if not biz or biz.closed:
-            continue
-        for out in biz.spec.outputs:
-            recipe = D.REFINING_RECIPES.get(out) or D.CRAFTING_RECIPES.get(out)
-            if recipe and item in recipe.inputs:
-                return True
-    return False
-
-
 def buy_from_business(
     world: World, log: EventLog, agent: Agent, business_id: str, item: str, qty: int = 1
 ) -> Result:
@@ -314,13 +304,13 @@ def buy_from_business(
         return False, "bad quantity"
     if not is_staffed(world, biz):
         return False, f"{biz.name} is unattended -- nobody is there to sell to you"
-    # Feedstock moves between businesses, not over a shop counter. An agent may
-    # still buy it as INPUT for a business they own, which is the only way to
-    # supply a workshop until business-to-business trade exists.
-    if D.is_intermediate(item) and not _uses_as_input(agent, world, item):
+    # Feedstock moves between businesses, never over a counter. A business that
+    # needs it uses order_from_business, which is what the courier system is for.
+    if D.is_intermediate(item):
         return False, (
-            f"{item} is an intermediate good, sold to businesses that refine or "
-            f"craft with it, not over the counter. Shops sell finished goods."
+            f"{item} is feedstock and is not sold to people. A business that "
+            f"refines or crafts with it buys it with order_from_business, and a "
+            f"courier hauls it."
         )
     if not biz.is_government and biz.inventory.get(item, 0) < qty:
         return False, f"{biz.name} has no {item}"
@@ -1445,3 +1435,210 @@ def buy_insurance(
         product=product, coverage=coverage, premium=round(premium, 2),
     )
     return True, f"insured {product} for {coverage:.0f}"
+
+
+# ---------------------------------------------------------------------------
+# BUSINESS-TO-BUSINESS TRADE AND HAULAGE
+# ---------------------------------------------------------------------------
+#
+# The supply chain is farm/mine -> refinery -> store -> person, and only the
+# last leg happens over a counter. Everything upstream moves between BUSINESSES,
+# which is why this exists: a refinery has no way to sell metal to a weaponsmith
+# otherwise, and a tavern cannot buy grain to bake with.
+#
+# One object carries both halves of the deal. Ordering IS the purchase: the
+# buyer pays, the goods leave the seller immediately, and what remains is a
+# haulage job sitting at the seller's gate. The seller is done and bears no
+# delivery risk (designer decision, 2026-08-15) -- if nobody hauls it, the loss
+# is the buyer's.
+#
+# Money moves once, at order time. The buyer's business pays for the goods and
+# escrows the courier's fee, so anyone who finishes the job is certain to be
+# paid and nobody has to trust a stranger at the far end of a dangerous road.
+
+def order_from_business(
+    world: World, log: EventLog, agent: Agent, my_business_id: str,
+    seller_business_id: str, item: str, qty: int, courier_fee: float,
+) -> Result:
+    """Buy goods from another business for one of yours, and post the haulage.
+
+    Placed remotely: a shop owner must not have to abandon their counter to
+    order stock.
+    """
+    buyer = world.businesses.get(my_business_id)
+    if not buyer or buyer.closed or buyer.owner != agent.id:
+        return False, "not your business"
+    seller = world.businesses.get(seller_business_id)
+    if not seller or seller.closed:
+        return False, "no such seller"
+    if seller.id == buyer.id:
+        return False, "a business cannot buy from itself"
+    if qty <= 0:
+        return False, "bad quantity"
+    if courier_fee < 0:
+        return False, "courier fee cannot be negative"
+    if seller.location == buyer.location:
+        courier_fee = 0.0          # nothing to haul; it is already there
+
+    if not seller.is_government and seller.inventory.get(item, 0) < qty:
+        return False, f"{seller.name} has only {seller.inventory.get(item, 0)}x {item}"
+
+    unit = seller.price_for(item)
+    goods = unit * qty
+    tax = E.sales_tax_on(goods, world.government.sales_tax)
+    total = goods + tax + courier_fee
+    if buyer.cash < total:
+        return False, (
+            f"{buyer.name} has {buyer.cash:.2f} and needs {total:.2f} "
+            f"({goods:.2f} goods + {tax:.2f} tax + {courier_fee:.2f} carriage). "
+            f"Deposit into the business first."
+        )
+
+    buyer.cash -= total
+    if not seller.is_government:
+        seller.remove_item(item, qty)
+        seller.cash += goods
+    world.government.collect(tax)
+    world.market.record(Transaction(world.sim_time, item, qty, unit, seller.id, buyer.id))
+
+    if seller.location == buyer.location:
+        buyer.add_item(item, qty)
+        log.emit(
+            world.sim_time, "b2b_purchase", actor=agent.id, subject=seller.id,
+            item=item, qty=qty, unit=round(unit, 2), delivered=True,
+        )
+        return True, f"bought {qty}x {item} for {total:.2f}, delivered on the spot"
+
+    con = Consignment(
+        id=world.new_id("C"), seller_business=seller.id, buyer_business=buyer.id,
+        item=item, qty=qty, goods_price=goods, courier_fee=courier_fee,
+        origin=seller.location, destination=buyer.location, created_at=world.sim_time,
+    )
+    world.consignments[con.id] = con
+    log.emit(
+        world.sim_time, "consignment_posted", actor=agent.id, subject=con.id,
+        item=item, qty=qty, paid=round(total, 2), fee=round(courier_fee, 2),
+        origin=con.origin, destination=con.destination,
+    )
+    return True, (
+        f"bought {qty}x {item} for {total:.2f}. Consignment {con.id} waits at "
+        f"{con.origin}; {courier_fee:.2f} offered to whoever hauls it to {con.destination}"
+    )
+
+
+def accept_courier_job(world: World, log: EventLog, agent: Agent, consignment_id: str) -> Result:
+    """Claim a haulage job. You are not committed until you collect."""
+    con = world.consignments.get(consignment_id)
+    if not con:
+        return False, "no such consignment"
+    if con.status != "awaiting_courier":
+        return False, f"already {con.status}"
+    if agent.hauling:
+        return False, "you are already hauling a consignment -- deliver it first"
+    con.status = "claimed"
+    con.courier = agent.id
+    log.emit(
+        world.sim_time, "courier_claimed", actor=agent.id, subject=con.id,
+        fee=round(con.courier_fee, 2), origin=con.origin, destination=con.destination,
+    )
+    return True, (
+        f"claimed {con.id}: collect {con.qty}x {con.item} at {con.origin}, "
+        f"deliver to {con.destination} for {con.courier_fee:.2f}"
+    )
+
+
+def collect_consignment(world: World, log: EventLog, agent: Agent, consignment_id: str) -> Result:
+    """Load a claimed consignment at its origin. All of it, or not at all."""
+    con = world.consignments.get(consignment_id)
+    if not con:
+        return False, "no such consignment"
+    if con.courier != agent.id:
+        return False, "not your job"
+    if con.status != "claimed":
+        return False, f"consignment is {con.status}"
+    if agent.location != con.origin:
+        return False, f"the goods are at {con.origin}, you are at {agent.location}"
+
+    free = agent.carry_capacity(world) - agent.carried_units()
+    if free < con.qty:
+        return False, (
+            f"you can carry {free} more units and this load is {con.qty}. "
+            f"A consignment moves whole -- get a bigger vehicle or drop what you carry."
+        )
+
+    agent.hauling = con.id
+    agent.hauling_units = con.qty
+    log.emit(
+        world.sim_time, "consignment_collected", actor=agent.id, subject=con.id,
+        item=con.item, qty=con.qty, location=con.origin,
+    )
+    return True, f"loaded {con.qty}x {con.item}; deliver to {con.destination}"
+
+
+def deliver_consignment(world: World, log: EventLog, agent: Agent, consignment_id: str) -> Result:
+    """Hand over at the destination and take the fee."""
+    con = world.consignments.get(consignment_id)
+    if not con:
+        return False, "no such consignment"
+    if con.courier != agent.id or agent.hauling != con.id:
+        return False, "you are not carrying that"
+    if agent.location != con.destination:
+        return False, f"deliver at {con.destination}, you are at {agent.location}"
+
+    buyer = world.businesses.get(con.buyer_business)
+    if buyer and not buyer.closed:
+        buyer.add_item(con.item, con.qty)
+    con.status = "delivered"
+    agent.hauling = None
+    agent.hauling_units = 0
+    agent.denari += con.courier_fee        # escrowed at order time; always paid
+    log.emit(
+        world.sim_time, "consignment_delivered", actor=agent.id, subject=con.id,
+        item=con.item, qty=con.qty, fee=round(con.courier_fee, 2),
+        location=con.destination,
+    )
+    return True, f"delivered {con.qty}x {con.item}, earned {con.courier_fee:.2f}"
+
+
+def cancel_consignment(world: World, log: EventLog, agent: Agent, consignment_id: str) -> Result:
+    """Call off a consignment nobody has loaded, and get the goods back on site."""
+    con = world.consignments.get(consignment_id)
+    if not con:
+        return False, "no such consignment"
+    buyer = world.businesses.get(con.buyer_business)
+    if not buyer or buyer.owner != agent.id:
+        return False, "not your consignment"
+    if con.status not in ("awaiting_courier", "claimed"):
+        return False, f"consignment is {con.status}"
+    courier = world.agents.get(con.courier or "")
+    if courier and courier.hauling == con.id:
+        return False, "already loaded -- it is on the road"
+
+    con.status = "cancelled"
+    buyer.cash += con.courier_fee          # the carriage escrow comes back
+    seller = world.businesses.get(con.seller_business)
+    if seller and not seller.closed:
+        seller.add_item(con.item, con.qty)  # goods sit with the seller again
+    log.emit(
+        world.sim_time, "consignment_cancelled", actor=agent.id, subject=con.id,
+        item=con.item, qty=con.qty,
+    )
+    return True, (
+        f"cancelled {con.id}; carriage fee refunded. The {con.qty}x {con.item} "
+        f"is back with {seller.name if seller else 'the seller'} -- the goods are not refunded"
+    )
+
+
+def open_courier_jobs(world: World, agent: Agent, limit: int = 8) -> list[dict[str, Any]]:
+    """Haulage nobody has claimed. Read-only context, not an action."""
+    out: list[dict[str, Any]] = []
+    for con in world.consignments.values():
+        if con.status != "awaiting_courier" or con.courier_fee <= 0:
+            continue
+        out.append({
+            "id": con.id, "item": con.item, "qty": con.qty,
+            "from": con.origin, "to": con.destination,
+            "pays": round(con.courier_fee, 2),
+        })
+    out.sort(key=lambda j: -j["pays"])
+    return out[:limit]

@@ -25,7 +25,7 @@ from .world_map import (  # noqa: F401
 # What each government production site makes by default.
 GOVERNMENT_DEFAULT_OUTPUT: dict[str, str] = {
     "Mining Operation": "Copper Ore",
-    "Farm": "Grain",
+    "Farm": "Wheat",
     "Refinery": "Charcoal",
 }
 

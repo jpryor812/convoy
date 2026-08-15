@@ -46,7 +46,7 @@ _NOT_ACTIONS = frozenset({
     # Helpers, not actions -- and their signatures would have been handed
     # (world, log, agent) by the dispatcher. Introspection exposes every public
     # function in the module, so anything that is not a real action must say so.
-    "employee_cap", "is_staffed",
+    "employee_cap", "is_staffed", "open_courier_jobs",
 })
 
 # Engine-internal: loot transfer is driven by the combat/death path, not chosen.
@@ -140,10 +140,37 @@ DESCRIPTIONS: dict[str, str] = {
         "boost production. 'prefer' picks the line when you do not name a meal."
     ),
     "eat_best_available": (
-        "Cook 1x Grain + 1x Water if you are carrying them, otherwise buy a "
-        "meal from a Tavern where you stand. It does NOT work with neither -- "
-        "carry the ingredients or buy a Meal from a store first. Being dead "
-        "ends all earning."
+        "Buy and eat the best meal the Tavern where you stand can serve. Food is "
+        "sold at Taverns and nowhere else -- you cannot cook. Being dead ends "
+        "all earning, so travel to a Tavern before hunger becomes urgent."
+    ),
+    # -- business-to-business trade and haulage ------------------------------
+    "order_from_business": (
+        "Buy stock for a business you own from another business, and post the "
+        "haulage job in one go. You do NOT have to travel to the seller. Your "
+        "business pays for the goods and escrows the courier's fee out of its "
+        "OWN cash, so deposit into it first. The goods leave the seller at once "
+        "and wait at their site until a courier hauls them; if nobody does, that "
+        "is your loss, not the seller's. Set courier_fee high enough that "
+        "somebody wants the job -- a share of what the load is worth is the "
+        "usual way to think about it."
+    ),
+    "accept_courier_job": (
+        "Take on a haulage job somebody has posted. The fee is already escrowed, "
+        "so finishing it always pays. You can only haul one at a time."
+    ),
+    "collect_consignment": (
+        "Load a job you have claimed. You must be at the pickup location and "
+        "have room for the WHOLE load -- it does not split, so the size of your "
+        "vehicle decides which jobs you can take."
+    ),
+    "deliver_consignment": (
+        "Hand the load over at its destination and collect your fee. The goods "
+        "go into the buying business's stock."
+    ),
+    "cancel_consignment": (
+        "Call off a consignment of yours that nobody has loaded yet. The "
+        "carriage fee comes back; the goods stay with the seller, already paid for."
     ),
     # -- social -------------------------------------------------------------
     "post_world_chat": "Say something every living agent can read.",

@@ -89,7 +89,7 @@ def test_static_is_pure_and_stable():
     w.government.sales_tax = 0.19
     check("briefing ignores world state", O.static_briefing(), first)
 
-    for fact in ["The Switchbacks", "NO ESCAPE OFF-ROAD", "Copper Gulch", "Iron"]:
+    for fact in ["The Switchbacks", "No escape off-road", "Copper Gulch", "Iron"]:
         ok(f"briefing mentions {fact}", fact in first)
 
     # Tax RATES are dynamic and must not be baked into the cached prefix.
@@ -279,9 +279,14 @@ def test_payload_stays_within_budget():
     # Measured cache hit rate is 96-97%, so the marginal cost of the extra
     # tokens is roughly 4% of them -- about 23 tokens per call. The guard is
     # still here to catch drift, just calibrated to what the briefing now does.
+    # 4,400 -> 4,800 on 2026-08-15. Four refined goods (Lumber, Seasoned
+    # Hardwood, Cut Stone, Fired Brick) were added so that nothing reaches a
+    # workshop without passing a refinery, and each one costs a price-table row
+    # and a recipe line. The designer accepted the token cost explicitly. Still
+    # a guard against drift, just at the size the briefing now is.
     ok(
-        "briefing under 4.4k tokens",
-        len(brief) // 4 < 4400,
+        "briefing under 4.8k tokens",
+        len(brief) // 4 < 4800,
         f"~{len(brief) // 4} tokens",
     )
     ok(
