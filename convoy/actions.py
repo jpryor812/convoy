@@ -26,6 +26,7 @@ from .state import (
     ChatMessage,
     Employment,
     Guild,
+    JobPosting,
     Property,
     StolenStack,
     Transaction,
@@ -140,6 +141,49 @@ TERMINAL_ACTIONS = frozenset({"wait"})
 # ---------------------------------------------------------------------------
 # LABOR
 # ---------------------------------------------------------------------------
+
+def _usable_items(biz: Business) -> list[str]:
+    """Everything this business can either consume as an input or sell."""
+    items: set[str] = set(biz.spec.outputs)
+    for out in biz.spec.outputs:
+        recipe = D.REFINING_RECIPES.get(out) or D.CRAFTING_RECIPES.get(out)
+        if recipe:
+            items |= set(recipe.inputs)
+    return sorted(items)
+
+
+def _business_can_use(biz: Business, item: str) -> bool:
+    return item in _usable_items(biz)
+
+
+def _may_buy_from(buyer: Business, seller: Business) -> tuple[bool, str]:
+    """The chain only runs one way: farm/mine -> refinery -> store.
+
+    Every store type in the game needs REFINED inputs and no raw ones, so a shop
+    has no business at a farm gate. Without this rule four taverns spent 156
+    denari on Dirty Water they could never use (2026-08-16), because buying it
+    was legal and nothing said otherwise. A refinery buys raw from extraction,
+    and also buys Charcoal from another refinery -- Bronze and Iron need it.
+    """
+    if buyer.type in D.EXTRACTION_BUSINESS_TYPES:
+        return False, (
+            f"a {buyer.type} grows or digs its own goods and buys no inputs"
+        )
+    if buyer.type == "Refinery":
+        if seller.type in D.EXTRACTION_BUSINESS_TYPES or seller.type == "Refinery":
+            return True, ""
+        return False, (
+            f"a Refinery buys raw materials from a Farm or Mining Operation "
+            f"(and Charcoal from another Refinery), not from a {seller.type}"
+        )
+    if seller.type != "Refinery":
+        return False, (
+            f"a {buyer.type} buys REFINED goods from a Refinery. {seller.type} "
+            f"sells raw materials, which only a Refinery can use. Order the "
+            f"refined version from a Refinery instead."
+        )
+    return True, ""
+
 
 def employee_cap(biz: Business) -> int | None:
     """How many production staff a business may hold. None == uncapped.
@@ -357,6 +401,17 @@ def sell_to_business(
         return False, "not at this business"
     if agent.inventory.get(item, 0) < qty:
         return False, f"no {item} to sell"
+    # The chain rule has to hold on BOTH doors. Blocking order_from_business
+    # alone left this one open: an agent could carry Dirty Water to a Tavern and
+    # sell it in over the counter, and the tavern ended up with the same dead
+    # stock by another route. The state still buys anything -- it is the
+    # universal buyer of last resort, which is what stops goods being unsellable.
+    if not biz.is_government and not _business_can_use(biz, item):
+        return False, (
+            f"{biz.name} has no use for {item}. A {biz.type} takes only "
+            f"{', '.join(_usable_items(biz)) or 'nothing'}. The state buys "
+            f"anything if you just want rid of it."
+        )
 
     unit = biz.buy_price_for(item)
     proceeds = unit * qty
@@ -502,6 +557,154 @@ def set_wage(
         return False, f"below the wage floor for {role} ({floor:.2f})"
     biz.wages[role] = wage
     return True, f"{role} wage set to {wage:.2f}"
+
+
+def post_job(
+    world: World, log: EventLog, agent: Agent, business_id: str, role: str,
+    wage: float, as_researcher: bool = False,
+) -> Result:
+    """Advertise a role at a wage on the world job board, seen by every agent.
+
+    This is the only way an agent employee can learn that a player business is
+    hiring, and at what rate. It writes a world-chat line carrying the posting
+    id, so anyone can answer it with apply_to_job.
+    """
+    biz = world.businesses.get(business_id)
+    if not biz or biz.closed or biz.owner != agent.id:
+        return False, "not your business"
+    spec = biz.spec
+    if as_researcher and not spec.can_research:
+        return False, f"{biz.type} has no Research track"
+    if not as_researcher and role not in spec.production_roles:
+        return False, (
+            f"{role} is not a role at {biz.type}. It hires: "
+            f"{', '.join(spec.production_roles) or 'nobody'}"
+        )
+    floor = E.wage_floor(role)
+    if wage < floor:
+        return False, f"below the wage floor for {role} ({floor:.2f})"
+    if not as_researcher:
+        cap = employee_cap(biz)
+        if cap is not None and len(biz.production_staff()) >= cap:
+            return False, f"no vacancy ({len(biz.production_staff())}/{cap} filled)"
+    for p in world.job_postings.values():
+        if (p.business_id == business_id and p.role == role
+                and p.is_live(world.sim_time)):
+            return False, (
+                f"{p.id} is already advertising {role} at {p.wage:.2f}. "
+                f"close_job first if you want to change the wage."
+            )
+
+    pid = world.new_id("J")
+    posting = JobPosting(
+        id=pid, business_id=business_id, owner=agent.id, role=role,
+        wage=round(wage, 2), posted_at=world.sim_time,
+        expires_at=world.sim_time + D.JOB_POSTING_HOURS * 3600.0,
+        as_researcher=as_researcher,
+    )
+    world.job_postings[pid] = posting
+    text = (
+        f"HIRING: {role} at {biz.name} ({biz.location}) for {wage:.2f}/hr. "
+        f"apply_to_job(\"{pid}\") to apply."
+    )
+    world.chat.append(ChatMessage(
+        sim_time=world.sim_time, channel="world", sender=agent.id,
+        sender_name=agent.name, text=text,
+    ))
+    log.emit(
+        world.sim_time, "job_posted", actor=agent.id, subject=business_id,
+        posting=pid, role=role, wage=round(wage, 2), location=biz.location,
+    )
+    return True, (
+        f"posted {pid}: {role} at {wage:.2f}/hr, on the board for "
+        f"{D.JOB_POSTING_HOURS:.0f}h. Applicants appear in your observation; "
+        f"hire_applicant to take one, or close_job and repost at a new wage."
+    )
+
+
+def apply_to_job(world: World, log: EventLog, agent: Agent, posting_id: str) -> Result:
+    """Answer a job advert. The owner still chooses -- this is not a hire."""
+    p = world.job_postings.get(posting_id)
+    if not p:
+        return False, "no such job posting"
+    if not p.is_live(world.sim_time):
+        return False, f"{posting_id} is {p.status if p.status != 'open' else 'expired'}"
+    if agent.id == p.owner:
+        return False, "you cannot apply to your own posting"
+    if agent.id in p.applicants:
+        return False, f"you have already applied to {posting_id}"
+    p.applicants.append(agent.id)
+    biz = world.businesses.get(p.business_id)
+    log.emit(
+        world.sim_time, "job_applied", actor=agent.id, subject=p.business_id,
+        posting=posting_id, role=p.role, wage=p.wage,
+    )
+    where = biz.location if biz else "?"
+    return True, (
+        f"applied to {posting_id} ({p.role} at {p.wage:.2f}/hr, {where}). "
+        f"The owner decides; you are not hired yet and may apply elsewhere."
+    )
+
+
+def hire_applicant(
+    world: World, log: EventLog, agent: Agent, posting_id: str, applicant_id: str,
+) -> Result:
+    """Take one of the people who answered your advert, at the posted wage."""
+    p = world.job_postings.get(posting_id)
+    if not p:
+        return False, "no such job posting"
+    if p.owner != agent.id:
+        return False, "not your posting"
+    if p.status != "open":
+        return False, f"{posting_id} is {p.status}"
+    if applicant_id not in p.applicants:
+        return False, (
+            f"{applicant_id} has not applied to {posting_id}. Applicants: "
+            f"{', '.join(p.applicants) or 'none yet'}"
+        )
+    biz = world.businesses.get(p.business_id)
+    if not biz or biz.closed:
+        return False, "that business is gone"
+    hire = world.agents.get(applicant_id)
+    if not hire or not hire.alive:
+        return False, "that agent is not available"
+    if hire.current_job:
+        return False, f"{applicant_id} has taken another job since applying"
+    if not p.as_researcher:
+        cap = employee_cap(biz)
+        if cap is not None and len(biz.production_staff()) >= cap:
+            return False, f"no vacancy ({len(biz.production_staff())}/{cap} filled)"
+
+    biz.roster.append(Employment(hire.id, p.role, p.wage, p.as_researcher))
+    hire.current_job = (biz.id, p.role, p.wage)
+    biz.wages[p.role] = p.wage
+    p.status = "filled"
+    log.emit(
+        world.sim_time, "hired", actor=hire.id, subject=biz.id,
+        role=p.role, wage=p.wage, employer=biz.name, via=posting_id,
+    )
+    return True, (
+        f"hired {hire.name} as {p.role} at {p.wage:.2f}/hr. They must be AT "
+        f"{biz.location} and on shift to work and to be paid."
+    )
+
+
+def close_job(world: World, log: EventLog, agent: Agent, posting_id: str) -> Result:
+    """Pull an advert, usually to repost at a different wage."""
+    p = world.job_postings.get(posting_id)
+    if not p:
+        return False, "no such job posting"
+    if p.owner != agent.id:
+        return False, "not your posting"
+    if p.status != "open":
+        return False, f"{posting_id} is already {p.status}"
+    p.status = "closed"
+    log.emit(
+        world.sim_time, "job_closed", actor=agent.id, subject=p.business_id,
+        posting=posting_id, role=p.role, wage=p.wage,
+        applicants=len(p.applicants),
+    )
+    return True, f"closed {posting_id}. You can post_job again at a new wage."
 
 
 def hire_npc_employee(
@@ -1474,6 +1677,9 @@ def order_from_business(
         return False, "no such seller"
     if seller.id == buyer.id:
         return False, "a business cannot buy from itself"
+    allowed, why = _may_buy_from(buyer, seller)
+    if not allowed:
+        return False, why
     if qty <= 0:
         return False, "bad quantity"
     if courier_fee < 0:

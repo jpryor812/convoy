@@ -160,6 +160,12 @@ def _static_economy() -> str:
         "never sold to a person. It moves business to business, one way:"
     )
     lines.append("  farm or mine  ->  refinery  ->  shop  ->  you")
+    lines.append(
+        "  and ONLY that way: a shop buys refined goods from a Refinery and "
+        "cannot buy raw from a farm or mine. A Refinery buys raw from farms and "
+        "mines, plus Charcoal from another Refinery. State businesses always hold "
+        "every good at their listed price, so supply never stops."
+    )
     lines.append("")
     lines.append(
         "ORDERING STOCK. order_from_business buys for a business you own, without "
@@ -258,6 +264,26 @@ def _static_rules() -> str:
         "OWNERSHIP. A business owner takes no wage -- owners earn the business's "
         "profit. Government businesses are always staffed, never research, and set a "
         "price floor you must beat on price or on distance."
+    )
+    lines.append("")
+    lines.append(
+        f"HIRING. post_job advertises a role and wage to everyone -- the only way "
+        f"an agent learns you are hiring. Applicants appear in your observation; "
+        f"take one with hire_applicant, or close_job and repost higher if nobody "
+        f"bites. Adverts lapse after {D.JOB_POSTING_HOURS:.0f}h. An agent is "
+        f"cheaper than an NPC but must be present and on shift. Answer others' "
+        f"adverts with apply_to_job; you may apply to several."
+    )
+    lines.append("")
+    lines.append(
+        f"PAYROLL. Wages come out of the business's own cash, not your pocket, so "
+        f"keep it funded with deposit. A business never goes into debt: if it "
+        f"cannot pay someone THAT WORKER LEAVES, and it CLOSES in "
+        f"{D.BANKRUPTCY_GRACE_HOURS:.0f}h unless you deposit the hour of payroll "
+        f"it missed. NPC hires are paid only while the business is actually "
+        f"producing, so an idle NPC is free -- but an agent you employ is paid for "
+        f"every hour they work whether or not you have feedstock. Your observation "
+        f"shows each business's cash and payroll."
     )
     lines.append("")
     lines.append(
@@ -422,6 +448,52 @@ def affordances(world: World, agent: Agent) -> list[str]:
             f"{len(here)} business(es) here to buy from or sell to (listed above)"
             + (f"; {hiring} player-owned and may hire." if hiring else ".")
         )
+        # WHICH government posts are actually open, not just the rule that they
+        # cap at two. Agents knew the cap and still had to discover a full site
+        # by walking to it and being refused: 543 "no vacancy (2/2 filled)"
+        # rejections in the 2026-08-16 72-hour run, 36.8% of every action taken,
+        # all of it in the first 16 simulated hours. The engine can answer this
+        # before they travel.
+        vacancies = []
+        for b in here:
+            if not (b.is_government and b.spec.needs_worker):
+                continue
+            cap = D.GOVERNMENT_MAX_EMPLOYEES
+            taken = len(b.production_staff())
+            if taken < cap:
+                roles = "/".join(b.spec.production_roles) or "?"
+                vacancies.append(f"{b.name} ({cap - taken} open: {roles})")
+        gov_here = [b for b in here if b.is_government and b.spec.needs_worker]
+        if gov_here:
+            out.append(
+                "State vacancies here: " + ("; ".join(vacancies) if vacancies
+                else "NONE -- every state job at this location is filled, so "
+                     "applying here will be refused. Try another location, or "
+                     "a player business, or found your own.")
+            )
+
+    # Player job adverts, world-wide. A posting that only lived in the chat
+    # scroll would be missed by anyone who woke after it, and chat is the one
+    # part of the observation that ages out.
+    if not agent.current_job:
+        open_jobs = [
+            p for p in world.job_postings.values()
+            if p.is_live(world.sim_time) and p.owner != agent.id
+        ]
+        if open_jobs:
+            open_jobs.sort(key=lambda p: -p.wage)
+            lines = []
+            for p in open_jobs[:6]:
+                b = world.businesses.get(p.business_id)
+                mark = " (already applied)" if agent.id in p.applicants else ""
+                lines.append(
+                    f"{p.id}: {p.role} at {b.name if b else '?'} "
+                    f"({b.location if b else '?'}) for {p.wage:.2f}/hr{mark}"
+                )
+            out.append(
+                "JOBS ON THE BOARD, best paid first -- apply_to_job(id), you may "
+                "apply to several: " + "; ".join(lines)
+            )
 
     if M.is_spur(agent.location):
         free = M.plots_free(world, agent.location)
@@ -533,6 +605,121 @@ def _local_prices(world: World, agent: Agent) -> dict[str, dict[str, float]]:
     return out
 
 
+def _owned_business_view(world: World, bid: str) -> dict[str, Any]:
+    """One of the agent's own businesses, including whether it is dying.
+
+    The engine tracked insolvency from the start and never told the owner: the
+    2026-08-16 run logged 30 bankruptcy warnings and 7 liquidations, and not one
+    of them reached an agent's observation. Owners could see a `cash` figure go
+    negative but were never told a grace clock was running or what would end it.
+    That is the mistake this project has now made nine times -- the code knowing
+    something and the observation not saying it -- and it matters more now that
+    missing payroll costs you your staff.
+    """
+    b = world.businesses[bid]
+    view: dict[str, Any] = {
+        "id": bid,
+        "name": b.name,
+        "type": b.type,
+        "location": b.location,
+        "cash": round(b.cash, 2),
+        "stock": dict(b.inventory),
+        "workers": len(b.production_staff()),
+        "researchers": len(b.researchers()),
+        "research_tier": b.research.efficiency_tier,
+        "unspent_rp": round(b.research.unspent_rp, 1),
+    }
+    payroll = sum(e.wage for e in b.roster if e.wage > 0)
+    if payroll:
+        view["payroll_per_hour"] = round(payroll, 2)
+        view["hours_of_payroll_left"] = round(b.cash / payroll, 1)
+    if not b.active_production:
+        # An idle business used to report nothing but a row of zeros, and an
+        # owner reading it had no way to tell "new and doing nothing" from
+        # "running fine". In the 2026-08-16 smoke an agent founded a Weaponsmith
+        # at hour 8, was shown exactly that, and went back to a wage job for the
+        # remaining 16 hours while the business sat empty. Say the next step.
+        makes = ", ".join(b.spec.outputs[:6]) if b.spec.outputs else "nothing"
+        # Extraction has no inputs, so telling a farmer to go and buy feedstock
+        # would be a plain falsehood -- the exact class of wrong-observation bug
+        # that has cost this project eight runs.
+        needs = (
+            "somebody working in it, and a price"
+            if b.type in D.EXTRACTION_BUSINESS_TYPES
+            else "feedstock (order_from_business), somebody working in it, and a price"
+        )
+        view["production"] = (
+            f"IDLE -- making nothing and earning nothing. Call set_production to "
+            f"start. This type can make: {makes}. It also needs {needs}."
+        )
+    else:
+        recipe = (D.REFINING_RECIPES.get(b.active_production)
+                  or D.CRAFTING_RECIPES.get(b.active_production))
+        needs = ""
+        if recipe and recipe.inputs:
+            needs = " Needs per unit: " + ", ".join(
+                f"{q}x {i}" for i, q in recipe.inputs.items()
+            ) + "."
+        if not b.production_blocked:
+            view["production"] = f"making {b.active_production}.{needs}"
+        else:
+            # Name the MISSING input. Saying only "no feedstock" while the stock
+            # list plainly shows goods reads as "not enough of what you have",
+            # and on 2026-08-16 a tavern owner answered it by ordering a third
+            # load of Dirty Water -- an input no tavern can use -- while the one
+            # it actually lacked was Purified Water. The engine knows exactly
+            # which line of the recipe is short; it must say so.
+            short = [
+                f"{i} (have {b.inventory.get(i, 0)}, need {q})"
+                for i, q in (recipe.inputs.items() if recipe else [])
+                if b.inventory.get(i, 0) < q
+            ]
+            if short:
+                why = "MISSING: " + "; ".join(short)
+            else:
+                why = (
+                    "the yard is FULL -- nothing can be stored until a courier "
+                    "hauls stock away"
+                )
+            view["production"] = (
+                f"STALLED making {b.active_production} -- {why}.{needs} NPC hires "
+                f"are not paid while stalled; agent employees are."
+            )
+    mine = [
+        p for p in world.job_postings.values()
+        if p.business_id == bid and p.is_live(world.sim_time)
+    ]
+    if mine:
+        # Age and applicant count together, because the useful signal is "three
+        # hours up and nobody has answered" -- that is the moment to raise the
+        # wage, and an owner cannot infer it from a list of names alone.
+        view["job_postings"] = [
+            {
+                "id": p.id,
+                "role": p.role,
+                "wage": p.wage,
+                "hours_on_board": round(p.hours_open(world.sim_time), 1),
+                "applicants": list(p.applicants),
+                "next": (
+                    f"hire_applicant('{p.id}', '<agent id>') to take one"
+                    if p.applicants else
+                    f"NOBODY has applied in {p.hours_open(world.sim_time):.1f}h. "
+                    f"close_job('{p.id}') and post_job again at a higher wage, "
+                    f"or hire_npc_employee instead."
+                ),
+            }
+            for p in mine
+        ]
+    if b.insolvent_since is not None:
+        left = D.BANKRUPTCY_GRACE_HOURS - (world.sim_time - b.insolvent_since) / 3600.0
+        view["INSOLVENT"] = (
+            f"could not pay wages; unpaid staff have left. This business CLOSES "
+            f"in {max(0.0, left):.1f}h unless it holds {b.insolvent_debt:.2f} "
+            f"(one hour of the payroll it missed). deposit that much to save it."
+        )
+    return view
+
+
 def observe(
     world: World,
     log: EventLog,
@@ -599,19 +786,7 @@ def observe(
         }
     if agent.owned_businesses:
         you["businesses"] = [
-            {
-                "id": bid,
-                "name": world.businesses[bid].name,
-                "type": world.businesses[bid].type,
-                "location": world.businesses[bid].location,
-                "cash": round(world.businesses[bid].cash, 2),
-                "stock": dict(world.businesses[bid].inventory),
-                "workers": len(world.businesses[bid].production_staff()),
-                "researchers": len(world.businesses[bid].researchers()),
-                "research_tier": world.businesses[bid].research.efficiency_tier,
-                "unspent_rp": round(world.businesses[bid].research.unspent_rp, 1),
-            }
-            for bid in agent.owned_businesses
+            _owned_business_view(world, bid) for bid in agent.owned_businesses
         ]
     if agent.owned_property:
         prop = world.properties[agent.owned_property]

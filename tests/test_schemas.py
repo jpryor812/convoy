@@ -296,9 +296,15 @@ def test_prefix_cost_is_within_budget():
     """Guards the number the caching decision rests on."""
     from convoy import observe as O
 
+    # 12,000 -> 13,000 on 2026-08-16. Four job-board actions (post_job,
+    # apply_to_job, hire_applicant, close_job) and a longer briefing. The prefix
+    # is CACHED at 94-97% on every live run, so ~800 more tokens of it costs
+    # almost nothing per call -- the guard is here to keep growth deliberate,
+    # not to freeze the action set. Raise it only alongside a feature, and say
+    # which one, as here.
     tools_tok = len(json.dumps(S.tool_schemas())) // 4
     prefix_tok = len(O.static_briefing()) // 4 + tools_tok
-    ok("cached prefix under 12k tokens", prefix_tok < 12000, f"~{prefix_tok} tokens")
+    ok("cached prefix under 13k tokens", prefix_tok < 13000, f"~{prefix_tok} tokens")
     ok("prefix is large enough to cache", prefix_tok > 1024, f"~{prefix_tok} tokens")
 
 

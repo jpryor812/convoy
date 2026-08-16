@@ -288,9 +288,15 @@ def test_payload_stays_within_budget():
     # workshop without passing a refinery, and each one costs a price-table row
     # and a recipe line. The designer accepted the token cost explicitly. Still
     # a guard against drift, just at the size the briefing now is.
+    # 4,800 -> 5,000 on 2026-08-16, for the job board and the one-way chain rule.
+    # Both are things the briefing MUST carry: a player job advert is invisible
+    # unless agents know post_job/apply_to_job exist, and the chain rule now
+    # refuses purchases, so an agent that does not know it will be refused. The
+    # 2026-08-16 run is the argument -- four taverns spent 156 denari on Dirty
+    # Water that the rule now forbids outright.
     ok(
-        "briefing under 4.8k tokens",
-        len(brief) // 4 < 4800,
+        "briefing under 5k tokens",
+        len(brief) // 4 < 5000,
         f"~{len(brief) // 4} tokens",
     )
     ok(

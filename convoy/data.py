@@ -46,8 +46,10 @@ INSURANCE_RESERVE_PCT = 0.70    # reserve floor, derived from the payout rate
 
 PLAYER_STORE_FLOOR_PCT = 0.60   # players cannot retail below this % of base price
 
-NPC_WAGE_MULTIPLIER = 2.25      # NPC wage / smart player wage
 MIN_WAGE_PCT_OF_SMART = 0.50
+# NPC_WAGE_MULTIPLIER lives with the wage tables further down, next to the
+# SMART_WAGES it multiplies. It was defined here AND there, and the second
+# definition silently won.
 
 # Stale Assumptions rows, retained only so the divergence from the spreadsheet is
 # explicit and greppable. The Businesses tab's diminishing-returns model governs.
@@ -69,6 +71,10 @@ GOVERNMENT_MAX_EMPLOYEES = 2
 BUSINESS_REVENUE_MULTIPLE = 3.0
 
 BANKRUPTCY_GRACE_HOURS = 24.0
+# How long a job advert stays on the board before it lapses. Long enough that a
+# posting outlives the poster's next few wake-ups, short enough that a wage
+# nobody will take does not sit there all run.
+JOB_POSTING_HOURS = 12.0
 RP_PER_RESEARCHER_HOUR = 8.0
 
 # INCOME TAX -- 3% of every paycheck (designer decision, 2026-08-12), down from
@@ -443,7 +449,16 @@ CRAFT_BASE_RATE_HR = 15.0            # superseded by the curve below; kept grepp
 # could not survive on state sales alone. Extraction moves onto the curve in the
 # same change as business-to-business trade, not before -- otherwise nothing can
 # bootstrap.
-CRAFT_TIME_COEFFICIENT = 0.0296
+# 2026-08-16: divided by 4 (was 0.0296). At the old rate a worker generated less
+# VALUE ADDED per hour than any wage in the game could be paid from -- a Refinery
+# Worker produced ~18.7/hr against a 37.78 player floor and an 85 NPC wage, so a
+# refinery lost money on every worker no matter how well it was run. The 96-hour
+# run of 2026-08-16 only looked solvent because `--time-scale 0.2` multiplied
+# output 5x while wages accrue per SIMULATED hour, which is exactly the distortion
+# section 5 warns that flag creates. Folding a 4x into the coefficient makes the
+# economy close at time-scale 1.0, so the flag goes back to being a test tool and
+# the numbers in the docs describe the real world again.
+CRAFT_TIME_COEFFICIENT = 0.0074
 CRAFT_TIME_EXPONENT = 0.927
 
 
@@ -635,18 +650,36 @@ BUSINESS_TYPES: dict[str, BusinessType] = {
 # Wages tab
 # ---------------------------------------------------------------------------
 
-NPC_WAGES: dict[str, float] = {
-    "Laborer": 45,
-    "Miner": 65,
-    "Farmhand": 50,
-    "Refinery Worker": 85,
-    "Store Clerk": 40,
-    "Blacksmith": 80,
-    "Stablehand": 45,
-    "Researcher": 75,
+# SMART_WAGES is the SOURCE and NPC hires are priced off it -- the derivation
+# used to run the other way (2026-08-16). It was inverted because the two
+# numbers need to move independently: player floors are calibrated against
+# GOVERNMENT_WAGE_RANGE and against what a worker actually produces, while the
+# NPC premium is a separate question about how much a business pays for a hire
+# that is always on shift. With NPC_WAGES as the source, cutting an NPC wage
+# dragged the player floor down with it -- taking a Refinery Worker's floor from
+# 37.78 to 17.78, below the state's own 25.00, so no agent would ever have taken
+# a player refinery job. These values are unchanged; only the direction is.
+SMART_WAGES: dict[str, float] = {
+    "Laborer": 20.0,
+    "Miner": 28.888888888888889,
+    "Farmhand": 22.222222222222221,
+    "Refinery Worker": 37.777777777777779,
+    "Store Clerk": 17.777777777777779,
+    "Blacksmith": 35.555555555555557,
+    "Stablehand": 20.0,
+    "Researcher": 33.333333333333336,
 }
 
-SMART_WAGES = {r: w / NPC_WAGE_MULTIPLIER for r, w in NPC_WAGES.items()}
+# An NPC costs this much more than the player floor. Cut from 2.25 to 1.50 on
+# 2026-08-16: at 2.25 an NPC Refinery Worker cost 85/hr against the 75.6/hr of
+# value its labour created, so the ONE role most businesses need was the one
+# role that could never pay for itself, and a thin agent population left owners
+# with no alternative. At 1.50 every role clears its own wage -- Refinery Worker
+# only just, at 1.33x, and the rest between 2.8x and 5x -- while an NPC still
+# costs half again what an agent employee does, so a real hire stays the better
+# deal whenever one is available.
+NPC_WAGE_MULTIPLIER = 1.50
+NPC_WAGES: dict[str, float] = {r: w * NPC_WAGE_MULTIPLIER for r, w in SMART_WAGES.items()}
 WAGE_FLOORS = {r: w * MIN_WAGE_PCT_OF_SMART for r, w in SMART_WAGES.items()}
 
 # What the STATE pays (designer decision, 2026-08-14). Deliberately a narrow

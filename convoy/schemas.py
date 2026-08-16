@@ -99,6 +99,19 @@ DESCRIPTIONS: dict[str, str] = {
     ),
     "set_production": "Choose which item your business produces.",
     "set_wage": "Set the hourly wage your business offers for a role. Higher wages attract workers.",
+    "post_job": (
+        "Advertise a role and wage from your business to every agent. The only "
+        "way anyone learns you are hiring. Applicants appear in your observation; "
+        "you choose."
+    ),
+    "apply_to_job": (
+        "Answer a job advert by its id. The owner still picks, so you are not "
+        "hired yet and may apply to several."
+    ),
+    "hire_applicant": (
+        "Take one of the agents who answered your advert, at the wage you posted."
+    ),
+    "close_job": "Pull one of your job adverts, usually to repost at a new wage.",
     "hire_npc_employee": (
         "Hire an NPC worker, who is always on shift but costs more than a player. "
         "Remember every extra worker cuts every worker's individual rate by "

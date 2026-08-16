@@ -4,7 +4,7 @@ YOU
   id: A0001
   name: Tester
   denari: 500.0
-  net_worth: 1202.0
+  net_worth: 1442.0
   location: Kiln Row
   health: 100.0
   hunger: Normal, 0.0h since eating
@@ -18,7 +18,7 @@ YOU
   your_vehicles:
     - id=V1, type=Donkey Cart, location=Kiln Row, cargo_capacity=100, mounted=True, condition=functional
   businesses:
-    - id=B0001, name=Tester's Farm, type=Farm, location=Kiln Row, cash=120.0, workers=0, researchers=0, research_tier=0, unspent_rp=0.0
+    - id=B0001, name=Tester's Farm, type=Farm, location=Kiln Row, cash=120.0, workers=0, researchers=0, research_tier=0, unspent_rp=0.0, production=IDLE -- making nothing and earning nothing. Call set_production to start. This type can make: Dirty Water, Wheat, Hide. It also needs somebody working in it, and a price.
       stock: Grain=30
 
 WHERE YOU ARE

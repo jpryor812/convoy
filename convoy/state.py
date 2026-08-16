@@ -190,8 +190,19 @@ class Business:
     research: ResearchState = field(default_factory=ResearchState)
     active_production: str | None = None      # what this business is currently making
     insolvent_since: float | None = None
+    # What the business must hold to prove it is viable again: one hour of the
+    # payroll it failed to meet, captured BEFORE the unpaid staff walked.
+    # Without it, shedding the whole roster drops payroll to zero and the
+    # insolvency clock clears itself -- bankruptcy dodged by firing everyone.
+    insolvent_debt: float = 0.0
     closed: bool = False
     production_buffer: float = 0.0    # fractional units carried between ticks
+    # Set by the engine when production cannot proceed -- no feedstock, or the
+    # yard is full. NPC hires are paid only for hours the business can actually
+    # produce, so this is what makes an idle NPC free instead of ruinous. One
+    # agent lost 2,124 denari in 11 simulated hours to three NPC refinery workers
+    # standing in a refinery with no ore (2026-08-16).
+    production_blocked: bool = False
     research_buffer: float = 0.0
     peak_headcount: int = 0           # max simultaneous production staff observed
     plots: int = 0                    # spur land taken; 0 for main-road businesses
@@ -277,10 +288,30 @@ class Business:
         zero, so founding one destroyed net worth on the spot and punished the
         behaviour the run exists to observe. Both terms together mean a business
         is worth its purchase price on day one and grows with what it does.
+
+        Cash and stock are counted too, or the books lie in both directions.
+        Without cash, a business could run itself deep into debt and still show
+        as an asset: on 2026-08-16 the leading agent was ranked at 1,375 while
+        holding two businesses 2,852 in the red, so the score the agents were
+        told to maximise had come loose from solvency. Without stock, spending
+        cash on feedstock would LOOK like destroying value -- the same mistake
+        that once made founding a business read as a loss -- and ordering stock
+        is the behaviour these runs exist to observe.
+
+        Startup cost is the fixed asset, cash and stock are current assets, and
+        3x daily revenue is goodwill; nothing is counted twice. Stock is booked
+        at base price while liquidation pays the NPC buy rate, so net worth runs
+        a little ahead of what a fire sale would realise. That is ordinary book
+        value, and deliberate.
         """
         spec = D.BUSINESS_TYPES.get(self.type)
         base = spec.startup_cost if spec else 0.0
-        return base + D.BUSINESS_REVENUE_MULTIPLE * self.daily_revenue(world)
+        return (
+            base
+            + D.BUSINESS_REVENUE_MULTIPLE * self.daily_revenue(world)
+            + self.cash
+            + E.inventory_value(self.inventory)
+        )
 
     def buy_price_for(self, item: str) -> float:
         """What this business pays a player selling `item` to it."""
@@ -490,6 +521,40 @@ class Guild:
 # ---------------------------------------------------------------------------
 
 @dataclass
+class JobPosting:
+    """A business advertising a role at a wage, visible to everyone.
+
+    Before this the player labour market was invisible. An owner could set any
+    wage above the floor, but a jobseeker standing at the business saw only
+    "1 player-owned and may hire" -- no role, no rate, no sign it was hiring at
+    all. On 2026-08-16 a mine offering a Miner 35.00/hr could not attract a
+    single agent and fell back on an NPC at 43.33, while agents queued for the
+    state's 20.56. The offer existed; nothing carried it.
+
+    Applications do NOT auto-hire. The owner reviews and picks, which is what
+    makes reposting at a lower wage -- or a higher one when nobody bites -- a
+    real decision rather than a formality.
+    """
+
+    id: str
+    business_id: str
+    owner: str                        # agent id, so applicants know who decides
+    role: str
+    wage: float
+    posted_at: float
+    expires_at: float
+    as_researcher: bool = False
+    applicants: list[str] = field(default_factory=list)   # agent ids, in order
+    status: str = "open"              # open | filled | closed | expired
+
+    def is_live(self, sim_time: float) -> bool:
+        return self.status == "open" and sim_time < self.expires_at
+
+    def hours_open(self, sim_time: float) -> float:
+        return max(0.0, (sim_time - self.posted_at) / 3600.0)
+
+
+@dataclass
 class ChatMessage:
     """One line of chat.
 
@@ -657,6 +722,7 @@ class World:
     chat: list[ChatMessage] = field(default_factory=list)
     trade_offers: dict[str, "TradeOffer"] = field(default_factory=dict)
     consignments: dict[str, "Consignment"] = field(default_factory=dict)
+    job_postings: dict[str, "JobPosting"] = field(default_factory=dict)
     # Items and Denari dropped on death, lootable by anyone at that location.
     ground_loot: dict[str, dict] = field(default_factory=dict)
     next_property_tax_at: float = D.PROPERTY_TAX_PERIOD_HOURS * 3600.0

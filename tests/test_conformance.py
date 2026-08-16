@@ -163,15 +163,22 @@ def test_npc_prices():
 # ---------------------------------------------------------------------------
 
 def test_wages():
+    # The NPC column DIVERGES from the reference on purpose (2026-08-16): the
+    # multiplier over the player floor was cut from 2.25 to 1.50, so an NPC hire
+    # costs 1.5x an agent employee rather than 2.25x. At 2.25 an NPC Refinery
+    # Worker cost 85/hr against the 75.6/hr of value its labour created -- the
+    # one role every supply chain needs was the one role that could never pay
+    # for itself. Player floors and legal floors are UNCHANGED, which is the
+    # point of the split: those two columns still hold the reference exactly.
     expected = {
-        "Laborer": (45, 20, 10),
-        "Miner": (65, 28.888888, 14.444444),
-        "Farmhand": (50, 22.222222, 11.111111),
-        "Refinery Worker": (85, 37.777777, 18.888888),
-        "Store Clerk": (40, 17.777777, 8.888888),
-        "Blacksmith": (80, 35.555555, 17.777777),
-        "Stablehand": (45, 20, 10),
-        "Researcher": (75, 33.333333, 16.666666),
+        "Laborer": (30.0, 20, 10),
+        "Miner": (43.333333, 28.888888, 14.444444),
+        "Farmhand": (33.333333, 22.222222, 11.111111),
+        "Refinery Worker": (56.666666, 37.777777, 18.888888),
+        "Store Clerk": (26.666666, 17.777777, 8.888888),
+        "Blacksmith": (53.333333, 35.555555, 17.777777),
+        "Stablehand": (30.0, 20, 10),
+        "Researcher": (50.0, 33.333333, 16.666666),
     }
     for role, (npc, smart, floor) in expected.items():
         check(f"NPC wage {role}", E.npc_wage(role), npc, tol=1e-4)
@@ -392,12 +399,17 @@ def test_armor_set_totals():
 # ---------------------------------------------------------------------------
 
 def test_progression_hours():
-    """Hours of labor to afford key purchases, at each stated wage."""
+    """Hours of labor to afford key purchases, at each stated wage.
+
+    The NPC-Laborer column moved with the 1.50 multiplier -- see test_wages. The
+    two SMART columns are the ones that describe what an agent actually earns,
+    and they are unchanged.
+    """
     for item, cost, laborer, refiner, npc_lab in [
-        ("Camel", 150, 7.5, 3.970588, 3.333333),
-        ("Horse", 200, 10, 5.294118, 4.444444),
-        ("Donkey Cart", 400, 20, 10.588235, 8.888889),
-        ("4-Horse Chariot", 1600, 80, 42.352941, 35.555556),
+        ("Camel", 150, 7.5, 3.970588, 5.0),
+        ("Horse", 200, 10, 5.294118, 6.666667),
+        ("Donkey Cart", 400, 20, 10.588235, 13.333333),
+        ("4-Horse Chariot", 1600, 80, 42.352941, 53.333333),
     ]:
         check(f"{item} base price", D.base_price(item), cost)
         check(f"{item} hrs @ Laborer smart", cost / E.smart_wage("Laborer"), laborer, tol=1e-4)

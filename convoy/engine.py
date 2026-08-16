@@ -111,6 +111,7 @@ class Engine:
         self._property_tax()
         self._road_tax()
         self._expire_social()
+        self._expire_job_postings()
         self._check_solvency()
         self._respawn()
         self._decisions()
@@ -188,7 +189,9 @@ class Engine:
             agent.denari += payout
             broker = w.government_business("Insurance Brokerage")
             if broker and not broker.is_government:
-                broker.cash -= payout
+                # Floors at zero like payroll: a player-owned broker cannot be
+                # driven into debt by a claim it cannot cover.
+                broker.cash = max(0.0, broker.cash - payout)
             self.log.emit(
                 w.sim_time, "insurance_claim_paid", actor=agent.id,
                 product="Life", amount=round(payout, 2),
@@ -277,6 +280,10 @@ class Engine:
         w = self.world
         for biz in w.businesses.values():
             if biz.closed or not biz.active_production:
+                # Nothing set to make is not "blocked" -- there is no attempt to
+                # block. _pay_wages tests active_production separately, so clear
+                # the flag rather than leave a stale one from an earlier tick.
+                biz.production_blocked = False
                 continue
             output = biz.active_production
             headcount = biz.active_headcount(w)
@@ -321,12 +328,39 @@ class Engine:
                         * (1.0 + agent.meal_work_bonus)
                     agent.skill_hours[emp.role] = agent.skill_hours.get(emp.role, 0.0) + hours
 
+            recipe = D.REFINING_RECIPES.get(output) or D.CRAFTING_RECIPES.get(output)
+
+            # Decide up front whether this business CAN make anything right now,
+            # from its current stock and yard alone. This has to happen before
+            # the buffer, not after: a unit only pops out once the buffer passes
+            # 1.0, so testing blockage at that point leaves a window -- the whole
+            # time the buffer is filling -- in which a business with no feedstock
+            # at all still looks productive. NPC pay keys off this flag, and that
+            # window was billing idle NPCs (caught by test_business_solvency).
+            blocked = False
+            if recipe and not biz.is_government:
+                blocked = min(
+                    (biz.inventory.get(i, 0) // q for i, q in recipe.inputs.items()),
+                    default=0,
+                ) < 1
+            if not blocked and biz.plots:
+                if E.site_storage_capacity(biz.plots) - sum(biz.inventory.values()) <= 0:
+                    self.log.emit(
+                        w.sim_time, "site_full", subject=biz.id,
+                        location=biz.location, business=biz.name,
+                        capacity=E.site_storage_capacity(biz.plots),
+                    )
+                    blocked = True
+            biz.production_blocked = blocked
+            if blocked:
+                biz.production_buffer = min(biz.production_buffer, 1.0)
+                continue
+
             biz.production_buffer += rate * hours
             units = int(biz.production_buffer)
             if units <= 0:
                 continue
 
-            recipe = D.REFINING_RECIPES.get(output) or D.CRAFTING_RECIPES.get(output)
             if recipe and not biz.is_government:
                 # Raw materials are auto-shipped to factories (designer decision,
                 # 2026-08-11) -- no hauling leg for production inputs yet. The
@@ -335,28 +369,30 @@ class Engine:
                 # column uses, so the designed margins hold.
                 units = self._source_inputs(biz, recipe, units)
                 if units <= 0:
+                    # Stock covers fewer than the units the buffer earned; the
+                    # blocked check above already cleared the full-shortage case.
                     biz.production_buffer = min(biz.production_buffer, 1.0)
+                    biz.production_blocked = True
                     continue
                 for i, q in recipe.inputs.items():
                     biz.remove_item(i, q * units)
 
             # A worked site can only stockpile so much. When the yard is full,
             # production stalls until someone hauls it away -- which is what
-            # makes carts, expansion, and distance-to-market matter.
+            # makes carts, expansion, and distance-to-market matter. The full
+            # case is handled above; this only trims a batch to the room left.
             if biz.plots:
-                room = E.site_storage_capacity(biz.plots) - sum(biz.inventory.values())
-                if room <= 0:
-                    if biz.active_production:
-                        self.log.emit(
-                            w.sim_time, "site_full", subject=biz.id,
-                            location=biz.location, business=biz.name,
-                            capacity=E.site_storage_capacity(biz.plots),
-                        )
+                units = min(
+                    units,
+                    E.site_storage_capacity(biz.plots) - sum(biz.inventory.values()),
+                )
+                if units <= 0:
                     biz.production_buffer = min(biz.production_buffer, 1.0)
+                    biz.production_blocked = True
                     continue
-                units = min(units, room)
 
             biz.production_buffer -= units
+            biz.production_blocked = False
             biz.add_item(output, units)
             self.log.emit(
                 w.sim_time, "production", subject=biz.id, location=biz.location,
@@ -404,16 +440,44 @@ class Engine:
         return D.production_rate_hr(output)
 
     def _pay_wages(self, hours: float) -> None:
+        """Payroll, with two rules added on 2026-08-16.
+
+        NPC hires are paid only for hours the business can actually produce.
+        They used to bill around the clock regardless: three NPC refinery
+        workers standing in a refinery with no ore cost their owner 2,124
+        denari in 11 simulated hours, which is most of how that agent finished
+        the run 2,670 underwater while ranked first. An NPC is a machine, so
+        charging for an idle one is charging for nothing. AGENT employees are
+        NOT gated this way -- a player employee turns up, and whether feedstock
+        arrived is the owner's problem, not theirs. Gating their pay too would
+        make a player job strictly riskier than a state job, since government
+        businesses source their own inputs and therefore always produce, and
+        the labour would all go to the state.
+
+        A business cannot pay what it does not have. Cash floors at zero and
+        the unpaid worker leaves; missing payroll starts the insolvency clock.
+        Before this, `cash -= gross` ran unguarded and a business could carry
+        unbounded debt while its owner drew a wage out of it.
+        """
         w = self.world
         gov = w.government
         for biz in w.businesses.values():
             if biz.closed:
                 continue
-            for emp in biz.roster:
+            producing = bool(biz.active_production) and not biz.production_blocked
+            missed = False
+            payroll_before = self._hourly_payroll(biz)   # captured before anyone walks
+            for emp in list(biz.roster):
                 if emp.is_npc:
-                    # NPC hires are always on shift and always cost the NPC wage.
+                    if not producing:
+                        continue    # idle machine, no charge
                     gross = emp.wage * hours
-                    biz.cash -= gross
+                    if not biz.is_government and biz.cash < gross:
+                        self._release_unpaid(biz, emp)
+                        missed = True
+                        continue
+                    if not biz.is_government:
+                        biz.cash -= gross
                     _net, tax = E.apply_wage_tax(gross, gov.wage_tax)
                     gov.collect(tax)
                     continue
@@ -425,10 +489,42 @@ class Engine:
                     continue    # owner self-staffing draws no wage
                 gross = emp.wage * hours
                 if not biz.is_government:
+                    if biz.cash < gross:
+                        self._release_unpaid(biz, emp)
+                        missed = True
+                        continue
                     biz.cash -= gross
                 net, tax = E.apply_wage_tax(gross, gov.wage_tax)
                 agent.denari += net
                 gov.collect(tax)
+            if missed and biz.insolvent_since is None:
+                biz.insolvent_since = w.sim_time
+                biz.insolvent_debt = payroll_before
+                self.log.emit(
+                    w.sim_time, "bankruptcy_warning", actor=biz.owner, subject=biz.id,
+                    business=biz.name, cash=round(biz.cash, 2),
+                    owed=round(payroll_before, 2),
+                    grace_hours=D.BANKRUPTCY_GRACE_HOURS, reason="payroll unmet",
+                )
+
+    def _release_unpaid(self, biz: Business, emp) -> None:
+        """An unpaid worker walks. This is the brake on a payroll death spiral:
+        the roster shrinks the moment it cannot be met, so an NPC that cannot be
+        paid also stops costing money instead of compounding."""
+        w = self.world
+        if emp in biz.roster:
+            biz.roster.remove(emp)
+        worker = w.agents.get(emp.agent_id) if not emp.is_npc else None
+        if worker and worker.current_job and worker.current_job[0] == biz.id:
+            worker.current_job = None
+            if worker.activity.kind == "work":
+                worker.activity = Activity("idle", w.sim_time)
+        self.log.emit(
+            w.sim_time, "wages_unpaid", actor=biz.owner, subject=biz.id,
+            business=biz.name, role=emp.role,
+            worker="NPC" if emp.is_npc else emp.agent_id,
+            cash=round(biz.cash, 2),
+        )
 
     def _research(self, hours: float) -> None:
         w = self.world
@@ -553,24 +649,44 @@ class Engine:
             policies=list(w.government.active_policies),
         )
 
+    def _expire_job_postings(self) -> None:
+        """A wage nobody will take should not sit on the board all run."""
+        w = self.world
+        for p in w.job_postings.values():
+            if p.status == "open" and w.sim_time >= p.expires_at:
+                p.status = "expired"
+                self.log.emit(
+                    w.sim_time, "job_expired", actor=p.owner, subject=p.business_id,
+                    posting=p.id, role=p.role, wage=p.wage,
+                    applicants=len(p.applicants),
+                )
+
     def _check_solvency(self) -> None:
-        """24-hour grace period after cash hits zero, then the business closes."""
+        """Grace period after payroll is first missed, then the business closes.
+
+        The trigger used to be `cash < 0`, which cannot happen now that wages
+        floor at zero -- so insolvency is declared by _pay_wages instead, and
+        this only runs the clock. The clock clears when the business holds one
+        hour of the payroll it FAILED to meet, captured before the unpaid staff
+        walked. Measuring against the current roster instead would let an owner
+        clear the clock by losing everyone, since an empty roster costs nothing
+        an hour.
+        """
         w = self.world
         for biz in list(w.businesses.values()):
             if biz.closed or biz.is_government:
                 continue
-            if biz.cash < 0:
-                if biz.insolvent_since is None:
-                    biz.insolvent_since = w.sim_time
-                    self.log.emit(
-                        w.sim_time, "bankruptcy_warning", actor=biz.owner, subject=biz.id,
-                        business=biz.name, cash=round(biz.cash, 2),
-                        grace_hours=D.BANKRUPTCY_GRACE_HOURS,
-                    )
-                elif w.sim_time - biz.insolvent_since >= D.BANKRUPTCY_GRACE_HOURS * 3600.0:
-                    self._close_business(biz)
-            else:
+            if biz.insolvent_since is None:
+                continue
+            if biz.cash >= biz.insolvent_debt:
                 biz.insolvent_since = None
+                biz.insolvent_debt = 0.0
+            elif w.sim_time - biz.insolvent_since >= D.BANKRUPTCY_GRACE_HOURS * 3600.0:
+                self._close_business(biz)
+
+    def _hourly_payroll(self, biz: Business) -> float:
+        """What one more hour of the current roster costs. Zero for an empty one."""
+        return sum(e.wage for e in biz.roster if e.wage > 0)
 
     def _close_business(self, biz: Business) -> None:
         w = self.world
