@@ -26,10 +26,16 @@ from dataclasses import dataclass, field
 # ---------------------------------------------------------------------------
 
 CURRENCY_NAME = "Denari"
-STARTING_DENARI = 100.0
+STARTING_DENARI = 200.0
 
 NPC_BUY_PCT_RAW = 0.40          # Trading Post pays this % of base when buying from players
-NPC_SELL_PCT_COMMON = 1.60      # General Store charges this % of base
+# 1.60 -> 1.40 (designer decision, 2026-08-16). The chain's own rules compound:
+# raw prices set refined prices through the 75% rule, refined set the meal base
+# through it again, and the state's markup lands on top of all of it. A meal was
+# reaching the shopper at 30.24 -- two hours of the lowest wage every twelve.
+# Trimming the state's cut is the one lever that does not distort a single
+# margin upstream, because the state is a backstop rather than a merchant.
+NPC_SELL_PCT_COMMON = 1.40
 NPC_BUY_PCT_ORE = 0.40          # Refinery buying ore
 NPC_SELL_PCT_REFINED = 1.50     # Refinery selling refined goods
 NPC_SELL_PCT_WEAPONS = 1.70     # Weaponsmith / Armory

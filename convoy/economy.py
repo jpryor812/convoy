@@ -151,9 +151,12 @@ def apply_wage_tax(gross: float, wage_tax: float) -> tuple[float, float]:
 
 
 def sales_tax_on(price: float, sales_tax: float) -> float:
-    """Buyer pays this on top of the listed price; seller remits it.
+    """What the SELLER owes the state on a sale of `price`.
 
-    Incidence is not specified in the workbook -- stated assumption, flagged.
+    Incidence changed 2026-08-15: this is a tax on business revenue, not a
+    surcharge on the shopper. A buyer pays exactly the marked price -- what you
+    see is what you pay -- and the seller keeps the rest after remitting this.
+    The workbook does not specify incidence; this is the designer's call.
     """
     return price * clamp_tax(sales_tax)
 

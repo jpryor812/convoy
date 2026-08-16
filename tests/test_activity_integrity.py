@@ -227,6 +227,68 @@ def test_owned_vehicle_ids_are_observable():
     ok("capacity rose with the mount", a.carry_capacity(world) > 5, str(a.carry_capacity(world)))
 
 
+def test_a_working_agent_is_not_interrupted():
+    """A committed shift must not collect a decision every 15 minutes.
+
+    75% of every action in the 2026-08-15 smoke was an agent answering "still
+    working" to a re-evaluation it never needed. Hunger is the exception.
+    """
+    world, log, a = setup()
+    biz = [b for b in world.businesses.values() if b.type == "Refinery"][0]
+    a.location = biz.location
+    A.apply_for_job(world, log, a, biz.id)
+    A.start_shift(world, log, a, hours=8)
+
+    asked: list[str] = []
+
+    class Counting:
+        def decide(self, world, agent, reason):
+            asked.append(reason)
+
+    Engine(
+        world, log, Counting(), EngineConfig(
+            duration_hours=6.0, speed=1e9, checkpoint_every_hours=1e9,
+        ),
+    ).run()
+    ok("a fed worker is left alone for 6h", len(asked) == 0, f"{len(asked)} decisions")
+
+    # Hunger must still get through. Drive it through the real clock -- the
+    # engine recomputes the stage every tick, so setting the field is not enough.
+    a.hours_since_last_meal = 13.0
+    a.last_meal_window = 12.0
+    asked.clear()
+    Engine(
+        world, log, Counting(), EngineConfig(
+            duration_hours=7.0, speed=1e9, checkpoint_every_hours=1e9,
+        ),
+    ).run()
+    ok("a HUNGRY worker is woken", len(asked) > 0, f"{len(asked)} decisions")
+
+
+def test_a_finished_shift_can_be_restarted():
+    """The guard against restarting a LIVE shift must not block the next one.
+
+    An expired shift keeps kind == "work" until something replaces it, so a
+    kind-only check locked an agent out of ever working again -- and the agent
+    is woken precisely BECAUSE the shift ended.
+    """
+    world, log, a = setup()
+    biz = [b for b in world.businesses.values() if b.type == "Refinery"][0]
+    a.location = biz.location
+    A.apply_for_job(world, log, a, biz.id)
+    A.start_shift(world, log, a, hours=8)
+
+    okr, msg = A.start_shift(world, log, a, hours=8)
+    ok("mid-shift restart is still refused", not okr, msg)
+
+    world.sim_time = 8 * 3600.0          # the shift has just resolved
+    okr, msg = A.start_shift(world, log, a, hours=8)
+    ok("a finished shift can be started again", okr, msg)
+    ok("the new shift runs a full 8h",
+       abs(a.activity.ends_at - (world.sim_time + 8 * 3600.0)) < 1e-6,
+       f"ends_at={a.activity.ends_at}")
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in tests:

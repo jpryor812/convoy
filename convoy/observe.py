@@ -312,7 +312,15 @@ def static_briefing() -> str:
         "goal is to maximise your own Net Worth (denari + businesses + vehicles + "
         "property + inventory) by the end. You compete and cooperate with other "
         "real agents. Nothing below ever changes; your current situation arrives "
-        "separately with each decision."
+        "separately with each decision.\n\n"
+        # Four smoke runs produced no business at all, by agents who could afford
+        # one and were told so. Spending 200 denari on a tavern LOOKS like losing
+        # 200 of net worth unless you know how a business is valued -- so say it.
+        "FOUNDING A BUSINESS DOES NOT COST YOU NET WORTH. A business you own "
+        f"counts as what you paid for it PLUS {D.BUSINESS_REVENUE_MULTIPLE:.0f}x "
+        "its last 24 hours of sales. So founding one is worth the same to you as "
+        "the denari you spent, and every sale after that adds to it. A wage is "
+        "safe and small; the money is in owning the thing that pays the wage."
     )
     return "\n".join([header, "", _static_map(), _static_economy(), _static_rules()])
 
@@ -423,7 +431,34 @@ def affordances(world: World, agent: Agent) -> list[str]:
             f"({M.HOME_BASE_PLOTS} plots) here."
         )
     else:
-        out.append("Main road: no mines, farms or homes can be built here.")
+        # Saying only what CANNOT be built here reads as "you cannot build here",
+        # and agents behaved accordingly: in the 2026-08-15 smoke, three agents
+        # sat on 225-285 denari -- enough to found four of the five types that
+        # belong on this ground -- and never tried. Name what IS possible, and
+        # what it costs, since affording it is the whole question.
+        affordable = sorted(
+            (spec.startup_cost, name)
+            for name, spec in D.BUSINESS_TYPES.items()
+            if name not in M.PLOT_CONSUMING_BUSINESSES
+            and spec.startup_cost <= agent.denari
+        )
+        if affordable:
+            out.append(
+                "Main road: mines and farms need spur land, but you could found "
+                + ", ".join(f"a {n} ({c:.0f})" for c, n in affordable[:5])
+                + " right here."
+            )
+        else:
+            cheapest = min(
+                (spec.startup_cost, name)
+                for name, spec in D.BUSINESS_TYPES.items()
+                if name not in M.PLOT_CONSUMING_BUSINESSES
+            )
+            out.append(
+                f"Main road: mines and farms need spur land. The cheapest business "
+                f"you could found here is a {cheapest[1]} at {cheapest[0]:.0f} "
+                f"and you have {agent.denari:.0f}."
+            )
 
     if not M.is_protected(agent.location):
         out.append("Unprotected ground: you can be attacked and robbed here.")
@@ -681,13 +716,28 @@ def observe(
 
     # What the agent is carrying for someone else, and what their own
     # businesses are still waiting on.
-    if agent.hauling:
-        con = world.consignments.get(agent.hauling)
-        if con:
-            obs["you"]["hauling"] = {
-                "id": con.id, "item": con.item, "qty": con.qty,
-                "deliver_to": con.destination, "pays": round(con.courier_fee, 2),
-            }
+    # A job the agent has TAKEN ON, claimed or loaded. Claiming used to make a
+    # job invisible: it leaves the public board the moment it is spoken for, and
+    # this block only filled once the goods were loaded -- so a courier held a
+    # job it could not see, with no id, no pickup point and no fee. In the
+    # 2026-08-15 smoke an agent claimed two jobs and walked to the far end of
+    # the valley.
+    job = world.consignments.get(agent.hauling) if agent.hauling else next(
+        (c for c in world.consignments.values()
+         if c.courier == agent.id and c.status == "claimed"),
+        None,
+    )
+    if job is not None:
+        loaded = agent.hauling == job.id
+        obs["you"]["your_haulage_job"] = {
+            "id": job.id, "item": job.item, "qty": job.qty,
+            "pays": round(job.courier_fee, 2),
+            "next": (
+                f"deliver at {job.destination}" if loaded
+                else f"collect at {job.origin}, then deliver at {job.destination}"
+            ),
+            "loaded": loaded,
+        }
     mine = [
         {
             "id": c.id, "item": c.item, "qty": c.qty, "status": c.status,

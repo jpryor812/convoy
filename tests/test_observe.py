@@ -198,7 +198,11 @@ def test_affordances_track_the_ground_underfoot():
 
     a.location = "The Hills"                     # main road, unprotected
     lines = O.observe(w, log, a, "reevaluation")["you_can"]
-    ok("main road blocks building", any("no mines, farms or homes" in x for x in lines))
+    # The line must say mines/farms need spur land AND name what could be founded
+    # here instead. Stating only the prohibition read as "you cannot build", and
+    # agents with ample money never tried.
+    ok("main road explains the spur rule", any("need spur land" in x for x in lines))
+    ok("main road still points somewhere", any("found" in x for x in lines))
     ok("danger flagged", any("attacked" in x for x in lines))
 
 

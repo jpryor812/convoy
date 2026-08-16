@@ -108,9 +108,11 @@ def test_trade_requires_colocation_and_reachable_goods():
     check("buyer can accept", ok, True)
     check("goods moved", b.inventory.get("Grain"), 2)
     check("seller kept the rest", a.inventory.get("Grain"), 2)
+    # Incidence flipped 2026-08-15: the buyer pays exactly the marked price and
+    # the SELLER remits the revenue tax out of what they receive.
     tax = 10.0 * w.government.sales_tax
-    check("buyer paid price + tax", round(before_b - b.denari, 2), round(10.0 + tax, 2))
-    check("seller received the price", a.denari, 510.0)
+    check("buyer paid exactly the marked price", round(before_b - b.denari, 2), 10.0)
+    check("seller received the price less tax", round(a.denari, 2), round(510.0 - tax, 2))
 
 
 def test_vehicle_and_home_extend_tradeable_pool():

@@ -76,7 +76,12 @@ def test_production_chain_input_costs():
     # test_every_good_clears_75pct_margin.
     # Refinery steps and armour still match the workbook exactly.
     expected = {
-        "Charcoal": 2, "Tanned Leather": 5, "Bronze": 18, "Iron": 16,
+        "Charcoal": 2, "Bronze": 18, "Iron": 16,
+        # Tanned Leather takes Dirty Water, repriced with the food chain.
+        "Tanned Leather": sum(
+            D.base_price(i) * q
+            for i, q in D.REFINING_RECIPES["Tanned Leather"].inputs.items()
+        ),
         "Leather Cap": 9, "Bronze Helm": 41, "Iron Helm": 45,
     }
     # Everything made in a WORKSHOP is derived, not frozen. Their inputs are a
@@ -113,7 +118,7 @@ def test_every_good_clears_75pct_margin():
 def test_refined_repricing():
     """The three goods that failed the 75% bar, and the rarity ordering."""
     for good, price, margin in [
-        ("Tanned Leather", 9, 0.80), ("Bronze", 32, 0.7778), ("Iron", 36, 1.25),
+        ("Bronze", 32, 0.7778), ("Iron", 36, 1.25),
     ]:
         recipe = D.REFINING_RECIPES[good]
         cost = sum(D.base_price(i) * q for i, q in recipe.inputs.items())
@@ -130,13 +135,18 @@ def test_refined_repricing():
 
 def test_npc_prices():
     """NPC Buy/Sell columns from the Resources tab."""
-    for res, buy, sell in [
-        ("Dirty Water", 0.4, 1.6), ("Wheat", 0.8, 3.2), ("Stone", 1.2, 4.8),
-        ("Copper Ore", 2.4, 9.6), ("Tin Ore", 3.2, 12.8), ("Iron Ore", 4.8, 19.2),
-        ("Hardwood", 3.2, 12.8),   # Wool removed 2026-08-12 (no clothing yet)
+    # BUY prices are the workbook's 0.4x and unchanged. SELL prices are derived:
+    # the state's common markup was cut 1.60 -> 1.40 on 2026-08-16 to bring a
+    # meal down from 30.24, and that markup is shared with raw goods.
+    for res, buy in [
+        ("Stone", 1.2), ("Copper Ore", 2.4), ("Tin Ore", 3.2),
+        ("Iron Ore", 4.8), ("Hardwood", 3.2),
     ]:
         check(f"NPC buy {res}", E.npc_buy_price(res), buy)
-        check(f"NPC sell {res}", E.npc_sell_price(res), sell)
+        check(f"NPC sell {res}", E.npc_sell_price(res),
+              D.base_price(res) * D.NPC_SELL_PCT_COMMON)
+    check("the state still sells dearer than it buys",
+          all(E.npc_sell_price(r) > E.npc_buy_price(r) for r in D.RAW_RESOURCES), True)
 
     # Refined goods use the 1.5x Refinery markup, not the 1.6x General Store rate.
     check("NPC sell Bronze", E.npc_sell_price("Bronze"), 48.0)   # 32 x 1.5
@@ -413,15 +423,17 @@ def test_net_worth_definition():
     # Businesses arrive pre-valued -- worth is startup cost plus 3x the last
     # 24 hours of sales, which needs a world. `Business.valuation` owns that;
     # this pins the sum.
+    inventory = {"Iron": 3, "Wheat": 10}
+    inv_value = sum(D.base_price(i) * q for i, q in inventory.items())
     biz_values = [150.0, 450.0 + 3 * 20.0]
     nw = E.net_worth(
         denari=100.0,
-        inventory={"Iron": 3, "Wheat": 10},          # 3*36 + 10*2 = 128
+        inventory=inventory,
         business_values=biz_values,
         vehicle_types=veh,
         property_value=500.0,
     )
-    check("net worth", nw, 100 + 128 + sum(biz_values) + veh_value + 500)
+    check("net worth", nw, 100 + inv_value + sum(biz_values) + veh_value + 500)
 
 
 def test_carrying_capacity():
@@ -456,7 +468,7 @@ def test_insurance():
 def test_price_floor():
     """Players cannot retail below 60% of base price."""
     check("Iron Sword floor", E.player_price_floor("Iron Sword"), 390.0)
-    check("Wheat floor", E.player_price_floor("Wheat"), 1.2)
+    check("Stone floor", E.player_price_floor("Stone"), 1.8)
 
 
 def test_travel_times():

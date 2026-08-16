@@ -241,6 +241,15 @@ def main() -> int:
         help="request pacing; raise once the account is off new-account limits",
     )
     ap.add_argument(
+        "--time-scale", type=float, default=1.0,
+        help="multiply every PRODUCTION time by this (0.2 = five times faster). "
+             "Costs nothing: production is continuous inside a shift, so it "
+             "creates no extra decisions -- measured, 5x the goods for an "
+             "identical 961 decisions. Use it to exercise the supply chain in a "
+             "short run. NOT for economics: wages are per simulated hour, so "
+             "scaling output makes labour artificially cheap.",
+    )
+    ap.add_argument(
         "--day-hours", type=float, default=24.0,
         help="simulated hours between full daily digests",
     )
@@ -264,6 +273,12 @@ def main() -> int:
         return 2
 
     models = [m.strip() for m in args.model.split(",") if m.strip()]
+
+    if args.time_scale != 1.0:
+        # Deliberately a runtime knob, never an edit to data.py: the numbers in
+        # PHASE2.md and the generated reference must keep describing the real
+        # economy, and a temporary multiplier left in a data file would not.
+        D.CRAFT_TIME_COEFFICIENT *= args.time_scale
 
     # One directory per run. The log opens in append mode, so a shared file
     # silently interleaves runs with only sim_start to tell them apart -- which
@@ -291,6 +306,9 @@ def main() -> int:
     print(f"Phase 2 — {args.agents} agents on {', '.join(models)}")
     print(f"{args.decisions} decisions each, up to {args.max_actions} actions per decision")
     print(f"{hours:.1f} simulated hours, pacing {args.rpm:g} req/min")
+    if args.time_scale != 1.0:
+        print(f"PRODUCTION TIMES SCALED x{args.time_scale:g} -- throughput only, "
+              f"not a balanced economy")
     print(f"{'DRY RUN — no API calls' if args.dry_run else 'live'}\n")
 
     Engine(

@@ -243,8 +243,14 @@ def start_shift(world: World, log: EventLog, agent: Agent, hours: float = 4.0) -
     # Already on this shift. Without this the call silently overwrites the
     # activity and pushes ends_at forward, so a model that re-asserts its plan
     # restarts the clock -- 15% of all actions in the first live run.
+    # Only refuse while the shift is STILL RUNNING. An expired shift keeps
+    # kind == "work" until something replaces it, so checking the kind alone
+    # locked an agent out of ever working again: 24 of 50 start_shift calls in
+    # the 2026-08-15 smoke were refused, 9 of them "already working this shift,
+    # 0.0h left" -- the agent had just been woken BECAUSE the shift ended.
     if (agent.activity.kind == "work"
-            and agent.activity.detail.get("business") == business_id):
+            and agent.activity.detail.get("business") == business_id
+            and agent.activity.ends_at > world.sim_time):
         remaining = (agent.activity.ends_at - world.sim_time) / 3600.0
         return False, f"already working this shift, {remaining:.1f}h left"
 
@@ -318,19 +324,18 @@ def buy_from_business(
     unit = biz.price_for(item)
     subtotal = unit * qty
     tax = E.sales_tax_on(subtotal, world.government.sales_tax)
-    total = subtotal + tax
-    if agent.denari < total:
-        return False, f"cannot afford {qty}x{item} ({total:.2f})"
+    if agent.denari < subtotal:
+        return False, f"cannot afford {qty}x{item} ({subtotal:.2f})"
 
     capacity = agent.carry_capacity(world)
     if agent.carried_units() + qty > capacity:
         return False, f"carry capacity {capacity} exceeded"
 
-    agent.denari -= total
+    agent.denari -= subtotal                  # the marked price, nothing on top
     agent.add_item(item, qty)
     if not biz.is_government:
         biz.remove_item(item, qty)
-        biz.cash += subtotal
+        biz.cash += subtotal - tax            # the seller remits the revenue tax
     world.government.collect(tax)
     world.market.record(Transaction(world.sim_time, item, qty, unit, biz.id, agent.id))
     log.emit(
@@ -339,7 +344,7 @@ def buy_from_business(
     )
     if tax:
         log.emit(world.sim_time, "tax_collected", actor=agent.id, kind="sales", amount=round(tax, 2))
-    return True, f"bought {qty}x{item} for {total:.2f}"
+    return True, f"bought {qty}x{item} for {subtotal:.2f}"
 
 
 def sell_to_business(
@@ -695,14 +700,13 @@ def buy_vehicle(world: World, log: EventLog, agent: Agent, vehicle_type: str) ->
 
     unit = dealer.price_for(vehicle_type)
     tax = E.sales_tax_on(unit, world.government.sales_tax)
-    total = unit + tax
-    if agent.denari < total:
-        return False, f"cannot afford {vehicle_type} ({total:.2f})"
+    if agent.denari < unit:
+        return False, f"cannot afford {vehicle_type} ({unit:.2f})"
 
-    agent.denari -= total
+    agent.denari -= unit
     if not dealer.is_government:
         dealer.remove_item(vehicle_type, 1)
-        dealer.cash += unit
+        dealer.cash += unit - tax
     world.government.collect(tax)
 
     veh = VehicleInstance(
@@ -712,7 +716,7 @@ def buy_vehicle(world: World, log: EventLog, agent: Agent, vehicle_type: str) ->
     agent.owned_vehicles.append(veh.id)
     log.emit(
         world.sim_time, "vehicle_purchased", actor=agent.id, subject=veh.id,
-        location=agent.location, vehicle_type=vehicle_type, price=round(total, 2),
+        location=agent.location, vehicle_type=vehicle_type, price=round(unit, 2),
     )
     return True, f"bought a {vehicle_type}"
 
@@ -937,21 +941,20 @@ def buy_meal(world: World, log: EventLog, agent: Agent, business_id: str | None 
     # to the 60% floor.
     price = tavern.price_for(meal)
     tax = E.sales_tax_on(price, world.government.sales_tax)
-    total = price + tax
-    if agent.denari < total:
-        return False, f"cannot afford {meal} ({total:.2f})"
+    if agent.denari < price:
+        return False, f"cannot afford {meal} ({price:.2f})"
 
     # A player-owned tavern must actually have the food in stock.
     if not tavern.is_government:
         if tavern.inventory.get(meal, 0) < 1:
             return False, f"{tavern.name} is out of {meal}"
         tavern.remove_item(meal, 1)
-        tavern.cash += price
+        tavern.cash += price - tax
 
-    agent.denari -= total
+    agent.denari -= price
     world.government.collect(tax)
     world.market.record(Transaction(world.sim_time, meal, 1, price, tavern.id, agent.id))
-    return _apply_meal(world, log, agent, meal, E.meal_window(meal), total, tavern.name)
+    return _apply_meal(world, log, agent, meal, E.meal_window(meal), price, tavern.name)
 
 
 def eat_best_available(world: World, log: EventLog, agent: Agent) -> Result:
@@ -1265,10 +1268,8 @@ def accept_trade(world: World, log: EventLog, agent: Agent, offer_id: str) -> Re
 
     # Sales tax on a player-to-player deal, same incidence as any other sale.
     tax = E.sales_tax_on(offer.price, world.government.sales_tax)
-    if agent.denari < offer.price + tax:
-        tax = max(0.0, agent.denari - offer.price)
-    agent.denari -= offer.price + tax
-    seller.denari += offer.price
+    agent.denari -= offer.price
+    seller.denari += offer.price - tax
     world.government.collect(tax)
 
     offer.status = "accepted"
@@ -1486,18 +1487,18 @@ def order_from_business(
     unit = seller.price_for(item)
     goods = unit * qty
     tax = E.sales_tax_on(goods, world.government.sales_tax)
-    total = goods + tax + courier_fee
+    total = goods + courier_fee
     if buyer.cash < total:
         return False, (
             f"{buyer.name} has {buyer.cash:.2f} and needs {total:.2f} "
-            f"({goods:.2f} goods + {tax:.2f} tax + {courier_fee:.2f} carriage). "
+            f"({goods:.2f} goods + {courier_fee:.2f} carriage). "
             f"Deposit into the business first."
         )
 
     buyer.cash -= total
     if not seller.is_government:
         seller.remove_item(item, qty)
-        seller.cash += goods
+        seller.cash += goods - tax
     world.government.collect(tax)
     world.market.record(Transaction(world.sim_time, item, qty, unit, seller.id, buyer.id))
 
@@ -1535,6 +1536,21 @@ def accept_courier_job(world: World, log: EventLog, agent: Agent, consignment_id
         return False, f"already {con.status}"
     if agent.hauling:
         return False, "you are already hauling a consignment -- deliver it first"
+    # Claiming has to be exclusive too, not just loading. A consignment moves
+    # whole and one at a time, so a second claim can never be acted on -- but it
+    # DOES hide the job from every other courier. In the 2026-08-15 smoke one
+    # agent claimed both outstanding jobs, wandered to the wrong end of the
+    # valley, and delivered neither while nobody else could take them.
+    held = next(
+        (c for c in world.consignments.values()
+         if c.courier == agent.id and c.status == "claimed"),
+        None,
+    )
+    if held is not None:
+        return False, (
+            f"you already claimed {held.id} ({held.qty}x {held.item}, "
+            f"{held.origin} to {held.destination}) -- finish or drop it first"
+        )
     con.status = "claimed"
     con.courier = agent.id
     log.emit(

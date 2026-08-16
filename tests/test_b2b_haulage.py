@@ -210,6 +210,59 @@ def test_a_business_cannot_order_beyond_its_cash():
     ok("the refusal says what is needed", "needs" in msg, msg)
 
 
+def test_a_courier_can_only_claim_one_job():
+    """Claiming must be exclusive, or one agent hoards jobs it cannot do.
+
+    `hauling` is only set on COLLECT, so claiming used to be unlimited: a
+    claimed job is hidden from other couriers, and a consignment moves whole
+    and one at a time, so a second claim can never be acted on.
+    """
+    world, log, refiner, refinery, taverner, tavern, courier = setup()
+    A.order_from_business(world, log, taverner, tavern.id, refinery.id,
+                          "Grain", 5, courier_fee=10.0)
+    A.order_from_business(world, log, taverner, tavern.id, refinery.id,
+                          "Purified Water", 5, courier_fee=10.0)
+    jobs = list(world.consignments.values())
+
+    ok1, _ = A.accept_courier_job(world, log, courier, jobs[0].id)
+    ok("first claim accepted", ok1)
+    ok2, msg = A.accept_courier_job(world, log, courier, jobs[1].id)
+    ok("second claim refused", not ok2, msg)
+    ok("the refusal names the held job", jobs[0].id in msg, msg)
+
+    # The second job must still be visible to somebody else.
+    ok("the unclaimed job is still on the board",
+       any(j["id"] == jobs[1].id for j in A.open_courier_jobs(world, refiner)))
+
+
+def test_a_claimed_job_stays_visible_to_its_courier():
+    """A job vanishes from the public board once claimed -- it must not vanish
+    from the courier who claimed it.
+
+    In the 2026-08-15 smoke an agent claimed two jobs and walked to the far end
+    of the valley: after claiming, nothing in its observation carried the id,
+    the pickup point or the fee.
+    """
+    from convoy import observe as O
+    world, log, refiner, refinery, taverner, tavern, courier = setup()
+    A.order_from_business(world, log, taverner, tavern.id, refinery.id,
+                          "Grain", 5, courier_fee=40.0)
+    con = next(iter(world.consignments.values()))
+
+    A.accept_courier_job(world, log, courier, con.id)
+    seen = O.render(O.observe(world, log, courier, "reevaluation"))
+    ok("the claimed job is still visible", con.id in seen)
+    ok("it says where to collect", con.origin in seen, con.origin)
+    ok("it says what it pays", "40" in seen)
+    ok("it is gone from the public board",
+       not any(j["id"] == con.id for j in A.open_courier_jobs(world, refiner)))
+
+    courier.location = con.origin
+    A.collect_consignment(world, log, courier, con.id)
+    seen = O.render(O.observe(world, log, courier, "reevaluation"))
+    ok("after loading it says where to deliver", con.destination in seen)
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in tests:

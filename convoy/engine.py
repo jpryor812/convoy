@@ -660,6 +660,24 @@ class Engine:
 
             if w.sim_time >= agent.next_reeval_at:
                 agent.next_reeval_at = w.sim_time + reeval
+                # DO NOT interrupt an agent that is already committed. An eight
+                # hour shift used to collect 32 re-evaluations, and the only
+                # honest answer to each was "still working": 75% of every action
+                # in the 2026-08-15 smoke was an agent reporting it was busy.
+                # That is three quarters of the API bill spent on non-decisions,
+                # and it means agents rarely get asked at a moment when they
+                # could actually DO anything. `start_shift` always promised
+                # "one decision, then silence until the session resolves" --
+                # this is the engine finally keeping that promise.
+                #
+                # Hunger is the one thing allowed to interrupt work, because an
+                # agent that cannot react to it starves at its own bench.
+                busy = (
+                    agent.activity.kind in ("work", "travel")
+                    and agent.activity.ends_at > w.sim_time
+                )
+                if busy and agent.sustenance_stage == "Normal":
+                    continue
                 self._ask(agent, "reevaluation")
 
     def _ask(self, agent: Agent, reason: str) -> None:
