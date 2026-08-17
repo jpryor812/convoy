@@ -221,7 +221,13 @@ def report(world, log, hours: float) -> None:
     for label, ok, detail in check_systems_exercised(world, log, hours):
         print(f"  [{'x' if ok else ' '}] {label:<24} {detail}")
 
-    problems = check_invariants(world, log)
+    # Art binding is checked alongside the economic invariants for the same
+    # reason they are: it depends on `data.py`, and the failure it catches is a
+    # quiet one -- a good added without an icon renders as a blank square in a
+    # classroom months later, in front of people.
+    from convoy import sprites as SP
+
+    problems = check_invariants(world, log) + SP.check()
     print("\n" + "-" * 74)
     if problems:
         print(f"INVARIANT VIOLATIONS ({len(problems)}):")

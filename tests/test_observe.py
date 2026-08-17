@@ -306,6 +306,34 @@ def test_payload_stays_within_budget():
     )
 
 
+def test_a_fed_agent_is_told_it_is_fed() -> None:
+    """Hunger is only half the fact; being ALREADY FED is the other half.
+
+    The state block says "Normal, 0.2h since eating" and buying a meal stays
+    affordable, so nothing ever told an agent a second meal bought nothing.
+    A0029 ate ten times in 90 simulated minutes on 2026-08-17, burning ~10 of
+    its 400 allowed decisions -- which is what exhausted its budget at hour 45
+    and left it unable to act when it went Hungry at 57 and starved at 81.
+    """
+    w, log, a = setup()
+    a.sustenance_stage = "Normal"
+    a.hours_since_last_meal = 2.0
+    a.last_meal_window = 12.0
+
+    lines = O.affordances(w, a)
+    fed = [ln for ln in lines if "FED" in ln]
+    ok("fed agent is told so", fed, str(lines))
+    ok("says how long is left", fed and "10.0h" in fed[0], fed[0] if fed else "")
+    ok("says a second meal is waste", fed and "wasted" in fed[0], fed[0] if fed else "")
+
+    # ...and it must NOT crowd out the real warning when hunger does bite.
+    a.sustenance_stage = "Hungry"
+    a.hours_since_last_meal = 13.0
+    lines = O.affordances(w, a)
+    ok("hungry agent still told to eat", any("Hungry" in ln and "Eat" in ln for ln in lines))
+    ok("and is not also told it is fed", not any("FED" in ln for ln in lines), str(lines))
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in tests:

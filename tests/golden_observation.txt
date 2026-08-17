@@ -30,6 +30,7 @@ WHERE YOU ARE
 WHAT YOU CAN DO FROM HERE
   - 1 business(es) here to buy from or sell to (listed above); 1 player-owned and may hire.
   - This is spur land: 32 of 40 plots free. You can found a mine or farm (8 plots) or buy a home (4 plots) here.
+  - You are FED for another 12.0h (until hour 32.0). Eating again before then is wasted denari and a wasted decision -- you gain nothing.
   - Carrying 6/100 units.
 
 CURRENT TAX RATES

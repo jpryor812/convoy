@@ -37,6 +37,12 @@ from .state import Agent, World
 # Public knowledge decays: a death two hours ago is still news, a sale is not.
 WORLD_NEWS_WINDOW_HOURS = 1.0
 DEFAULT_MEMORY_LIMIT = 15
+
+# Your last few decisions in your own words. Small on purpose: this is for
+# continuity of plan ("I was three steps into stocking the refinery"), not a
+# full history -- that lives in the event log.
+DEFAULT_THINKING_LIMIT = 5
+THINKING_CHARS_IN_PROMPT = 220
 # Where the job board hangs. Town, because every agent spawns there -- so the
 # whole population reads it at hour zero without spending a step to reach it.
 JOB_CENTRE_LOCATION = "Town"
@@ -402,6 +408,29 @@ def memory_for(
     return _collapse_repeats([e.format() for e in picked])
 
 
+def thinking_for(agent: Agent, limit: int = DEFAULT_THINKING_LIMIT) -> list[str]:
+    """This agent's own recent reasoning, most recent last.
+
+    Deliberately NOT folded into `memory_for`. Memory has a fixed budget of
+    lines, and reasoning is emitted on nearly every decision while the events
+    worth remembering are rare -- mixing them would let an agent's own chatter
+    evict the news that a rival opened a refinery next door. Twelve entries in
+    the §2 table are an observation crowding out or omitting something the code
+    knew; this keeps the two budgets separate so neither can starve the other.
+
+    Trimmed harder here than in storage: the log keeps the full text for the
+    transcript, the prompt gets the gist.
+    """
+    out = []
+    for entry in agent.reasoning[-limit:]:
+        said = entry.text[:THINKING_CHARS_IN_PROMPT]
+        if len(entry.text) > THINKING_CHARS_IN_PROMPT:
+            said += "..."
+        did = ", ".join(entry.actions) if entry.actions else "nothing"
+        out.append(f"[h{entry.hour:.1f}] you thought: {said or '(nothing)'} -- you did: {did}")
+    return out
+
+
 def _collapse_repeats(lines: list[str]) -> list[str]:
     """Fold runs of an identical line into one, tagged with the count.
 
@@ -630,6 +659,22 @@ def affordances(world: World, agent: Agent) -> list[str]:
             f"You are {agent.sustenance_stage} "
             f"({agent.hours_since_last_meal:.1f}h since eating). Eat."
         )
+    else:
+        # Say when you are ALREADY FED, not just when you are hungry. The state
+        # block reports "Normal, 0.2h since eating" and eating stays affordable,
+        # so nothing ever told an agent a second meal was money for nothing.
+        # A0029 bought TEN meals in 90 simulated minutes on 2026-08-17 -- ~200
+        # denari, and ~10 of the 400 decisions it was allowed all run. Those
+        # wasted decisions are what exhausted its budget at hour 45, which is
+        # what left it unable to act when it went Hungry at 57 and starved at
+        # 81. The most expensive line in that chain was this missing sentence.
+        left = agent.last_meal_window - agent.hours_since_last_meal
+        if left > 0:
+            out.append(
+                f"You are FED for another {left:.1f}h (until hour "
+                f"{(world.sim_hour + left):.1f}). Eating again before then is "
+                f"wasted denari and a wasted decision -- you gain nothing."
+            )
 
     free_capacity = agent.carry_capacity(world) - agent.carried_units()
     out.append(f"Carrying {agent.carried_units()}/{agent.carry_capacity(world)} units.")
@@ -848,6 +893,7 @@ def observe(
     *,
     memory_limit: int = DEFAULT_MEMORY_LIMIT,
     chat_limit: int = DEFAULT_CHAT_LIMIT,
+    thinking_limit: int = DEFAULT_THINKING_LIMIT,
 ) -> dict[str, Any]:
     """What this agent knows, right now.
 
@@ -959,6 +1005,7 @@ def observe(
             "active_policies": list(gov.active_policies),
         },
         "memory": memory_for(log, agent, world.sim_time, memory_limit),
+        "your_thinking": thinking_for(agent, thinking_limit),
         # An empty CHAT section is rendered as a standing invitation rather than
         # omitted. Rendering nothing until somebody speaks is a deadlock: no
         # agent talked in 1,331 decisions across two runs, and nothing in the
@@ -1098,6 +1145,7 @@ def render(obs: dict[str, Any]) -> str:
         ("courier_jobs", "HAULAGE JOBS GOING BEGGING"),
         ("your_orders_in_transit", "YOUR ORDERS NOT YET DELIVERED"),
         ("memory", "RECENTLY"),
+        ("your_thinking", "YOUR LAST FEW DECISIONS, AND WHY YOU MADE THEM"),
         ("chat", "CHAT"),
     ]:
         value = obs.get(key)

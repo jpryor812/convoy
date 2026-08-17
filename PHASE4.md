@@ -21,15 +21,18 @@ This supersedes PHASE3.md, PHASE2.5.md, PHASE2.md and PHASE1.md.
 | Who may buy from / work for whom, escrow, hiring | `convoy/actions.py` |
 | Production, payroll, solvency, haulage, taxes | `convoy/engine.py` |
 | What agents are told | `convoy/observe.py` |
+| Why agents did things | `Agent.reasoning` (§9), and `llm_reasoning` in the event log |
+| Reading a run back | `python3 show_agent.py <agent id>` |
+| What everything looks like | `convoy/sprites.py` (§11); `python3 render_world.py` |
 
 **Run `python3 run_phase1.py` after ANY change to `data.py`.**
 
 ---
 
-## 2. The lesson, now at twelve
+## 2. The lesson, now at thirteen
 
 Almost every "the agents are being stupid" moment has been **the observation
-failing to say something the code already knew.** Twelve documented:
+failing to say something the code already knew.** Thirteen documented:
 
 | symptom | cause |
 |---|---|
@@ -44,11 +47,16 @@ failing to say something the code already knew.** Twelve documented:
 | 543 refusals, 36.8% of all actions | agents knew the 2-per-business cap, not which sites were full |
 | a tavern idle 16h after founding | a new business reported zeros, never "you are making nothing" |
 | four taverns bought 156 denari of unusable Dirty Water | stall message said "no feedstock" while stock sat visible, never naming the gap |
-| **an owner sat on 4 applicants for 12h and let the advert lapse** | **the call-to-action read `hire_applicant('J0090', '<agent id>')` — a literal placeholder** |
+| an owner sat on 4 applicants for 12h and let the advert lapse | the call-to-action read `hire_applicant('J0090', '<agent id>')` — a literal placeholder |
+| **an agent bought 11 meals in 90 minutes, ~200 denari and ~11 of its 400 decisions** | **the affordance line spoke only when you were HUNGRY; nothing ever said "you are already fed for another 11.8h"** |
 
-The last two were written by the agent fixing the other ten. Being *technically
+Two of these were written by the agent fixing the other ten. Being *technically
 present* in a 30-line briefing block is not the same as being *present at the
 decision*.
+
+The thirteenth is the one that killed A0029 — see §10. Its state block did say
+`hunger: Normal, 0.2h since eating`. That is the fact, and it was still not the
+*decision*: "Normal" does not read as "buying another meal now buys nothing."
 
 **When agents behave badly, suspect the observation before the model.**
 
@@ -188,10 +196,11 @@ typical 200–300 seed in 4–10 simulated hours.
 ### First death
 
 A0029 starved at **81.2h**, twelve hours after hitting Starving, destroying 775
-denari of assets (a mine, a refinery, a vehicle). It had taken a 15/hr job and
-then a 10/hr one to fund its businesses — and stopped eating. `assets_wiped`
-closed both businesses without a bankruptcy event, which is why "21 open, 2
-closed" reconciles with "zero bankruptcies".
+denari of assets (a mine, a refinery, a vehicle). `assets_wiped` closed both
+businesses without a bankruptcy event, which is why "21 open, 2 closed"
+reconciles with "zero bankruptcies".
+
+**It did not choose to stop eating — it ran out of decisions. See §10.**
 
 ---
 
@@ -227,6 +236,13 @@ nohup python3 run_phase2.py --agents 20 --hours 84 --decisions 400 \
 caffeinate -is -w $(pgrep -f "MacOS/Python run_phase2.py" | head -1)
 ```
 
+Afterwards, read the decisions back:
+
+```bash
+python3 show_agent.py                 # list agents, decision counts, last seen
+python3 show_agent.py A0013 --full    # one agent's transcript, with outcomes
+```
+
 **Cost scales with businesses, not just agents.** Measured: 3.10 calls/agent-hour
 at 4–16 businesses, **5.9** at 23. The final run cost **$2.64 and 12 hours**
 against a $1.34 / 9h projection. Budget from expected business count.
@@ -241,14 +257,161 @@ matches any shell whose command line mentions it, including your own monitors.
 
 ---
 
-## 9. Open, in priority order
+## 9. Agents now record WHY (2026-08-17, after the 84h run)
+
+**This was the hard blocker on interactivity, and it is cleared.**
+
+`Agent.memory` is a list of indices into the event log — things that happened.
+Nothing stored *why* an agent chose anything, so "why did you do that?" produced
+fluent confabulation rather than recall. `llm.py` captured the model's text only
+on replies carrying **no** tool calls, i.e. exactly the turns where the agent
+decided *not* to act: **2 captures in 6,916 calls.**
+
+What changed:
+
+| | |
+|---|---|
+| `state.py` | new `Reasoning` dataclass (`hour`, `woken_because`, `text`, `actions`) and `Agent.reasoning`, a 40-entry ring buffer. Registered in `checkpoint.py`, so it survives a restart |
+| `llm.py` | `_reasoning_text()` reads `content`, falling back to `reasoning` — most of the roster returns an empty `content` beside a tool call and puts its thinking in `reasoning`. Captured on **every** reply |
+| `llm.py` | **one decision = one record.** A multi-step decision reasons on step 1 and then executes; recording per step made 7 of 11 entries in the first smoke read "acted without saying why" when the reason had been given one step earlier. Written in a `finally`, so a decision that half-happened is still recorded |
+| `observe.py` | `thinking_for()` → a `YOUR LAST FEW DECISIONS, AND WHY YOU MADE THEM` block, last 5, 220 chars each |
+| `show_agent.py` | prints one agent's transcript from a run, interleaving decisions with their outcomes |
+
+**Reasoning is deliberately NOT folded into `memory_for`.** Memory has a fixed
+line budget and rare, valuable contents; reasoning fires on nearly every
+decision. Mixing them would let an agent's own chatter evict the news that a
+rival opened a refinery next door — §2, freshly re-earned. Separate budgets.
+
+Measured on a live 4-agent smoke: **7 decisions, 7 with real reasoning, 19
+action calls correctly collapsed into them, refusals marked.**
+
+`tests/test_reasoning.py` — 14 tests, driving `LLMPolicy` against a scripted
+transport so the capture path itself is asserted, not a model's cooperation.
+
+---
+
+## 10. A0029 did not die of a missing wake trigger
+
+The 84h run's only death was read as *"idle agents appear to have no wake
+trigger, so hunger never prompts a decision."* **That diagnosis is wrong**, and
+acting on it would have meant rewriting `Engine._decisions` for nothing.
+
+The engine woke A0029 on schedule for all 36 hours, and already exempts hunger
+from the "do not interrupt a busy agent" rule for precisely this case. The wake
+was swallowed **one layer up**, by the harness's budget guard:
+
+```
+h45.20  decision 400/400   <- the run's per-agent cap, and its last meal
+h57.20  sustenance_hungry     woken; CappedPolicy.decide returned silently
+h69.22  sustenance_starving   woken; returned silently
+h81.22  starved_to_death, assets_wiped: 2 businesses, 1 vehicle, 775 denari
+```
+
+Exactly one agent in the run hit the cap, at the exact hour A0029 last acted
+(`grep "decision 400/400"`). It was the richest agent in the world at h58 and
+finished at 0 — **a harness artifact silently corrupting the leaderboard it
+exists to measure.**
+
+Two fixes:
+
+1. **`SURVIVAL_RESERVE = 6`** in `run_phase2.py`. Past the cap, an agent whose
+   `sustenance_stage` is not `Normal` still gets up to six decisions, spendable
+   only while it is hungry. The wake reason is rewritten to say so in words —
+   it names the stage, says the budget is gone, counts what is left, and states
+   that dying wipes every business and coin. An agent told only "reevaluation"
+   would spend its last decisions on business admin and starve anyway. A
+   `decision_cap_reached` event now marks exhaustion in the log.
+2. **The observation now says when you are FED**, not only when you are hungry
+   (§2, thirteenth). This is what actually killed A0029: it ate **11 times in 90
+   minutes** — ~200 denari and ~11 of its 400 decisions — because nothing said a
+   second meal inside the 12-hour window buys nothing. That waste is what
+   exhausted the cap at h45.
+
+With the reserve, A0029's first emergency wake lands at **h57.20 — 24 hours
+before death**, standing at Refinery Row with 1,540 denari.
+
+`tests/test_decision_cap.py` — 7 tests. Note the golden observation snapshot was
+re-baselined for the FED line; it caught the change, which is its job.
+
+---
+
+## 11. The valley has a face (2026-08-17)
+
+`render_world.py` turns a finished run into one self-contained HTML file: the
+23-place valley, its businesses appearing as they are founded, every agent
+moving hour by hour, and — on click — that agent's own account of why it acted.
+It is §9 made visible; without stored reasoning the click would have nothing to
+show.
+
+```bash
+python3 render_world.py                              # newest run -> world.html
+python3 render_world.py --run runs/phase2/20260817-004401 --out valley.html
+```
+
+**Positions come from the hourly diary**, which is the only event that carries
+`location` for every living agent on a schedule, refined by `travel` events —
+those give a departure, a destination and a duration, so an agent is drawn ON
+THE ROAD rather than teleporting. A stationary agent emits an identical diary
+line every hour, so consecutive duplicates are collapsed before they reach the
+page; A0029's 21 idle hours were 21 rows.
+
+Everything is inlined as a data URI. A classroom file that breaks because a
+relative path moved is worse than no file.
+
+### Art
+
+| what | where | licence |
+|---|---|---|
+| Terrain, buildings, people (259 PNGs) | `kenney_medieval-rts/` | CC0, Kenney |
+| Vehicles, goods, glyphs (79 SVGs) | `art/generated/` | drawn here |
+| The binding | `convoy/sprites.py` | — |
+
+**No image model was involved — there was none available.** The new art is SVG
+drawn in the pack's own idiom, using `art/palette.py`, whose colours were
+sampled out of the pack's PNGs (898 distinct; the top ~25 carry it). Generated
+raster art would have drifted in outline, palette and projection and read as two
+games stapled together.
+
+Goods are drawn as a **taxonomy** — one shape per category, tinted per material.
+Ore is ore whether copper, tin or iron. That is how the pack gets 58 tiles from
+about eight ideas, and it means a good added to `data.py` inherits sane art
+rather than shipping as a blank square.
+
+The three buildings the brief called missing were all in the pack, mislabelled
+by filename: **Structure_20** is a house with a stone chimney (Refinery),
+**Structure_19** a forge with a glowing furnace mouth (Weaponsmith),
+**Structure_07** a stall hung with loaves (Tavern).
+
+**The unit grid is 4 faction colours × 6 poses, and the colours do not start
+where the filenames do** — blue begins at 23 and wraps past 24 to 1, measured by
+counting pixels. Flattening it to a naive 0–23 repaints every agent the wrong
+colour, silently. `tests/test_sprites.py` pins it.
+
+`sprites.check()` asserts every item, vehicle, business type, location, role,
+model and all 53 actions have art, and **runs inside `run_phase1.py` beside the
+economic invariants** — same reason: it depends on `data.py`, and its failure
+mode is a blank square discovered in front of an audience.
+
+### What the map still needs
+
+**A run with reasoning in it.** The 84h run predates §9 and carries 2 decisions
+across 20 agents, so clicking an agent mostly shows an empty transcript. The
+mechanism is verified on a 4-agent smoke (7 decisions, 7 with real reasoning);
+what it has never had is a full run's worth. That is the same run §7 is waiting
+for.
+
+---
+
+## 12. Open, in priority order
 
 | decision | state |
 |---|---|
-| **The three §7 fixes under live models** | the next run's whole job |
+| **The three §7 fixes under live models** | the next run's whole job. Watch `job_posted` / `job_applied` / `hired` with `via` / `quit_job` with `reason` |
+| **The thin demo** | one finished run + `show_agent.py` transcript + a box to ask an agent questions. §9 is the foundation it needed; nothing blocks it now |
+| **Interrogation grounding** | when answering "why did you do that?", the answer must be built from `Agent.reasoning`, not regenerated. Storing it was step one; refusing to let the model improvise over it is step two |
 | **NPC labour vs seed capital** | every payroll failure was NPC-staffed; only owner-at-0 never failed. Either NPCs are too dear or starting capital too thin. This is a design tension, not a bug: NPCs *should* cost more than agents |
 | **Job board usage** | 3 postings across 84h and 23 businesses. Works when used; rarely used. §7's fixes may fix this by themselves — judge after |
-| **Sustenance vs ambition** | an agent starved while working two jobs to fund its businesses. Nothing warned it |
+| ~~Sustenance vs ambition~~ | **resolved, §10** — it was the decision cap, plus 11 redundant meals |
 | **`already delivered` (124 failures)** | largest single failure class; couriers racing for jobs already taken |
 | **Extraction on the production curve** | mining is still the highest-margin, lowest-complexity tier |
 | **Concurrency** | not built. Calls are serial; 75 agents × 120h is ~47h wall clock |

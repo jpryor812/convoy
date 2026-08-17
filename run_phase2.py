@@ -45,21 +45,66 @@ RUN_DIR = Path("runs/phase2")
 DEFAULT_MODEL = "openai/gpt-5.6-luna"     # cheapest model with structured outputs
 
 
+# Decisions held back so that running out of budget cannot kill an agent.
+# Small: this is enough to walk to a tavern and eat, not enough to keep playing.
+SURVIVAL_RESERVE = 6
+
+
 class CappedPolicy(llm.LLMPolicy):
     """LLMPolicy that stops spending once an agent hits its decision cap.
 
     A hard cap rather than a wall-clock limit, because the cap is what bounds
     the bill and it should be exact, not approximate.
+
+    THE CAP MUST NOT BE ABLE TO KILL ANYONE. On 2026-08-17 agent A0029 hit
+    400/400 at hour 45.20 and this method silently returned on every wake after
+    that -- including the wakes for Hungry and Starving. It stood at Refinery
+    Row with 1,540 denari, starved at hour 81, and `assets_wiped` destroyed 775
+    denari of businesses. It had been the richest agent in the world at hour 58.
+
+    That was read at the time as "idle agents have no wake trigger". They do:
+    `Engine._decisions` woke it on schedule for all 36 hours. The wake was
+    swallowed here, by the budget guard -- a harness artifact corrupting the
+    leaderboard it exists to measure. So a starving agent keeps a small reserve
+    it can only spend on staying alive, and is told that is what it is spending.
     """
 
     def __init__(self, *args, cap: int = 15, **kwargs):
         super().__init__(*args, **kwargs)
         self.cap = cap
         self.counts: Counter[str] = Counter()
+        self.reserve_used: Counter[str] = Counter()
+        self._announced: set[str] = set()
 
     def decide(self, world: World, agent: Agent, reason: str) -> None:
         if self.counts[agent.id] >= self.cap:
+            if agent.id not in self._announced:
+                self._announced.add(agent.id)
+                self.log.emit(
+                    world.sim_time, "decision_cap_reached", actor=agent.id,
+                    significance=Significance.MEDIUM,
+                    cap=self.cap, reserve=SURVIVAL_RESERVE,
+                )
+            # Out of budget for playing the game, but not for staying alive.
+            if agent.sustenance_stage == "Normal":
+                return
+            if self.reserve_used[agent.id] >= SURVIVAL_RESERVE:
+                return
+            self.reserve_used[agent.id] += 1
+            left = SURVIVAL_RESERVE - self.reserve_used[agent.id]
+            # Say it plainly. An agent told only "reevaluation" would spend the
+            # reserve on business admin and starve anyway -- the §2 lesson: the
+            # observation has to carry what the harness already knows.
+            reason = (
+                f"you are {agent.sustenance_stage} AND OUT OF DECISIONS for this "
+                f"run. You have {left} emergency decision(s) left, ever. Nothing "
+                f"matters except eating: buy a meal or eat what you carry NOW. "
+                f"Dying wipes every business, vehicle and coin you own."
+            )
+            print(f"  [{world.sim_hour:6.2f}h] {agent.name:<14} RESERVE {left} left ({agent.sustenance_stage})")
+            super().decide(world, agent, reason)
             return
+
         self.counts[agent.id] += 1
         n = self.counts[agent.id]
         print(f"  [{world.sim_hour:6.2f}h] {agent.name:<14} decision {n:>2}/{self.cap} ({reason})")

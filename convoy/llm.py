@@ -39,7 +39,7 @@ from . import observe as O
 from . import schemas as S
 from .config import load_env
 from .events import EventLog
-from .state import Agent, World
+from .state import REASONING_CHARS, Agent, World
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -125,58 +125,99 @@ class LLMPolicy:
             )
             return
 
+        # One decision produces ONE record, not one per step. A four-step
+        # decision typically reasons once and then executes: the model explains
+        # itself on step 1 and emits bare tool calls after. Recording per step
+        # made three quarters of a live smoke run read "acted without saying
+        # why" when the reason had in fact been given -- one step earlier.
         acted = 0
-        for _step in range(self.max_actions):
-            reply = self._call(agent, messages, tools)
-            if reply is None:
-                return                                  # logged; agent idles
+        texts: list[str] = []
+        did: list[str] = []
+        try:
+            for _step in range(self.max_actions):
+                reply = self._call(agent, messages, tools)
+                if reply is None:
+                    return                              # logged; agent idles
 
-            calls = reply.get("tool_calls") or []
-            messages.append(reply)
-            stop = False
-
-            if not calls:
-                # The model chose to say something rather than act. That is a
-                # legitimate decision -- an agent may be waiting on production.
-                text = (reply.get("content") or "").strip()
+                calls = reply.get("tool_calls") or []
+                messages.append(reply)
+                text = _reasoning_text(reply)
                 if text:
-                    self.log.emit(
-                        world.sim_time, "llm_reasoning", actor=agent.id,
-                        text=text[:400],
+                    texts.append(text)
+                stop = False
+
+                if not calls:
+                    # The model chose to say something rather than act. That is
+                    # a legitimate decision -- it may be waiting on production.
+                    return
+
+                for call in calls:
+                    name, args = _parse_tool_call(call)
+                    if name is None:
+                        result = (False, "unparseable tool call")
+                    else:
+                        result = S.dispatch(world, self.log, agent, name, args)
+                    acted += 1
+                    if name in A.TERMINAL_ACTIONS:
+                        stop = True
+                    self._record_action(agent)
+                    did.append(
+                        f"{name or '<unparseable>'}" + ("" if result[0] else " (refused)")
                     )
-                return
+                    # Every call, refusals included. Only exceptions emit
+                    # action_error, so without this an engine refusal ("you are
+                    # already employed") leaves no trace at all -- and what
+                    # agents TRY is the whole point of the harness run.
+                    self.log.emit(
+                        world.sim_time, "action_call", actor=agent.id,
+                        action=name or "<unparseable>", ok=result[0],
+                        detail_text=str(result[1])[:200],
+                    )
+                    # Feed the outcome back: an agent that tried to sell what it
+                    # is not carrying should learn why, not silently retry.
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call.get("id", ""),
+                        "content": json.dumps({"ok": result[0], "detail": result[1]}),
+                    })
 
-            for call in calls:
-                name, args = _parse_tool_call(call)
-                if name is None:
-                    result = (False, "unparseable tool call")
-                else:
-                    result = S.dispatch(world, self.log, agent, name, args)
-                acted += 1
-                if name in A.TERMINAL_ACTIONS:
-                    stop = True
-                self._record_action(agent)
-                # Every call, refusals included. Only exceptions emit
-                # action_error, so without this an engine refusal ("you are
-                # already employed") leaves no trace at all -- and what agents
-                # TRY is the whole point of the harness run.
-                self.log.emit(
-                    world.sim_time, "action_call", actor=agent.id,
-                    action=name or "<unparseable>", ok=result[0],
-                    detail_text=str(result[1])[:200],
-                )
-                # Feed the outcome back: an agent that tried to sell what it is
-                # not carrying should learn why, not silently retry forever.
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": call.get("id", ""),
-                    "content": json.dumps({"ok": result[0], "detail": result[1]}),
-                })
+                if stop:
+                    return
+                if acted >= self.max_actions:
+                    return
+        finally:
+            # In a `finally` so that every exit -- a clean stop, the action cap,
+            # a transport failure mid-decision, or an exception out of dispatch
+            # -- still records what the agent said and did up to that point. A
+            # decision that half-happened is exactly the kind a student asking
+            # "why did you do that?" most needs an answer for.
+            self._remember(world, agent, reason, "\n".join(texts), did)
 
-            if stop:
-                return
-            if acted >= self.max_actions:
-                return
+    # -- reasoning ---------------------------------------------------------
+
+    def _remember(
+        self, world: World, agent: Agent, reason: str, text: str, did: list[str]
+    ) -> None:
+        """Store the model's own account of this decision, on the agent and in the log.
+
+        A decision is recorded even when the model said nothing, as long as it
+        acted: an unbroken record of what an agent did is what makes the gaps in
+        why it did it legible. A decision with neither words nor actions did not
+        happen -- a transport failure on the first call -- and is skipped.
+
+        The agent keeps a bounded working set for its own recall; the log keeps
+        every one, which is what a transcript is built from.
+        """
+        if not text and not did:
+            return
+        agent.remember_reasoning(world.sim_hour, reason, text, did)
+        self.log.emit(
+            world.sim_time, "llm_reasoning", actor=agent.id,
+            location=agent.location,
+            woken_because=reason,
+            text=text[:REASONING_CHARS] or "(acted without saying why)",
+            did=", ".join(did) or "nothing",
+        )
 
     # -- transport ---------------------------------------------------------
 
@@ -285,6 +326,26 @@ class LLMPolicy:
             )
         lines.append(f"{'TOTAL':<34}{'':>7}{'':>8}{'':>9}{'':>8}{'$' + format(total, '.4f'):>10}")
         return "\n".join(lines)
+
+
+def _reasoning_text(reply: dict[str, Any]) -> str:
+    """The model's justification for this step, from wherever it put it.
+
+    Until 2026-08-17 this was read only from `content`, and only on replies with
+    NO tool calls -- so reasoning was captured precisely on the turns where the
+    agent decided not to act. It fired TWICE in 6,916 calls, which is why an
+    agent asked "why did you do that?" could only confabulate.
+
+    Two places to look. Most of the roster are reasoning models, which routinely
+    return an empty `content` alongside a tool call and put their thinking in
+    `reasoning` instead; taking only `content` would keep losing exactly the
+    turns where the agent actually did something.
+    """
+    for key in ("content", "reasoning"):
+        value = reply.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _parse_tool_call(call: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:

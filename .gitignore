@@ -6,11 +6,15 @@ runs/
 .env.*
 !.env.example
 
+# Rendered maps — rebuild with `python3 render_world.py`, never committed
+*.html
+
 # Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.venv-*/
 venv/
 env/
 

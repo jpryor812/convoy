@@ -26,6 +26,42 @@ class Activity:
     detail: dict[str, Any] = field(default_factory=dict)
 
 
+# How many past decisions an agent carries. The full record lives in the event
+# log; this is the working set an agent can be asked about without a log scan.
+MAX_REASONING_KEPT = 40
+
+# Long enough for a real justification, short enough that 40 of them per agent
+# stay cheap to hold and to render.
+REASONING_CHARS = 600
+
+
+@dataclass
+class Reasoning:
+    """One decision in the agent's own words, and what it did about it.
+
+    `Agent.memory` records what HAPPENED to an agent. Nothing recorded why it
+    chose anything: the model's justification existed only in a response body
+    that was read for tool calls and then dropped. Asking an agent "why did you
+    do that?" therefore produced fluent post-hoc confabulation rather than
+    recall, because there was nothing to recall from.
+
+    Intent and consequence are stored together on purpose. "I am buying charcoal
+    because the refinery is stalled" is worth little on its own; paired with the
+    call that followed and whether it was refused, it is a decision that can be
+    judged.
+    """
+
+    hour: float
+    woken_because: str             # the same `reason` the observation was built for
+    text: str                      # the model's own words; may be empty if it just acted
+    actions: list[str] = field(default_factory=list)   # e.g. ["buy_item", "travel (refused)"]
+
+    def format(self) -> str:
+        did = ", ".join(self.actions) if self.actions else "no action taken"
+        said = self.text or "(acted without saying why)"
+        return f"[h{self.hour:.1f}] woken: {self.woken_because} | {said} | did: {did}"
+
+
 @dataclass
 class StolenStack:
     """Hot goods sitting in a safehouse, waiting out the 24-hour cure."""
@@ -86,6 +122,8 @@ class Agent:
     insurance: dict[str, float] = field(default_factory=dict)     # product -> coverage
     activity: Activity = field(default_factory=lambda: Activity("idle", 0.0))
     memory: list[int] = field(default_factory=list)               # indices into EventLog
+    # Why this agent did things, in its own words. See `Reasoning`.
+    reasoning: list[Reasoning] = field(default_factory=list)
     next_reeval_at: float = 0.0
     next_diary_at: float = 3600.0
 
@@ -106,6 +144,26 @@ class Agent:
         codebase accounts for a load without knowing consignments exist.
         """
         return sum(self.inventory.values()) + sum(self.stolen.values()) + self.hauling_units
+
+    def remember_reasoning(
+        self, hour: float, woken_because: str, text: str, actions: list[str]
+    ) -> Reasoning:
+        """Record why this agent just did what it did, keeping the last N.
+
+        Trimming here rather than at the call site means no policy can grow an
+        agent without bound by being chatty -- a 120-hour run asks some agents
+        several hundred times.
+        """
+        entry = Reasoning(
+            hour=round(hour, 2),
+            woken_because=woken_because,
+            text=(text or "")[:REASONING_CHARS],
+            actions=list(actions),
+        )
+        self.reasoning.append(entry)
+        if len(self.reasoning) > MAX_REASONING_KEPT:
+            del self.reasoning[:-MAX_REASONING_KEPT]
+        return entry
 
     def add_stolen(self, item: str, qty: int = 1) -> None:
         self.stolen[item] = self.stolen.get(item, 0) + qty
