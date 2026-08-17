@@ -200,6 +200,65 @@ def test_owner_sees_the_insolvency_clock():
     ok("payroll is visible to the owner", "payroll" in text.lower(), "")
 
 
+def test_a_stranger_cannot_create_a_wage_bill():
+    """Nobody joins a player business without its owner agreeing.
+
+    apply_for_job used to append straight to the roster at a wage the owner
+    never set. On 2026-08-17 that bankrupted six of seven businesses inside the
+    first simulated hour: agents with no state job walked into zero-cash
+    businesses, became a recurring 28.89/hr liability, went unpaid, walked, and
+    walked back in. One pair repeated it more than a dozen times.
+    """
+    world, log, owner = setup()
+    stranger = list(world.agents.values())[0]
+    if stranger is owner:                       # setup() spawns one agent
+        from convoy.state import Agent
+        stranger = Agent(id=world.new_id("A"), name="stranger", model="rule-based",
+                         location=owner.location)
+        world.agents[stranger.id] = stranger
+    owner.denari = 3000
+    owner.location = "Copper Gulch"
+    stranger.location = "Copper Gulch"
+    A.start_business(world, log, owner, "Mining Operation", seed_cash=0)
+    mine = world.businesses[owner.owned_businesses[-1]]
+
+    okr, msg = A.apply_for_job(world, log, stranger, mine.id)
+    ok("a stranger cannot join a player business", not okr, msg[:90])
+    ok("and creates no wage liability", len(mine.roster) == 0, f"roster={len(mine.roster)}")
+    ok("the refusal points at the job board",
+       "post_job" in msg and "apply_to_job" in msg, msg[:90])
+
+    okr, _ = A.apply_for_job(world, log, owner, mine.id)
+    ok("but the OWNER may still staff it", okr, "")
+
+    gov = next(b for b in world.businesses.values()
+               if b.is_government and b.spec.needs_worker)
+    stranger.location = gov.location
+    okr, msg = A.apply_for_job(world, log, stranger, gov.id)
+    ok("and state jobs stay open to anyone", okr, msg[:70])
+
+
+def test_jobseekers_are_warned_about_an_insolvent_employer():
+    """An insolvent business must not look identical to a healthy one."""
+    from convoy import observe as O
+
+    world, log, owner = setup()
+    owner.denari = 3000
+    owner.location = "Copper Gulch"
+    A.start_business(world, log, owner, "Mining Operation", seed_cash=0)
+    mine = world.businesses[owner.owned_businesses[-1]]
+
+    view = O._shop_view(world, mine)
+    ok("a solvent business carries no warning", "warning" not in view, str(view)[:80])
+
+    mine.insolvent_since = 0.0
+    mine.insolvent_debt = 28.89
+    view = O._shop_view(world, mine)
+    ok("an insolvent one does", "CANNOT MAKE PAYROLL" in view.get("warning", ""),
+       str(view.get("warning"))[:90])
+    ok("and it names what is owed", "28.89" in view.get("warning", ""), "")
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in tests:

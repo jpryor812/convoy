@@ -212,6 +212,21 @@ def apply_for_job(
     # Omitting the role means "whatever this place hires". Requiring an exact
     # string turned 9 of 13 applications in the 2026-08-14 runs into rejections
     # for naming a real role that this particular business does not employ.
+    # NOBODY JOINS A PLAYER BUSINESS WITHOUT ITS OWNER AGREEING. This used to
+    # append straight to the roster at a wage the owner never set, so a stranger
+    # could create a recurring wage bill at a business they did not own. On
+    # 2026-08-17 six of seven businesses were bankrupted this way inside the
+    # first simulated hour -- one of them repeatedly by the same agent, who
+    # rejoined a mine that had failed to pay it more than a dozen times. An
+    # owner staffing their own business is still fine: that is the zero-wage
+    # owner-operator strategy, and it is how most solvent businesses run.
+    if not biz.is_government and agent.id != biz.owner:
+        return False, (
+            f"{biz.name} is player-owned; you cannot simply start working there. "
+            f"Its owner must advertise the job with post_job, and you answer with "
+            f"apply_to_job. Open adverts are listed in your observation and at "
+            f"the job centre in Town."
+        )
     if not role and not as_researcher:
         if not spec.production_roles:
             return False, f"{biz.type} does not hire production staff"
@@ -668,8 +683,26 @@ def hire_applicant(
     hire = world.agents.get(applicant_id)
     if not hire or not hire.alive:
         return False, "that agent is not available"
+    # Taking a better offer means leaving the old job, not being refused. This
+    # used to reject any applicant who was employed, which -- combined with the
+    # board being invisible to the employed -- meant nobody could ever change
+    # jobs and the only labour available was the unemployed.
+    left = None
     if hire.current_job:
-        return False, f"{applicant_id} has taken another job since applying"
+        old_id, old_role, _old_wage = hire.current_job
+        old = world.businesses.get(old_id)
+        if old is not None:
+            for emp in list(old.roster):
+                if emp.agent_id == hire.id:
+                    old.roster.remove(emp)
+            left = old.name
+        hire.current_job = None
+        if hire.activity.kind == "work":
+            hire.activity = Activity("idle", world.sim_time)
+        log.emit(
+            world.sim_time, "quit_job", actor=hire.id, subject=old_id,
+            role=old_role, reason="took a better offer", employer=left,
+        )
     if not p.as_researcher:
         cap = employee_cap(biz)
         if cap is not None and len(biz.production_staff()) >= cap:
@@ -683,9 +716,10 @@ def hire_applicant(
         world.sim_time, "hired", actor=hire.id, subject=biz.id,
         role=p.role, wage=p.wage, employer=biz.name, via=posting_id,
     )
+    poached = f" They left {left} to take it." if left else ""
     return True, (
-        f"hired {hire.name} as {p.role} at {p.wage:.2f}/hr. They must be AT "
-        f"{biz.location} and on shift to work and to be paid."
+        f"hired {hire.name} as {p.role} at {p.wage:.2f}/hr.{poached} They must be "
+        f"AT {biz.location} and on shift to work and to be paid."
     )
 
 

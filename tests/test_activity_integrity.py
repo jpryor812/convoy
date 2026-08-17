@@ -200,7 +200,15 @@ def test_setting_a_wage_does_not_poison_the_price_table():
     from convoy.state import Agent
     hire = Agent(id="A9999", name="hire", model="rb", location=biz.location)
     world.agents[hire.id] = hire
-    okh, msg = A.apply_for_job(world, log, hire, biz.id, "Miner")
+    # Employment at a PLAYER business goes through the owner since 2026-08-17 --
+    # apply_for_job used to let a stranger add themselves to the roster and bill
+    # the owner for it. The wage still has to survive the trip.
+    okp, msg = A.post_job(world, log, a, biz.id, "Miner", 30.0)
+    ok("owner advertised the role", okp, msg[:70])
+    posting = next(p for p in world.job_postings.values() if p.business_id == biz.id)
+    oka, msg = A.apply_to_job(world, log, hire, posting.id)
+    ok("the hire applied", oka, msg[:70])
+    okh, msg = A.hire_applicant(world, log, a, posting.id, hire.id)
     ok("hired at the set wage", okh and abs(hire.current_job[2] - 30.0) < 1e-6, msg)
 
 

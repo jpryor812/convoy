@@ -500,9 +500,11 @@ def affordances(world: World, agent: Agent) -> list[str]:
             if not p.is_live(world.sim_time) or p.owner == agent.id:
                 continue
             b = world.businesses.get(p.business_id)
+            risk = (" [WARNING: this employer has already missed payroll]"
+                    if b is not None and b.insolvent_since is not None else "")
             openings.append((p.wage, (
                 f"{p.role} at {b.name if b else '?'} ({b.location if b else '?'}) "
-                f"{p.wage:.2f}/hr -- apply_to_job('{p.id}')"
+                f"{p.wage:.2f}/hr -- apply_to_job('{p.id}'){risk}"
             )))
         if openings:
             openings.sort(key=lambda x: -x[0])
@@ -513,28 +515,43 @@ def affordances(world: World, agent: Agent) -> list[str]:
                 f"apply_for_job there, or apply_to_job for a player advert."
             )
 
-    # Player job adverts, world-wide. A posting that only lived in the chat
-    # scroll would be missed by anyone who woke after it, and chat is the one
-    # part of the observation that ages out.
-    if not agent.current_job:
-        open_jobs = [
-            p for p in world.job_postings.values()
-            if p.is_live(world.sim_time) and p.owner != agent.id
-        ]
-        if open_jobs:
-            open_jobs.sort(key=lambda p: -p.wage)
-            lines = []
-            for p in open_jobs[:6]:
-                b = world.businesses.get(p.business_id)
-                mark = " (already applied)" if agent.id in p.applicants else ""
-                lines.append(
-                    f"{p.id}: {p.role} at {b.name if b else '?'} "
-                    f"({b.location if b else '?'}) for {p.wage:.2f}/hr{mark}"
-                )
-            out.append(
-                "JOBS ON THE BOARD, best paid first -- apply_to_job(id), you may "
-                "apply to several: " + "; ".join(lines)
+    # Player job adverts, world-wide, and EVERYONE sees them -- not only the
+    # unemployed. Gating this on `not agent.current_job` was a token
+    # optimisation that quietly destroyed the labour market: by hour 44 of the
+    # 2026-08-17 run all 20 agents held a job, so nobody could see a single
+    # advert, nobody could ever move, and labour supply was permanently zero.
+    # Refinery owners paid 56.67 for NPCs rather than advertise at 25 to an
+    # audience of no one. An employed agent is shown only offers that BEAT what
+    # they currently earn, so the list stays short and every line is a reason
+    # to act.
+    current_wage = agent.current_job[2] if agent.current_job else 0.0
+    open_jobs = [
+        p for p in world.job_postings.values()
+        if p.is_live(world.sim_time) and p.owner != agent.id
+        and p.wage > current_wage
+    ]
+    if open_jobs:
+        open_jobs.sort(key=lambda p: -p.wage)
+        lines = []
+        for p in open_jobs[:6]:
+            b = world.businesses.get(p.business_id)
+            mark = " (already applied)" if agent.id in p.applicants else ""
+            risk = (" [has missed payroll]"
+                    if b is not None and b.insolvent_since is not None else "")
+            raise_ = (f", a rise of {p.wage - current_wage:.2f}/hr"
+                      if agent.current_job else "")
+            lines.append(
+                f"{p.id}: {p.role} at {b.name if b else '?'} "
+                f"({b.location if b else '?'}) for {p.wage:.2f}/hr{raise_}{mark}{risk}"
             )
+        headline = (
+            f"JOBS PAYING MORE THAN YOUR {current_wage:.2f}/hr"
+            if agent.current_job else "JOBS ON THE BOARD, best paid first"
+        )
+        out.append(
+            f"{headline} -- apply_to_job(id) even while employed; you keep your "
+            f"current job unless an owner takes you on: " + "; ".join(lines)
+        )
 
     if M.is_spur(agent.location):
         free = M.plots_free(world, agent.location)
@@ -664,6 +681,17 @@ def _shop_view(world: World, b: Business) -> dict[str, Any]:
     }
     if b.is_government:
         return view
+    # A business that has already missed payroll should say so to anyone who
+    # might work there or trade with it. Without this, an insolvent business
+    # looks exactly like a healthy one: on 2026-08-17 the same agent rejoined a
+    # mine holding 0.44 denari more than a dozen times, losing an hour's wages
+    # each time, because nothing marked it as unable to pay.
+    if b.insolvent_since is not None:
+        view["warning"] = (
+            f"CANNOT MAKE PAYROLL -- this business missed wages and owes "
+            f"{b.insolvent_debt:.2f}. It will not pay you until its owner funds "
+            f"it, and it closes if they do not."
+        )
     # Only shops a PERSON can buy from. A farm or refinery sells nothing over a
     # counter -- its goods move by order_from_business, which is remote and does
     # not care whether anyone is standing in it. Calling those "CLOSED" would
@@ -784,7 +812,16 @@ def _owned_business_view(world: World, bid: str) -> dict[str, Any]:
                 "hours_on_board": round(p.hours_open(world.sim_time), 1),
                 "applicants": list(p.applicants),
                 "next": (
-                    f"hire_applicant('{p.id}', '<agent id>') to take one"
+                    # Name a REAL applicant, not a placeholder. This line used to
+                    # read "hire_applicant('J0090', '<agent id>')" and on
+                    # 2026-08-17 an owner sat on FOUR applicants for twelve
+                    # simulated hours and let the advert lapse without hiring
+                    # anyone. The candidates were listed in a neighbouring field;
+                    # the instruction that mattered named none of them.
+                    f"{len(p.applicants)} applicant(s) waiting. "
+                    f"hire_applicant('{p.id}', '{p.applicants[0]}') takes the "
+                    f"first; any id from the applicants list works. The advert "
+                    f"lapses in {max(0.0, D.JOB_POSTING_HOURS - p.hours_open(world.sim_time)):.1f}h."
                     if p.applicants else
                     f"NOBODY has applied in {p.hours_open(world.sim_time):.1f}h. "
                     f"close_job('{p.id}') and post_job again at a higher wage, "
