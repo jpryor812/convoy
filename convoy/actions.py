@@ -745,7 +745,22 @@ def hire_npc_employee(
         location=biz.location, role=role, wage=round(wage, 2),
         researcher=as_researcher, employer=biz.name, npc=True,
     )
-    return True, f"hired an NPC {role} at {wage:.2f}/hr"
+    # Two facts an owner needs AT THIS MOMENT, not on the next observation --
+    # by then the money is committed. Both 2026-08-16 insolvencies came from an
+    # agent hiring and spending its remaining cash on stock in the same
+    # decision, then missing payroll an hour later: they were budgeting against
+    # cash, not against cash minus a RECURRING wage. And nobody was ever told
+    # that an NPC is frozen at Novice while an agent employee grows to
+    # +{skill:.0%} output, which is the whole case for using the job board.
+    payroll = sum(e.wage for e in biz.roster if e.wage > 0)
+    hours = biz.cash / payroll if payroll else 0.0
+    return True, (
+        f"hired an NPC {role} at {wage:.2f}/hr. This is a RECURRING cost: total "
+        f"payroll is now {payroll:.2f}/hr and the business holds {biz.cash:.2f}, "
+        f"which covers {hours:.1f}h. Keep it funded or the worker leaves. An NPC "
+        f"never improves; an agent employee reaches +{E.skill_bonus(1e9):.0%} "
+        f"output with experience and costs less -- post_job to advertise for one."
+    )
 
 
 def allocate_research(

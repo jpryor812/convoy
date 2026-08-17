@@ -37,6 +37,9 @@ from .state import Agent, World
 # Public knowledge decays: a death two hours ago is still news, a sale is not.
 WORLD_NEWS_WINDOW_HOURS = 1.0
 DEFAULT_MEMORY_LIMIT = 15
+# Where the job board hangs. Town, because every agent spawns there -- so the
+# whole population reads it at hour zero without spending a step to reach it.
+JOB_CENTRE_LOCATION = "Town"
 DEFAULT_CHAT_LIMIT = 8
 
 # Diaries are self-narration, not events. They fill leftover space only.
@@ -271,8 +274,10 @@ def _static_rules() -> str:
         f"an agent learns you are hiring. Applicants appear in your observation; "
         f"take one with hire_applicant, or close_job and repost higher if nobody "
         f"bites. Adverts lapse after {D.JOB_POSTING_HOURS:.0f}h. An agent is "
-        f"cheaper than an NPC but must be present and on shift. Answer others' "
-        f"adverts with apply_to_job; you may apply to several."
+        f"cheaper than an NPC but must be present and on shift -- and an agent "
+        f"GETS BETTER, reaching +{E.skill_bonus(1e9):.0%} output with experience, "
+        f"while an NPC is stuck at Novice forever. Answer others' adverts with "
+        f"apply_to_job; you may apply to several."
     )
     lines.append("")
     lines.append(
@@ -472,6 +477,42 @@ def affordances(world: World, agent: Agent) -> list[str]:
                      "a player business, or found your own.")
             )
 
+    # THE JOB CENTRE. Every agent spawns in Town, so a board here is read by the
+    # whole population at hour zero before anyone takes a step. State vacancies
+    # used to be visible only at the site itself, which meant the only way to
+    # find work was to walk the valley and be refused -- 543 refusals, 36.8% of
+    # every action, in the 2026-08-16 72-hour run. One board, every opening,
+    # best paid first, so the first journey an agent makes is TO a job rather
+    # than in search of one.
+    if agent.location == JOB_CENTRE_LOCATION and not agent.current_job:
+        openings: list[tuple[float, str]] = []
+        for b in world.businesses.values():
+            if b.closed or not b.spec.needs_worker:
+                continue
+            if b.is_government:
+                free = D.GOVERNMENT_MAX_EMPLOYEES - len(b.production_staff())
+                if free <= 0:
+                    continue
+                for role in b.spec.production_roles:
+                    wage = E.government_wage(role)
+                    openings.append((wage, f"{role} at {b.name} ({b.location}) {wage:.2f}/hr"))
+        for p in world.job_postings.values():
+            if not p.is_live(world.sim_time) or p.owner == agent.id:
+                continue
+            b = world.businesses.get(p.business_id)
+            openings.append((p.wage, (
+                f"{p.role} at {b.name if b else '?'} ({b.location if b else '?'}) "
+                f"{p.wage:.2f}/hr -- apply_to_job('{p.id}')"
+            )))
+        if openings:
+            openings.sort(key=lambda x: -x[0])
+            shown = "; ".join(text for _, text in openings[:10])
+            out.append(
+                f"JOB CENTRE ({JOB_CENTRE_LOCATION}) -- every position open in the "
+                f"valley right now, best paid first: {shown}. Travel to one and "
+                f"apply_for_job there, or apply_to_job for a player advert."
+            )
+
     # Player job adverts, world-wide. A posting that only lived in the chat
     # scroll would be missed by anyone who woke after it, and chat is the one
     # part of the observation that ages out.
@@ -603,6 +644,48 @@ def _local_prices(world: World, agent: Agent) -> dict[str, dict[str, float]]:
         if deviating:
             out[f"{b.name} ({b.id})"] = deviating
     return out
+
+
+def _shop_view(world: World, b: Business) -> dict[str, Any]:
+    """A shop as a customer sees it: is it open, and does it have anything?
+
+    Listing a name and type and nothing else made every player shop look like a
+    counter you could buy from. In the 2026-08-16 48-hour run agents walked into
+    empty, unattended taverns and were refused 240 times -- 46% of every failed
+    action in the run -- because the observation never said "closed" or "out of
+    Meal" and the engine knew both. A state shop is always open and always
+    stocked, so it needs no such warning.
+    """
+    view: dict[str, Any] = {
+        "id": b.id,
+        "name": b.name,
+        "type": b.type,
+        "owner": "Government" if b.is_government else b.owner,
+    }
+    if b.is_government:
+        return view
+    # Only shops a PERSON can buy from. A farm or refinery sells nothing over a
+    # counter -- its goods move by order_from_business, which is remote and does
+    # not care whether anyone is standing in it. Calling those "CLOSED" would
+    # tell a refinery owner its supplier was unavailable when it is not.
+    if not any(o in D.FINAL_GOODS for o in b.spec.outputs):
+        return view
+    if not b.is_staffed(world):
+        view["status"] = (
+            "CLOSED -- nobody is working here, so it will not sell to you. "
+            "A player shop only trades while its owner or an employee is on shift."
+        )
+        return view
+    for_sale = {i: q for i, q in b.inventory.items() if q > 0 and i in b.retail_prices}
+    if for_sale:
+        view["status"] = "open"
+        view["sells"] = {
+            i: {"price": round(b.price_for(i), 2), "stock": q}
+            for i, q in sorted(for_sale.items())
+        }
+    else:
+        view["status"] = "open but EMPTY -- staffed, with nothing in stock to sell"
+    return view
 
 
 def _owned_business_view(world: World, bid: str) -> dict[str, Any]:
@@ -816,15 +899,7 @@ def observe(
         if b.location == agent.location and not b.closed
     ]
     here_agents = [{"id": x.id, "name": x.name} for x in all_here_agents[:HERE_LIMIT]]
-    here_businesses = [
-        {
-            "id": b.id,
-            "name": b.name,
-            "type": b.type,
-            "owner": "Government" if b.is_government else b.owner,
-        }
-        for b in all_here_businesses[:HERE_LIMIT]
-    ]
+    here_businesses = [_shop_view(world, b) for b in all_here_businesses[:HERE_LIMIT]]
 
     here: dict[str, Any] = {"agents": here_agents, "businesses": here_businesses}
     if len(all_here_agents) > HERE_LIMIT:
