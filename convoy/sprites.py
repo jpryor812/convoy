@@ -79,13 +79,47 @@ POSE_FOR_ROLE = {
 }
 
 
+RENDERED_CHARACTERS = GENERATED / "characters"
+
+# Model -> rendered character variant. FIVE variants for five models, where the
+# Kenney binding had to fold five models into four faction colours and always
+# left two looking identical on the map. Kept explicit rather than derived from
+# roster order, so re-ordering `MODEL_ROSTER` cannot silently repaint everyone;
+# `check()` asserts every model has one.
+CHARACTER_FOR_MODEL = {
+    "openai/gpt-5.6-terra": 1,
+    "deepseek/deepseek-v4-flash-0731": 2,
+    "openai/gpt-5.6-luna": 3,
+    "x-ai/grok-4.3": 4,
+    "inclusionai/ling-3.0-flash": 5,
+}
+
+
 def agent_sprite(model: str, *, owns_business: bool = False,
                  hauling: bool = False, role: str | None = None,
                  dead: bool = False) -> Path:
-    """The sprite for one agent, right now."""
-    faction = FACTION_FOR_MODEL.get(model, "blue")
+    """The sprite for one agent, right now.
+
+    Prefers a rendered character, falls back to the Kenney unit grid.
+
+    ONE DISTINCTION IS LOST in the rendered set and it is worth naming: Kenney's
+    24 sprites gave six poses, so a hauler could read as cloaked and a smith as
+    armoured. The rendered characters have two states, plain and owner. Owner is
+    kept because owning a business is a real economic fact worth seeing on a map;
+    role and hauling are not, and belong in the status bubble (VISUALS section 1)
+    where they can say what the agent is actually doing rather than what it is.
+    """
     if dead:
         return GENERATED / "ui" / "death.svg"
+
+    variant = CHARACTER_FOR_MODEL.get(model)
+    if variant is not None:
+        name = f"agent-{variant}" + ("-owner" if owns_business else "")
+        rendered = RENDERED_CHARACTERS / f"{name}.png"
+        if rendered.exists():
+            return rendered
+
+    faction = FACTION_FOR_MODEL.get(model, "blue")
     if owns_business:
         pose = "owner"
     elif hauling:
@@ -123,6 +157,29 @@ STRUCTURE_FOR_BUSINESS = {
 # Government branches use the same building with a stone-grey civic marker in
 # the renderer, rather than a second sprite set: same trade, different owner.
 GOVERNMENT_BADGE = _structure(6)                  # the town gatehouse
+
+# Blender-rendered replacements, drawn by `art/blender_assets.py` through the
+# rig in `art/blender_rig.py`.
+RENDERED_BUILDINGS = GENERATED / "buildings"
+
+
+def structure_for(business_type: str) -> Path:
+    """The best available sprite for a business type.
+
+    A rendered PNG wins over the Kenney stand-in, and the Kenney one is used
+    until a rendered one exists. That is what lets the art be replaced ONE
+    BUILDING AT A TIME without a flag day: render a refinery, and every refinery
+    on the map is a refinery next time the page is built, while the other nine
+    types carry on unchanged.
+    """
+    rendered = RENDERED_BUILDINGS / f"{_slug(business_type)}.png"
+    if rendered.exists():
+        return rendered
+    return STRUCTURE_FOR_BUSINESS[business_type]
+
+
+def is_rendered(business_type: str) -> bool:
+    return (RENDERED_BUILDINGS / f"{_slug(business_type)}.png").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +228,15 @@ ELEVATION_RANGE = (20, 340)
 # ---------------------------------------------------------------------------
 
 def vehicle_sprite(name: str) -> Path:
+    """Rendered vehicle if there is one, else the hand-drawn SVG.
+
+    The rendered set lives in `vehicles-3d/` rather than overwriting
+    `vehicles/`, so the SVGs stay as a working fallback and the two can be
+    compared side by side instead of one being destroyed to try the other.
+    """
+    rendered = GENERATED / "vehicles-3d" / f"{_slug(name)}.png"
+    if rendered.exists():
+        return rendered
     return GENERATED / "vehicles" / f"{_slug(name)}.svg"
 
 
@@ -286,6 +352,17 @@ def check() -> list[str]:
     for slot in D.MODEL_ROSTER:
         if slot.openrouter_id not in FACTION_FOR_MODEL:
             problems.append(f"model {slot.openrouter_id!r} has no faction colour")
+        if slot.openrouter_id not in CHARACTER_FOR_MODEL:
+            problems.append(f"model {slot.openrouter_id!r} has no character variant")
+        for owner in (False, True):
+            exists(agent_sprite(slot.openrouter_id, owns_business=owner),
+                   f"agent sprite for {slot.openrouter_id!r}")
+
+    # Two models sharing a look means a mixed run cannot be read by model, which
+    # is most of the point of running five.
+    variants = {CHARACTER_FOR_MODEL.get(s.openrouter_id) for s in D.MODEL_ROSTER}
+    if len(variants) < len(D.MODEL_ROSTER):
+        problems.append("two models share a character variant")
 
     # Every action an agent can actually take needs a glyph. Imported here
     # rather than at module scope: `schemas` reaches `actions` -> `state`, and

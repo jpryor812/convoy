@@ -67,11 +67,20 @@ def collect_assets() -> dict[str, str]:
         small = Path(str(path).replace("/Retina/", "/Default size/"))
         assets[key] = data_uri(small if small.exists() else path)
 
-    for btype, path in SP.STRUCTURE_FOR_BUSINESS.items():
-        add(f"biz:{btype}", path)
+    # `structure_for` prefers a Blender-rendered PNG when one exists, so the art
+    # can be replaced one building at a time rather than in a flag day.
+    for btype in SP.STRUCTURE_FOR_BUSINESS:
+        add(f"biz:{btype}", SP.structure_for(btype))
     add("biz:government", SP.GOVERNMENT_BADGE)
 
-    for faction in SP.FACTION_BASE:
+    # Keyed by MODEL, not by faction+pose. `agent_sprite` resolves a rendered
+    # character when one exists and a Kenney unit when it does not, so the page
+    # does not need to know which it got.
+    for slot in D.MODEL_ROSTER:
+        for owner in (False, True):
+            key = f"agent:{slot.openrouter_id}:{'owner' if owner else 'plain'}"
+            add(key, SP.agent_sprite(slot.openrouter_id, owns_business=owner))
+    for faction in SP.FACTION_BASE:          # legend + fallback for stray models
         for pose in SP.POSES:
             add(f"unit:{faction}:{pose}", SP.unit(faction, pose))
 
@@ -376,6 +385,11 @@ TEMPLATE = r"""<!doctype html>
   .agent{cursor:pointer}
   .agent:hover .halo{opacity:.5}
   .halo{opacity:0;fill:var(--accent)}
+  /* Nearest-neighbour, always. The character sprites are rendered at 54x80 on
+     purpose; letting the browser smooth them on the way to the screen undoes
+     the entire reason for rendering them small. Drawn at exactly half size, so
+     the downscale drops whole pixels rather than blending them. */
+  .px{image-rendering:pixelated;image-rendering:crisp-edges}
   .agent.sel .halo{opacity:.85}
   .card{border:1px solid var(--line);border-radius:9px;padding:11px;margin-bottom:11px}
   .card h3{margin:0 0 3px;font-size:14px}
@@ -550,7 +564,11 @@ function draw(){
     const pos = positionAt(a.id, hour);
     if (!pos || pos.x === null) continue;
     const owns = DATA.businesses.some(b => b.owner === a.id && bizAt(b, hour));
-    const key = `unit:${factionOf(a.model)}:${poseOf(a, hour, owns)}`;
+    /* Rendered character when the run's model has one, Kenney unit otherwise --
+       resolved on the Python side, so this only has to pick owner vs plain. */
+    const key = ART[`agent:${a.model}:${owns ? "owner" : "plain"}`]
+      ? `agent:${a.model}:${owns ? "owner" : "plain"}`
+      : `unit:${factionOf(a.model)}:${poseOf(a, hour, owns)}`;
     const idx = DATA.agents.indexOf(a);
     /* Fan agents around the lower half of their card so a crowd stays
        countable. The golden angle keeps successive agents apart instead of
@@ -565,9 +583,13 @@ function draw(){
     /* A pale disc behind every figure. The units are small and their palette is
        the same family as the grass they stand on, so without it a crowd of
        agents on a green card is unreadable. */
-    el("circle", {cx, cy, r:14, fill:"#ffffff", opacity:.78}, g);
-    el("circle", {class:"halo", cx, cy, r:17}, g);
-    img(ART[key], cx - 11, cy - 14, 22, 27, g);
+    /* Agents are drawn TALL (0.6 aspect), matching the 96x160 character
+       renders. Squeezing a standing figure into the old 22x27 box distorted it,
+       and the detail those sprites carry only pays off at a size where a face
+       is more than three pixels. */
+    el("ellipse", {cx, cy:cy + 15, rx:13, ry:6, fill:"#ffffff", opacity:.72}, g);
+    el("circle", {class:"halo", cx, cy:cy + 2, r:20}, g);
+    img(ART[key], cx - 13.5, cy - 20, 27, 40, g, "px");
     g.appendChild(document.createElementNS(SVG,"title")).textContent =
       `${a.name} (${a.id})${owns ? " · owner" : ""}`;
     g.addEventListener("click", () => { selected = a.id; render(); });
@@ -602,7 +624,7 @@ function sidebar(){
         ).join("") : '<div class="empty">nothing yet</div>'}</div>
        <div class="card"><h3>Legend</h3><div class="legend">${
         Object.keys(DATA.factions).map(m =>
-         `<div><img src="${ART["unit:"+DATA.factions[m]+":villager"]}" alt="">
+         `<div><img src="${ART["agent:"+m+":plain"] || ART["unit:"+DATA.factions[m]+":villager"]}" alt="">
           ${esc(m.split("/").pop())}</div>`).join("")
         }</div>
         <div class="sub" style="margin-top:8px">A grey dot marks a state

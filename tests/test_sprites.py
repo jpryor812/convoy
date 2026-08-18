@@ -103,19 +103,50 @@ def test_each_faction_is_one_colour_block() -> None:
 def test_agent_sprite_reflects_what_the_agent_is() -> None:
     model = "openai/gpt-5.6-luna"
     owner = SP.agent_sprite(model, owns_business=True)
-    hauler = SP.agent_sprite(model, hauling=True)
     plain = SP.agent_sprite(model)
     ok("owner differs from plain", owner != plain)
-    ok("hauler differs from plain", hauler != plain)
     check("dead is the death glyph", SP.agent_sprite(model, dead=True).name, "death.svg")
     # Owning outranks hauling: an owner reads as an owner even mid-delivery.
     check("owner outranks hauler",
           SP.agent_sprite(model, owns_business=True, hauling=True), owner)
 
 
+def test_the_rendered_set_trades_poses_for_identity() -> None:
+    """A deliberate trade, pinned so it is a decision rather than a drift.
+
+    Kenney's 24 sprites gave SIX poses per faction but only FOUR factions, so
+    two of the five models always looked identical on the map. The rendered
+    characters invert that: five distinct people, two states each.
+
+    LOST: hauling and role no longer change the sprite. That belongs in the
+    status bubble (VISUALS section 1), which can say what an agent is doing
+    rather than merely what it is.
+    GAINED: no two models share a look.
+    """
+    plain = {SP.agent_sprite(s.openrouter_id) for s in D.MODEL_ROSTER}
+    check("every model gets its own sprite", len(plain), len(D.MODEL_ROSTER))
+
+    model = D.MODEL_ROSTER[0].openrouter_id
+    if SP.CHARACTER_FOR_MODEL.get(model) and \
+            SP.agent_sprite(model).parent.name == "characters":
+        check("hauling folds into plain in the rendered set",
+              SP.agent_sprite(model, hauling=True), SP.agent_sprite(model))
+    else:
+        ok("kenney fallback still distinguishes a hauler",
+           SP.agent_sprite(model, hauling=True) != SP.agent_sprite(model))
+
+
 def test_models_get_distinct_enough_colours() -> None:
     factions = {SP.FACTION_FOR_MODEL[s.openrouter_id] for s in D.MODEL_ROSTER}
     ok("a mixed run is not monochrome", len(factions) >= 3, str(factions))
+    variants = {SP.CHARACTER_FOR_MODEL[s.openrouter_id] for s in D.MODEL_ROSTER}
+    check("five models, five characters", len(variants), len(D.MODEL_ROSTER))
+
+
+def test_every_vehicle_has_a_sprite() -> None:
+    for name in D.VEHICLES:
+        path = SP.vehicle_sprite(name)
+        ok(f"sprite for {name}", path.exists(), str(path))
 
 
 # ---------------------------------------------------------------------------
