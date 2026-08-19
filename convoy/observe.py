@@ -52,7 +52,25 @@ DEFAULT_CHAT_LIMIT = 8
 _MAX_DIARY_LINES = 4
 
 # Engine bookkeeping an inhabitant would never experience.
-_ENGINE_BOOKKEEPING = frozenset({"sim_start", "sim_end", "decision"})
+#
+# The three advice events are here for a reason worth keeping. Advice reaches an
+# agent through the ADVICE block, which expires it on schedule; the log entries
+# recording that delivery do not expire, so leaving them in scope put hour-10
+# advice back in the prompt at hour 17 as a raw event dump, reading as current
+# long after it had lapsed -- expiry defeated by the mechanism that records it.
+# They also spend the memory budget, which is 15 lines and is the reason
+# reasoning was kept out of `memory_for` in the first place (PHASE4 §9): an
+# advisor could otherwise evict the news that a rival opened a refinery next
+# door simply by talking. The events are for the TRANSCRIPT, not the agent.
+_ENGINE_BOOKKEEPING = frozenset({
+    "sim_start", "sim_end", "decision",
+    "advice_given", "advice_delivered", "advice_outcome",
+})
+
+# Advice from outside the sim. No limit worth having is smaller than this: an
+# agent is meant to be able to hold every live recommendation at once, and
+# `Agent.live_advice` has already dropped the expired ones.
+DEFAULT_ADVICE_LIMIT = 6
 
 # A crowded junction can hold every agent in the world. Past a point the list
 # stops being information and starts being filler, so it is capped and counted.
@@ -429,6 +447,55 @@ def thinking_for(agent: Agent, limit: int = DEFAULT_THINKING_LIMIT) -> list[str]
         did = ", ".join(entry.actions) if entry.actions else "nothing"
         out.append(f"[h{entry.hour:.1f}] you thought: {said or '(nothing)'} -- you did: {did}")
     return out
+
+
+def advice_for(
+    world: World,
+    log: EventLog,
+    agent: Agent,
+    *,
+    record_delivery: bool = True,
+    limit: int = DEFAULT_ADVICE_LIMIT,
+) -> list[str]:
+    """Live recommendations for this agent, and the record that it saw them.
+
+    THIS FUNCTION IS THE WHOLE FEATURE. Storing advice on the agent is
+    bookkeeping; a channel exists only if the text reaches the model at the
+    moment it decides. PHASE4 §2 is thirteen entries long and every one is a
+    fact the code held and the prompt did not carry, so the failure to expect
+    here is not "the agent disobeyed" but "the agent was never told".
+
+    Delivery is therefore RECORDED HERE and nowhere else, at the one point in
+    the codebase where the words go into a prompt. `times_seen` is evidence, not
+    an estimate: if a student says their advice was ignored and `times_seen` is
+    0, the advice never arrived and the agent is not the thing that is broken.
+
+    `record_delivery=False` is for callers that build an observation without
+    sending it -- a dry run, a test, a preview. Counting those as delivery would
+    corrupt the only number that can settle the argument above.
+    """
+    live = agent.live_advice(world.sim_hour)[-limit:]
+    if not live:
+        return []
+
+    lines = []
+    for rec in live:
+        lines.append(rec.format(world.sim_hour))
+        if not record_delivery:
+            continue
+        first = rec.times_seen == 0
+        rec.times_seen += 1
+        if first:
+            rec.first_seen_hour = round(world.sim_hour, 2)
+            # MEDIUM: a student needs to find this without grepping past ten
+            # thousand mining ticks.
+            log.emit(
+                world.sim_time, "advice_delivered", actor=agent.id,
+                location=agent.location, significance=Significance.MEDIUM,
+                advice_id=rec.id, from_who=rec.from_who, text=rec.text,
+                given_at_hour=rec.given_at_hour,
+            )
+    return lines
 
 
 def _collapse_repeats(lines: list[str]) -> list[str]:
@@ -894,6 +961,7 @@ def observe(
     memory_limit: int = DEFAULT_MEMORY_LIMIT,
     chat_limit: int = DEFAULT_CHAT_LIMIT,
     thinking_limit: int = DEFAULT_THINKING_LIMIT,
+    record_delivery: bool = True,
 ) -> dict[str, Any]:
     """What this agent knows, right now.
 
@@ -1019,6 +1087,12 @@ def observe(
         ),
     }
 
+    # Advice goes in BEFORE anything is trimmed or capped, and `render` puts it
+    # at the top of the prompt. See `advice_for`.
+    advice = advice_for(world, log, agent, record_delivery=record_delivery)
+    if advice:
+        obs["advice"] = advice
+
     local = _local_prices(world, agent)
     if local:
         obs["player_prices_here"] = local
@@ -1135,7 +1209,18 @@ def render(obs: dict[str, Any]) -> str:
         f"HOUR {obs['hour']}. You were woken because: {obs['woken_because']}.",
         "",
     ]
+    # Advice is named on line one and rendered before anything else. The
+    # observation runs past 20,000 characters; a block placed after the price
+    # tables is present in the prompt and absent from the decision, which is the
+    # exact distinction PHASE4 §2 is a list of.
+    if obs.get("advice"):
+        n = len(obs["advice"])
+        lines[0] += (
+            f" You have {n} piece{'s' if n != 1 else ''} of ADVICE waiting, "
+            f"below. Read it before you decide."
+        )
     for key, heading in [
+        ("advice", "ADVICE FOR YOU (from someone watching -- weigh it, then decide)"),
         ("you", "YOU"),
         ("here", "WHERE YOU ARE"),
         ("player_prices_here", "PLAYER PRICES HERE"),

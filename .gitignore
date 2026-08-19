@@ -23,3 +23,9 @@ env/
 *.swp
 .idea/
 .vscode/
+
+# Raw Meshy exports — ~200MB of uncompressed source (a single character is 6.1MB,
+# 92% of it one 2048x2048 PNG). Process these into art/generated/models/ with
+# gltf-transform; that output is ~5MB and IS committed, because it is what the
+# renderer actually loads.
+art/source/

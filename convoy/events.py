@@ -120,6 +120,39 @@ class EventLog:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self._fh = self.path.open("a", encoding="utf-8")
 
+    def replay(self, path: Path | str | None = None) -> int:
+        """Load an existing JSONL back into memory, without rewriting it.
+
+        Needed to RESUME a world. `memory_for` answers "what has happened to me
+        lately?" by walking `self.events`, so a resumed run whose log started
+        empty would give every agent total amnesia at the moment it came back --
+        precisely the failure `memory_for` was written to prevent, reintroduced
+        by the restart rather than by the observation.
+
+        Returns the number of events loaded. A missing or malformed file is not
+        fatal: continuing with a thinner memory beats refusing to resume a run
+        that is otherwise perfectly restorable.
+        """
+        src = Path(path) if path else self.path
+        if not src or not src.exists():
+            return 0
+        loaded = 0
+        for line in src.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                raw = json.loads(line)
+                self.events.append(Event(
+                    sim_time=raw["sim_time"], type=raw["type"],
+                    significance=raw.get("significance", Significance.LOW),
+                    actor=raw.get("actor"), subject=raw.get("subject"),
+                    location=raw.get("location"), detail=raw.get("detail") or {},
+                ))
+                loaded += 1
+            except (ValueError, KeyError, TypeError):
+                continue                  # a torn final line from a killed run
+        return loaded
+
     def emit(
         self,
         sim_time: float,

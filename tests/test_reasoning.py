@@ -307,6 +307,78 @@ def test_reasoning_survives_a_checkpoint(tmp: Path | None = None) -> None:
     check("actions intact", back[0].actions, ["buy_item"])
 
 
+# ---------------------------------------------------------------------------
+# what the agent HELD at the decision
+# ---------------------------------------------------------------------------
+
+def test_assets_are_pinned_to_the_decision() -> None:
+    """A decision row records why and what; it must also record what with.
+
+    "Founded a mine with 345 denari in hand" and "founded a mine with 175" are
+    different decisions to judge, and nothing in an append-only log can recover
+    a balance after the fact.
+    """
+    w, log, a = setup()
+    a.denari = 345.5
+    policy = ScriptedPolicy(log, [{
+        "role": "assistant",
+        "content": "Founding the mine.",
+        "tool_calls": [tool_call("post_world_chat", {"text": "opening a mine"})],
+    }])
+    policy.decide(w, a, "reevaluation")
+
+    ev = next(e for e in log.events if e.type == "llm_reasoning")
+    assets = ev.detail.get("assets")
+    ok("assets recorded on the event", assets is not None)
+    check("cash recorded", assets["denari"], 345.5)
+    check("location recorded", assets["location"], "Town")
+    ok("net worth recorded", "net_worth" in assets)
+    ok("hunger recorded", assets["hunger"] == "Normal", str(assets.get("hunger")))
+
+
+def test_assets_are_not_on_the_agents_own_ring_buffer() -> None:
+    """Balances belong in the log, not in the agent's prompt memory.
+
+    An agent already sees its current cash in the observation. Carrying 40 past
+    copies of a fact it can look at would spend prompt budget to tell it
+    something it knows -- PHASE4 §9's separate-budgets argument, one scope down.
+    """
+    w, log, a = setup()
+    policy = ScriptedPolicy(log, [{
+        "role": "assistant", "content": "Working.",
+        "tool_calls": [tool_call("post_world_chat", {"text": "hi"})],
+    }])
+    policy.decide(w, a, "reevaluation")
+    ok("no assets on Reasoning", not hasattr(a.reasoning[0], "assets"))
+
+
+def test_business_cash_and_payroll_ride_along() -> None:
+    """The two numbers behind every insolvency in the last run."""
+    from convoy.state import Business, Employment
+
+    w, log, a = setup()
+    biz = Business(
+        id="B0001", name="Test Mine", type="Mining Operation",
+        location="Town", owner=a.id,
+    )
+    biz.cash = 210.0
+    biz.roster = [Employment(agent_id="NPC1", role="Miner", wage=43.33)]
+    w.businesses[biz.id] = biz
+    a.owned_businesses.append(biz.id)
+
+    policy = ScriptedPolicy(log, [{
+        "role": "assistant", "content": "Checking the mine.",
+        "tool_calls": [tool_call("post_world_chat", {"text": "hi"})],
+    }])
+    policy.decide(w, a, "reevaluation")
+
+    held = next(e for e in log.events if e.type == "llm_reasoning").detail["assets"]
+    check("one business", len(held["businesses"]), 1)
+    b = held["businesses"][0]
+    check("cash", b["cash"], 210.0)
+    check("payroll", b["payroll_per_hour"], 43.33)
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in tests:

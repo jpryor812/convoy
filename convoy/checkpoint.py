@@ -13,22 +13,29 @@ from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
+from . import state as _state
 from .state import (
     Activity,
     Agent,
     Bounty,
     Business,
+    ChatMessage,
     Consignment,
     Convoy,
     ConvoyMember,
     Employment,
     Government,
     Guild,
+    JobPosting,
     Market,
     Property,
     Proposal,
     Reasoning,
+    Recommendation,
     ResearchState,
+    Snapshot,
+    StolenStack,
+    TradeOffer,
     Transaction,
     VehicleInstance,
     World,
@@ -37,11 +44,40 @@ from .state import (
 _CLASSES = {
     c.__name__: c
     for c in (
-        Activity, Agent, Bounty, Business, Consignment, Convoy, ConvoyMember, Employment,
-        Government, Guild, Market, Property, Proposal, Reasoning, ResearchState,
-        Transaction, VehicleInstance, World,
+        Activity, Agent, Bounty, Business, ChatMessage, Consignment, Convoy,
+        ConvoyMember, Employment, Government, Guild, JobPosting, Market, Property,
+        Proposal, Reasoning, Recommendation, ResearchState, Snapshot, StolenStack,
+        TradeOffer, Transaction, VehicleInstance, World,
     )
 }
+
+
+def check() -> list[str]:
+    """Every dataclass in `state` must be restorable. Returns the ones that are not.
+
+    THIS EXISTS BECAUSE CHECKPOINTING WAS WRITE-ONLY FOR THREE PHASES.
+
+    `save` walks the object graph generically and will happily encode a type it
+    cannot decode; `load` needs the name in `_CLASSES`. So a dataclass added to
+    `state.py` and not added here produces checkpoints that write cleanly, look
+    right on disk, and raise `KeyError` the moment anyone tries to restore one.
+    Nothing in the codebase called `load` in anger, so four types accumulated --
+    `ChatMessage`, `JobPosting`, `StolenStack`, `TradeOffer` -- and every
+    checkpoint written since chat landed was unrestorable. Found on 2026-08-18
+    by the first code that actually tried to read one back.
+
+    Run from `run_phase1.py` beside the economic invariants and the sprite
+    check, for the same reason those are: it is cheap, it depends on a file
+    people edit often, and its failure mode is losing a twelve-hour run.
+    """
+    import dataclasses
+    import inspect
+
+    declared = {
+        name for name, obj in inspect.getmembers(_state, inspect.isclass)
+        if dataclasses.is_dataclass(obj) and obj.__module__ == _state.__name__
+    }
+    return sorted(declared - set(_CLASSES))
 
 
 def _encode(obj: Any) -> Any:

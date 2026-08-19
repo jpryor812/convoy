@@ -32,6 +32,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from convoy import advice as ADV
 from convoy import checkpoint, chronicle
 from convoy import data as D
 from convoy import llm
@@ -153,17 +154,33 @@ def _announce_done(run_dir: Path, status: str) -> None:
         pass
 
 
-def _checkpoint_hook(world: World, log: EventLog, run_dir: Path, day_hours: float):
-    """Save state AND write the digest on the same hourly beat.
+def _checkpoint_hook(
+    world: World,
+    log: EventLog,
+    run_dir: Path,
+    day_hours: float,
+    advisor: ADV.Advisor | None = None,
+):
+    """Save state, write the digest, and give any scheduled advice — one beat.
 
     Chronicling must never take the run down at hour 60, so a broken digest
-    degrades to a note in the log while the checkpoint still lands.
+    degrades to a note in the log while the checkpoint still lands. The advisor
+    gets the same treatment for the same reason: a twelve-hour run must not die
+    because a selector raised on an edge case at hour 44.
+
+    Advice runs BEFORE the checkpoint so that a crash-and-restore cannot lose a
+    recommendation the log has already recorded as given.
     """
     chronicler = chronicle.Chronicler(
         world, log, run_dir / "chronicle.md", day_hours,
     )
 
     def hook(w: World) -> None:
+        if advisor is not None:
+            try:
+                advisor(w)
+            except Exception as exc:                   # noqa: BLE001
+                print(f"  [advisor failed: {type(exc).__name__}: {exc}]", flush=True)
         checkpoint.save(w, run_dir / "checkpoint.json")
         try:
             chronicler(w)
@@ -298,6 +315,26 @@ def main() -> int:
         "--day-hours", type=float, default=24.0,
         help="simulated hours between full daily digests",
     )
+    ap.add_argument(
+        "--advise", nargs="?", const="default", choices=["default", "smoke"],
+        default=None,
+        help="run the scripted advisor (convoy/advice.py). Puts the recommendation "
+             "channel under a live model: advice is queued on the hourly beat and "
+             "the run reports whether each piece actually reached a prompt. "
+             "'smoke' compresses the schedule into the first three hours, for "
+             "short runs that would never reach the default schedule's hours.",
+    )
+    ap.add_argument(
+        "--resume", type=Path, default=None, metavar="RUN_DIR",
+        help="continue a saved world instead of starting a new one. Reloads the "
+             "checkpoint and replays the event log, then runs --add-hours further. "
+             "This is what makes 'come back later and see what happened' possible, "
+             "and what lets advice queued through serve.py actually be acted on.",
+    )
+    ap.add_argument(
+        "--add-hours", type=float, default=12.0,
+        help="with --resume: how many further simulated hours to run",
+    )
     ap.add_argument("--dry-run", action="store_true", help="build prompts, call nothing")
     ap.add_argument("--max-actions", type=int, default=llm.MAX_ACTIONS_PER_DECISION)
     ap.add_argument(
@@ -328,11 +365,31 @@ def main() -> int:
     # One directory per run. The log opens in append mode, so a shared file
     # silently interleaves runs with only sim_start to tell them apart -- which
     # made the first live runs painful to read back.
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    run_dir = RUN_DIR / stamp
-    run_dir.mkdir(parents=True, exist_ok=True)
-    log = EventLog(run_dir / "events.jsonl", echo_min=Significance.HIGH)
-    world = new_world(log, roster(args.agents, models))
+    if args.resume:
+        run_dir = args.resume
+        ckpt = run_dir / "checkpoint.json"
+        if not ckpt.exists():
+            print(f"no checkpoint at {ckpt} — cannot resume.")
+            return 2
+        log = EventLog(run_dir / "events.jsonl", echo_min=Significance.HIGH)
+        # Replayed BEFORE anything is emitted, so `memory_for` sees the history
+        # rather than only what happens after the restart.
+        replayed = log.replay()
+        world = checkpoint.load(ckpt)
+        print(f"resuming {run_dir} at hour {world.sim_hour:.1f} "
+              f"({len(world.agents)} agents, {replayed:,} events replayed)")
+        pending = sum(len(a.live_advice(world.sim_hour)) for a in world.agents.values())
+        if pending:
+            print(f"{pending} recommendation(s) waiting to be delivered")
+    else:
+        # One directory per run. The log opens in append mode, so a shared file
+        # silently interleaves runs with only sim_start to tell them apart --
+        # which made the first live runs painful to read back.
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        run_dir = RUN_DIR / stamp
+        run_dir.mkdir(parents=True, exist_ok=True)
+        log = EventLog(run_dir / "events.jsonl", echo_min=Significance.HIGH)
+        world = new_world(log, roster(args.agents, models))
 
     policy = CappedPolicy(
         log=log, cap=args.decisions, dry_run=args.dry_run,
@@ -343,18 +400,37 @@ def main() -> int:
     # Decisions land every REEVALUATION_INTERVAL_MIN, so this is the sim time the
     # cap needs. Activity completions wake agents too, hence the headroom -- the
     # cap, not the clock, is what actually stops the run.
-    hours = (
-        args.hours if args.hours is not None
-        else args.decisions * D.REEVALUATION_INTERVAL_MIN / 60.0 * 1.5
-    )
+    # `duration_hours` is the END of the world's clock, not a span, so resuming
+    # adds to where the world already is. Passing a bare span would set an end
+    # BEHIND the current time and the engine would return without a single tick.
+    if args.resume:
+        hours = world.sim_hour + args.add_hours
+    else:
+        hours = (
+            args.hours if args.hours is not None
+            else args.decisions * D.REEVALUATION_INTERVAL_MIN / 60.0 * 1.5
+        )
 
-    print(f"Phase 2 — {args.agents} agents on {', '.join(models)}")
+    print(f"Phase 2 — {len(world.agents)} agents on {', '.join(models)}")
     print(f"{args.decisions} decisions each, up to {args.max_actions} actions per decision")
     print(f"{hours:.1f} simulated hours, pacing {args.rpm:g} req/min")
     if args.time_scale != 1.0:
         print(f"PRODUCTION TIMES SCALED x{args.time_scale:g} -- throughput only, "
               f"not a balanced economy")
     print(f"{'DRY RUN — no API calls' if args.dry_run else 'live'}\n")
+
+    advisor = (
+        ADV.Advisor(
+            log=log,
+            schedule=(
+                ADV.smoke_schedule() if args.advise == "smoke"
+                else ADV.default_schedule()
+            ),
+        )
+        if args.advise and not args.dry_run else None
+    )
+    if advisor is not None:
+        print(f"scripted advisor ON — {len(advisor.schedule)} recommendations scheduled\n")
 
     Engine(
         world, log, policy,
@@ -367,7 +443,7 @@ def main() -> int:
             checkpoint_every_hours=1.0 if not args.dry_run else 1e9,
         ),
         on_checkpoint=None if args.dry_run else _checkpoint_hook(
-            world, log, run_dir, args.day_hours
+            world, log, run_dir, args.day_hours, advisor
         ),
     ).run()
 
@@ -386,6 +462,12 @@ def main() -> int:
         json.dumps({m: vars(u) for m, u in policy.usage.items()}, indent=2),
         encoding="utf-8",
     )
+    if advisor is not None:
+        print("\n" + "=" * 74)
+        print("ADVICE")
+        print("=" * 74)
+        print(advisor.report(world))
+
     rc = harness_report(log, policy)
     spend = sum(u.cost for u in policy.usage.values())
     _announce_done(

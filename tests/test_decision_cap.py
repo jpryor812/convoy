@@ -66,7 +66,7 @@ class RecordingCapped(rp2.CappedPolicy):
     # `LLMPolicy.decide` records once per decision in a `finally`, so this fires
     # for exactly the wakes the cap did NOT swallow -- carrying the reason string
     # the guard rewrote them to.
-    def _remember(self, world, agent, reason, text, did):
+    def _remember(self, world, agent, reason, text, did, *, advised=None):
         self.reached.append(reason)
 
 

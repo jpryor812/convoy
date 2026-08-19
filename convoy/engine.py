@@ -59,7 +59,14 @@ class Engine:
         self.policy = policy
         self.config = config or EngineConfig()
         self.on_checkpoint = on_checkpoint
-        self._next_checkpoint = self.config.checkpoint_every_hours * 3600.0
+        # Relative to where the WORLD is, not to zero. Identical for a fresh
+        # world, and the difference between working and not for a resumed one: a
+        # world reloaded at hour 84 has already passed an absolute 1.0, so the
+        # due-check fires on every tick and the counter creeps forward one hour
+        # per simulated MINUTE -- 5,000 redundant saves before it catches up.
+        self._next_checkpoint = (
+            world.sim_time + self.config.checkpoint_every_hours * 3600.0
+        )
 
     # -- main loop ---------------------------------------------------------
 
@@ -786,15 +793,37 @@ class Engine:
                 # "one decision, then silence until the session resolves" --
                 # this is the engine finally keeping that promise.
                 #
-                # Hunger is the one thing allowed to interrupt work, because an
-                # agent that cannot react to it starves at its own bench.
+                # Hunger is one of two things allowed to interrupt work, because
+                # an agent that cannot react to it starves at its own bench.
+                #
+                # UNHEARD ADVICE is the other, and for the same reason. A
+                # recommendation reaches an agent only inside an observation, an
+                # observation is built only when the agent is asked, and a
+                # working agent is not asked -- so on the first live smoke of the
+                # advice channel all six recommendations expired unseen while
+                # their targets stood at a bench. The advice was queued, logged
+                # and correct; the agent simply never got a turn. That is PHASE4
+                # §2 one layer down: not the observation withholding a fact, but
+                # the schedule withholding the observation.
+                #
+                # Only advice never SEEN forces a wake, and it forces exactly
+                # one: `observe` marks it delivered, and the agent returns to
+                # normal cadence. Waking for every live recommendation would
+                # undo the guard this sits inside, which exists because 75% of
+                # all actions in the 2026-08-15 smoke were an agent reporting it
+                # was still busy.
                 busy = (
                     agent.activity.kind in ("work", "travel")
                     and agent.activity.ends_at > w.sim_time
                 )
-                if busy and agent.sustenance_stage == "Normal":
+                unheard = any(
+                    r.times_seen == 0 for r in agent.live_advice(w.sim_hour)
+                )
+                if busy and agent.sustenance_stage == "Normal" and not unheard:
                     continue
-                self._ask(agent, "reevaluation")
+                # Name it, so the model is not left to guess why it was pulled
+                # off a shift -- and so the transcript shows the interruption.
+                self._ask(agent, "advice_received" if unheard else "reevaluation")
 
     def _ask(self, agent: Agent, reason: str) -> None:
         agent.next_reeval_at = max(

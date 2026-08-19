@@ -35,6 +35,102 @@ MAX_REASONING_KEPT = 40
 REASONING_CHARS = 600
 
 
+# A recommendation is live for this many simulated hours unless the giver says
+# otherwise. Advice about a market goes stale with the market: telling an agent
+# at hour 60 what it was told at hour 12 is worse than telling it nothing,
+# because it reads as current.
+ADVICE_TTL_HOURS = 6.0
+
+# Long enough for a real instruction with a reason attached.
+ADVICE_CHARS = 400
+
+# The inbox is a ring, like `reasoning`. An advisor hammering one agent must not
+# be able to grow it without bound across a 120-hour run.
+MAX_ADVICE_KEPT = 20
+
+
+@dataclass
+class Snapshot:
+    """The state of the world at the instant a recommendation was given.
+
+    Captured so that "what did this advice change?" is ARITHMETIC rather than a
+    story. The claim worth making to a classroom -- "you told Agent 4 to open a
+    second mine; its net worth tripled, and Agent 6's fell as it lost share" --
+    is only worth making if it can be checked, and after the fact there is no
+    way to recover what the valley looked like at hour 44. It has to be taken
+    then or not at all.
+
+    The WHOLE leaderboard, not just the advised agent: the interesting half of
+    a market intervention is what it did to everyone who was not advised, and
+    that is exactly the half nobody thinks to record.
+
+    What this deliberately does NOT capture is a counterfactual. Nothing here
+    knows what would have happened otherwise; `runway_hours` is the closest
+    honest thing -- how long each business could have met payroll out of cash at
+    the moment advice landed. "Would have gone bankrupt" is a projection from
+    that number, and it must be shown as one.
+    """
+
+    hour: float
+    net_worth: dict[str, float] = field(default_factory=dict)      # agent id -> value
+    denari: dict[str, float] = field(default_factory=dict)
+    businesses: dict[str, int] = field(default_factory=dict)       # agent id -> open count
+    # business id -> hours of payroll its cash covers; inf when it owes nothing.
+    runway_hours: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class Recommendation:
+    """Advice given to an agent from OUTSIDE the simulation, and its fate.
+
+    This is the teaching surface: a student tells an agent what they think it
+    should do, and the run records whether it listened. That second half is the
+    point. "I told it to sell the ore and it didn't" has to be checkable, or the
+    exercise is a toy -- and the predictable failure is not disobedience, it is
+    the advice never reaching the prompt at all (PHASE4 §2, thirteen times).
+
+    So delivery is recorded as a FACT, not assumed: `times_seen` and
+    `first_seen_hour` are written by `observe.py` at the moment the text enters
+    a prompt, and by nothing else. If a student says the agent ignored them and
+    `times_seen` is 0, the answer is that the agent never heard it.
+
+    Advice EXPIRES. It is a nudge at a moment in a market, not a standing order
+    an agent carries to its grave.
+    """
+
+    id: str
+    from_who: str                  # who is speaking -- "mentor", a student's name
+    text: str
+    given_at_hour: float
+    expires_after_hours: float = ADVICE_TTL_HOURS
+    times_seen: int = 0
+    first_seen_hour: float | None = None
+    # The valley at the moment this was given. See `Snapshot`.
+    before: Snapshot | None = None
+
+    def expires_at_hour(self) -> float:
+        return self.given_at_hour + self.expires_after_hours
+
+    def is_live(self, hour: float) -> bool:
+        return hour < self.expires_at_hour()
+
+    def format(self, hour: float) -> str:
+        """How it reads in the prompt.
+
+        The age and the deadline are both stated. Advice with no clock on it
+        invites an agent to file it away and act eventually; this one says how
+        long it has.
+        """
+        age = hour - self.given_at_hour
+        left = self.expires_at_hour() - hour
+        when = "just now" if age < 0.1 else f"{age:.1f}h ago"
+        return (
+            f'{self.from_who} told you {when}: "{self.text}" '
+            f"(advice, not an order -- you may judge it wrong and say so. "
+            f"It stops applying in {left:.1f}h.)"
+        )
+
+
 @dataclass
 class Reasoning:
     """One decision in the agent's own words, and what it did about it.
@@ -124,6 +220,8 @@ class Agent:
     memory: list[int] = field(default_factory=list)               # indices into EventLog
     # Why this agent did things, in its own words. See `Reasoning`.
     reasoning: list[Reasoning] = field(default_factory=list)
+    # Advice from outside the simulation. See `Recommendation`.
+    inbox: list[Recommendation] = field(default_factory=list)
     next_reeval_at: float = 0.0
     next_diary_at: float = 3600.0
 
@@ -164,6 +262,101 @@ class Agent:
         if len(self.reasoning) > MAX_REASONING_KEPT:
             del self.reasoning[:-MAX_REASONING_KEPT]
         return entry
+
+    def assets(self, world: "World") -> dict[str, Any]:
+        """What this agent OWNED at this instant, for pinning to a decision.
+
+        A decision row records why and what; without this it does not record
+        what the agent had to work with, and "found a mine with 345 denari in
+        hand" and "found a mine with 175" are different decisions to judge. Only
+        `diary` carried any of it, hourly and net worth alone, so a decision at
+        h6.68 could not be tied to the cash behind it.
+
+        Taken at the decision because it cannot be recovered afterwards. The
+        event log is append-only and holds no balances; replaying an economy to
+        find out what somebody was carrying at hour 40 is not a thing anyone is
+        going to do. Same argument as `Snapshot`, one scope down.
+
+        Kept to identifiers and counts. This fires on EVERY decision -- ~7,000
+        in an 84-hour run -- so it is sized to be affordable at that rate, and
+        the nested structures an observation renders (per-business inventories,
+        vehicle cargo) are deliberately left out. What is here is enough to ask
+        "what did you own when you made that call?" and get a true answer.
+        """
+        return {
+            "denari": round(self.denari, 2),
+            "net_worth": round(self.net_worth(world), 2),
+            "location": self.location,
+            "health": round(self.health, 1),
+            "hunger": self.sustenance_stage,
+            "hours_since_meal": round(self.hours_since_last_meal, 2),
+            "carrying": dict(self.inventory),
+            "carried_units": self.carried_units(),
+            "capacity": self.carry_capacity(world),
+            "vehicles": [
+                {"id": vid, "type": v.type}
+                for vid in self.owned_vehicles
+                if (v := world.vehicles.get(vid)) is not None
+            ],
+            "mounted": self.mounted_vehicle,
+            # Open businesses only, with the cash and wage bill that decide
+            # whether the next payroll lands -- the pair that every insolvency
+            # in the last run came down to.
+            "businesses": [
+                {
+                    "id": bid, "type": b.type, "at": b.location,
+                    "cash": round(b.cash, 2),
+                    "payroll_per_hour": round(
+                        sum(e.wage for e in b.roster if e.wage > 0), 2
+                    ),
+                    "staff": len(b.roster),
+                }
+                for bid in self.owned_businesses
+                if (b := world.businesses.get(bid)) is not None and not b.closed
+            ],
+            "home": self.owned_property,
+            "job": (
+                {"business": self.current_job[0], "role": self.current_job[1],
+                 "wage": round(self.current_job[2], 2)}
+                if self.current_job else None
+            ),
+        }
+
+    def receive_advice(
+        self,
+        hour: float,
+        from_who: str,
+        text: str,
+        *,
+        expires_after_hours: float = ADVICE_TTL_HOURS,
+        rec_id: str | None = None,
+    ) -> Recommendation:
+        """Put a recommendation in this agent's inbox.
+
+        Queuing only. Nothing here says the agent has SEEN it -- that is
+        `observe.py`'s to record, because that is where it either does or does
+        not reach the prompt.
+        """
+        rec = Recommendation(
+            id=rec_id or f"ADV{len(self.inbox) + 1:03d}-{self.id}",
+            from_who=from_who,
+            text=(text or "").strip()[:ADVICE_CHARS],
+            given_at_hour=round(hour, 2),
+            expires_after_hours=expires_after_hours,
+        )
+        self.inbox.append(rec)
+        if len(self.inbox) > MAX_ADVICE_KEPT:
+            del self.inbox[:-MAX_ADVICE_KEPT]
+        return rec
+
+    def live_advice(self, hour: float) -> list[Recommendation]:
+        """Recommendations still in force at `hour`, oldest first.
+
+        Expired advice stays in the inbox rather than being deleted: the
+        transcript needs to be able to show what an agent was told at hour 12
+        even when it is being asked about it at hour 60.
+        """
+        return [r for r in self.inbox if r.is_live(hour)]
 
     def add_stolen(self, item: str, qty: int = 1) -> None:
         self.stolen[item] = self.stolen.get(item, 0) + qty

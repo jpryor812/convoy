@@ -227,7 +227,19 @@ def report(world, log, hours: float) -> None:
     # classroom months later, in front of people.
     from convoy import sprites as SP
 
-    problems = check_invariants(world, log) + SP.check()
+    # Checkpoint completeness rides along for the same reason again: `save`
+    # encodes any dataclass generically, `load` needs it registered, and the gap
+    # between the two is invisible until someone restores a run. Four types had
+    # accumulated unregistered before anything tried.
+    problems = (
+        check_invariants(world, log)
+        + SP.check()
+        + [
+            f"{name} is a state dataclass but is not registered in "
+            f"checkpoint._CLASSES -- checkpoints containing one cannot be loaded"
+            for name in checkpoint.check()
+        ]
+    )
     print("\n" + "-" * 74)
     if problems:
         print(f"INVARIANT VIOLATIONS ({len(problems)}):")

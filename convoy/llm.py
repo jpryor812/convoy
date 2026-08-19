@@ -38,8 +38,8 @@ from . import data as D
 from . import observe as O
 from . import schemas as S
 from .config import load_env
-from .events import EventLog
-from .state import REASONING_CHARS, Agent, World
+from .events import EventLog, Significance
+from .state import REASONING_CHARS, Agent, Recommendation, World
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -111,7 +111,12 @@ class LLMPolicy:
 
     def decide(self, world: World, agent: Agent, reason: str) -> None:
         briefing, tools = self._prefix        # type: ignore[misc]
-        obs = O.observe(world, self.log, agent, reason)
+        obs = O.observe(world, self.log, agent, reason, record_delivery=not self.dry_run)
+
+        # Which recommendations were in the prompt this agent is about to answer.
+        # Read AFTER `observe`, so it is the same list `observe` just marked as
+        # delivered rather than a second, hopeful guess at what it sent.
+        advised = agent.live_advice(world.sim_hour) if not self.dry_run else []
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": briefing},
@@ -191,12 +196,19 @@ class LLMPolicy:
             # -- still records what the agent said and did up to that point. A
             # decision that half-happened is exactly the kind a student asking
             # "why did you do that?" most needs an answer for.
-            self._remember(world, agent, reason, "\n".join(texts), did)
+            self._remember(world, agent, reason, "\n".join(texts), did, advised=advised)
 
     # -- reasoning ---------------------------------------------------------
 
     def _remember(
-        self, world: World, agent: Agent, reason: str, text: str, did: list[str]
+        self,
+        world: World,
+        agent: Agent,
+        reason: str,
+        text: str,
+        did: list[str],
+        *,
+        advised: list[Recommendation] | None = None,
     ) -> None:
         """Store the model's own account of this decision, on the agent and in the log.
 
@@ -217,7 +229,36 @@ class LLMPolicy:
             woken_because=reason,
             text=text[:REASONING_CHARS] or "(acted without saying why)",
             did=", ".join(did) or "nothing",
+            # What the agent owned when it decided. Taken AFTER the actions, so
+            # it is the position the decision produced rather than the one it
+            # started from -- which is the number a reader wants when asking
+            # what a choice cost. The prior row holds the state before.
+            #
+            # On the event only, NOT on `Agent.reasoning`: the ring buffer is
+            # what an agent carries in its own prompt, and it already knows its
+            # current balances from the observation. Putting balances there
+            # would pay for 40 copies of a fact the agent can see, and is the
+            # same separate-budgets argument as PHASE4 §9.
+            assets=agent.assets(world),
         )
+        # What the agent did while holding this advice, paired with the advice
+        # itself. Deliberately NOT a verdict: nothing here decides whether the
+        # advice was "followed". A model asked to grade its own obedience will
+        # say yes, and a keyword match on the action names would call
+        # `sell_to_business` compliance with "sell the ore" even when it sold
+        # something else entirely. This records what was said and what was done,
+        # which is what lets a student -- or Step 3 -- judge it from evidence.
+        for rec in advised or ():
+            self.log.emit(
+                world.sim_time, "advice_outcome", actor=agent.id,
+                location=agent.location,
+                significance=Significance.MEDIUM,
+                advice_id=rec.id, from_who=rec.from_who, advice=rec.text,
+                hours_since_given=round(world.sim_hour - rec.given_at_hour, 2),
+                times_seen=rec.times_seen,
+                did=", ".join(did) or "nothing",
+                text=text[:REASONING_CHARS] or "(acted without saying why)",
+            )
 
     # -- transport ---------------------------------------------------------
 
