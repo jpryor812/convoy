@@ -289,39 +289,54 @@ TEMPLATE = r"""<!doctype html>
   #keys span{color:#8d9c72}
   canvas.pointing{cursor:pointer}
 
-  #panel{position:fixed;right:0;top:0;bottom:0;width:340px;z-index:5;
-         background:#171b12f2;border-left:1px solid #46502f;overflow-y:auto;
-         padding:14px 16px 20px;display:none}
-  #panel.open{display:block}
-  #panel h2{margin:0 0 2px;font-size:15px;color:#f2e9c9}
-  #panel .sub{color:#9aab7c;margin-bottom:12px}
-  #panel h3{margin:16px 0 5px;font-size:11px;letter-spacing:.09em;
-            text-transform:uppercase;color:#c9d6a8;
-            border-bottom:1px solid #3a4030;padding-bottom:3px}
-  #panel .row{display:flex;justify-content:space-between;gap:10px;padding:2px 0}
-  #panel .row span:last-child{color:#f2e9c9;text-align:right}
-  #panel .none{color:#6f7d58;font-style:italic}
-  #panel .tag{display:inline-block;background:#2c3720;border:1px solid #46502f;
-              border-radius:3px;padding:1px 6px;margin:2px 3px 2px 0;font-size:11px}
-  #close{position:absolute;right:10px;top:8px;cursor:pointer;color:#9aab7c;
-         font-size:18px;line-height:1;background:none;border:0}
-  #close:hover{color:#f2e9c9}
-  .chat textarea{width:100%;box-sizing:border-box;background:#0f1309;
-                 color:#e8e4d8;border:1px solid #46502f;border-radius:4px;
-                 padding:7px;font:inherit;resize:vertical;min-height:56px}
-  .chat .btns{display:flex;gap:7px;margin-top:7px}
-  .chat button{flex:1;background:#2c3720;color:#e8e4d8;border:1px solid #5d6b3f;
-               border-radius:4px;padding:7px;font:inherit;cursor:pointer}
-  .chat button:hover{background:#3a4a29;border-color:#8fa35e}
+  /* THE POPUP. A white card floating over the map, anchored above whatever was
+     clicked, rather than a panel down the side. A side panel is a separate
+     place to look: you click a farm, your eye travels to the edge of the screen,
+     and the farm you were asking about is no longer where you are looking. A
+     card above the building keeps the question and the answer in one glance --
+     and white on a green valley needs no border to be found. */
+  #popup{position:fixed;z-index:6;width:290px;max-height:62vh;overflow-y:auto;
+         background:#fffdf7;color:#20241a;border-radius:9px;
+         box-shadow:0 6px 22px #0009, 0 0 0 2px #2b2416;
+         padding:12px 14px 13px;display:none;
+         font:12px/1.45 ui-monospace,Menlo,monospace}
+  #popup.open{display:block}
+  /* The tail. Small, and the reason the card reads as belonging to the thing
+     under it rather than merely being near it. */
+  #popup::after{content:"";position:absolute;left:var(--tail,50%);bottom:-9px;
+                margin-left:-8px;border:8px solid transparent;
+                border-top-color:#2b2416;border-bottom:0}
+  #popup.below::after{bottom:auto;top:-9px;
+                      border-top:0;border-bottom:8px solid #2b2416}
+  #popup h2{margin:0 0 1px;font-size:14px;color:#12160f}
+  #popup .sub{color:#6d7a55;margin-bottom:9px;font-size:11px}
+  #popup h3{margin:12px 0 4px;font-size:10px;letter-spacing:.09em;
+            text-transform:uppercase;color:#5d6b3f;
+            border-bottom:1px solid #ddd8c4;padding-bottom:2px}
+  #popup .row{display:flex;justify-content:space-between;gap:9px;padding:1px 0}
+  #popup .row span:last-child{color:#12160f;text-align:right}
+  #popup .none{color:#8d9779;font-style:italic}
+  #popup .tag{display:inline-block;background:#eee9d6;border:1px solid #cfc9b0;
+              border-radius:3px;padding:0 5px;margin:2px 3px 0 0;font-size:11px}
+  #close{position:absolute;right:7px;top:5px;cursor:pointer;color:#8d9779;
+         font-size:17px;line-height:1;background:none;border:0;padding:2px 4px}
+  #close:hover{color:#20241a}
+  .chat textarea{width:100%;box-sizing:border-box;background:#fff;
+                 color:#20241a;border:1px solid #cfc9b0;border-radius:4px;
+                 padding:6px;font:inherit;resize:vertical;min-height:46px}
+  .chat .btns{display:flex;gap:6px;margin-top:6px}
+  .chat button{flex:1;background:#2c3720;color:#f2efe2;border:0;
+               border-radius:4px;padding:6px;font:inherit;cursor:pointer}
+  .chat button:hover{background:#44562f}
   .chat button:disabled{opacity:.45;cursor:not-allowed}
-  #reply{margin-top:9px;padding:8px;background:#0f1309;border-radius:4px;
-         border:1px solid #3a4030;white-space:pre-wrap;display:none}
+  #reply{margin-top:8px;padding:7px;background:#f1eede;border-radius:4px;
+         border:1px solid #ddd8c4;white-space:pre-wrap;display:none}
   #reply.show{display:block}
 </style></head><body>
 <canvas id="c"></canvas>
 <div id="hud"></div>
-<div id="panel"><button id="close" title="close">&times;</button>
-  <div id="panel-body"></div></div>
+<div id="popup"><button id="close" title="close">&times;</button>
+  <div id="popup-body"></div></div>
 <div id="keys"><span>click</span> a building or a person &nbsp; <span>drag</span> pan
   &nbsp; <span>wheel</span> zoom &nbsp; <span>0</span> whole valley</div>
 <script>
@@ -725,6 +740,8 @@ function draw(){
     }
   }
 
+  positionPopup();
+
   hud.innerHTML =
     `<b>${DATA.places.length}</b> places &middot; ` +
     `<b>${DATA.buildings.length}</b> buildings &middot; ` +
@@ -737,8 +754,20 @@ function draw(){
 
 /* ---------------------------------------------------------------- panels */
 
-const panel = document.getElementById("panel");
-const panelBody = document.getElementById("panel-body");
+const panel = document.getElementById("popup");
+const panelBody = document.getElementById("popup-body");
+
+/* How close the map pulls in when something is clicked. Chosen so a building
+   and the card above it both sit comfortably on screen at once -- further in
+   and the card covers what it is describing. */
+const FOCUS_ZOOM = 2.5;
+
+/* Where on screen the clicked thing lands. NOT the centre: the card is drawn
+   ABOVE it, so centring the building leaves no room and the card ends up laid
+   over the very thing it is describing -- which is what the first version did.
+   Two thirds down leaves the upper screen free for the card and still keeps the
+   building comfortably in view. */
+const FOCUS_Y = 0.68;
 let HOVER = null, SELECTED = null;
 
 /* Where a live server is, if there is one. The static page has no back end, so
@@ -854,9 +883,48 @@ async function refreshCards(){
 }
 let LIVE_HOUR = null;
 
+/* Where the card should point: the top-centre of the thing, in world pixels.
+   Buildings are drawn centred on their block and people stand on their feet, so
+   "the top" is a different sum for each. */
+function anchorOf(hit){
+  const r = hit.ref;
+  if (hit.kind === "building"){
+    const im = IMG["biz:" + r.sprite];
+    const h = im && im.height ? im.height * r.scale : 48;
+    return {x: wx(r), y: wy(r) - h / 2};
+  }
+  const im = IMG[`person:${r.person}:${r.facing}`];
+  return {x: wx(r), y: wy(r) - (im && im.height ? im.height : 32)};
+}
+
+/* Ease the camera in rather than jumping. A cut leaves you hunting for what you
+   just clicked; a quarter-second move keeps the thing under your eye the whole
+   way, which is the entire reason to zoom to it at all. */
+let FLIGHT = null;
+function flyTo(x, y, targetZoom){
+  const from = {zoom: zoom, panx: panx, pany: pany};
+  const t0 = performance.now(), ms = 260;
+  FLIGHT = t0;
+  function step(now){
+    if (FLIGHT !== t0) return;                 /* a newer click took over */
+    const k = Math.min((now - t0) / ms, 1);
+    const e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+    zoom = from.zoom + (targetZoom - from.zoom) * e;
+    const wantX = -(x - c.width / 2 / zoom);
+    const wantY = -(y - c.height * FOCUS_Y / zoom);
+    panx = from.panx + (wantX - from.panx) * e;
+    pany = from.pany + (wantY - from.pany) * e;
+    clampPan(); draw();
+    if (k < 1) requestAnimationFrame(step); else FLIGHT = null;
+  }
+  requestAnimationFrame(step);
+}
+
 async function openPanel(hit){
   SELECTED = hit;
   panel.classList.add("open");
+  const a = anchorOf(hit);
+  flyTo(a.x, a.y, FOCUS_ZOOM);
   await refreshCards();
   const card = DATA.cards[hit.ref.id];
   if (!card){
@@ -867,13 +935,39 @@ async function openPanel(hit){
   }
   panelBody.innerHTML =
     (card.kind === "business" ? businessPanel(card) : agentPanel(card))
-    + `<div class="sub" style="margin-top:14px">`
+    + `<div class="sub" style="margin-top:12px;margin-bottom:0">`
     + (LIVE_HOUR === null
         ? "hour 0 &middot; static snapshot"
         : `hour ${LIVE_HOUR} &middot; live`)
     + `</div>`;
   wireChat();
   draw();
+}
+
+/* Called from `draw`, so the card rides the map: pan and it follows the
+   building, zoom out and it keeps pointing at it. */
+function positionPopup(){
+  if (!SELECTED || !panel.classList.contains("open")) return;
+  const a = anchorOf(SELECTED);
+  const sx = (a.x + panx) * zoom, sy = (a.y + pany) * zoom;
+  const w = panel.offsetWidth, h = panel.offsetHeight;
+  const GAP = 14;
+
+  /* Above by preference, below when there is no room -- and the tail flips with
+     it, so the card never points away from the thing it describes. */
+  const below = sy - h - GAP < 6;
+  panel.classList.toggle("below", below);
+  let top = below ? sy + GAP + 22 : sy - h - GAP;
+  let left = sx - w / 2;
+
+  /* Kept on screen, with the tail sliding along the card's edge to stay over
+     the target. Without that the card clamps at the edge and its tail points
+     confidently at empty grass. */
+  const clampedLeft = Math.max(8, Math.min(left, innerWidth - w - 8));
+  panel.style.setProperty("--tail",
+    `${Math.max(14, Math.min(sx - clampedLeft, w - 14))}px`);
+  panel.style.left = `${clampedLeft}px`;
+  panel.style.top = `${Math.max(6, Math.min(top, innerHeight - h - 6))}px`;
 }
 
 function closePanel(){
