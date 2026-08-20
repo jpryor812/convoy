@@ -259,6 +259,10 @@ ACTION_FAMILY = {
     "coin": (
         "buy_from_business", "sell_to_business", "order_from_business", "buy_meal",
         "buy_vehicle", "buy_property", "buy_insurance", "deposit", "withdraw",
+        # Land is bought and sold like anything else; developing it is building.
+        "buy_land", "buy_listed_land", "list_land",
+        "post_delivery_job",   # paying to move goods is commerce
+
         "set_retail_price", "offer_trade", "accept_trade", "decline_trade",
         "collect_business_inventory", "stock_business_inventory", "store_at_home",
     ),
@@ -276,7 +280,10 @@ ACTION_FAMILY = {
         "hire_npc_employee", "quit_job", "set_wage",
     ),
     "build": (
-        "start_business", "expand_site", "upgrade_garage", "upgrade_storage",
+        "start_business", "upgrade_garage", "upgrade_storage",
+        "upgrade_site_storage",
+        "develop_plot",     # raw ground into floor space -- construction
+
     ),
     "chat": (
         "post_world_chat", "post_guild_chat", "send_direct_message",

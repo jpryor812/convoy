@@ -132,6 +132,41 @@ class Recommendation:
 
 
 @dataclass
+class Plot:
+    """One parcel of ground, owned by somebody, maybe built on.
+
+    LAND IS THE SCARCE THING. Before this, `Business.plots` was an integer and
+    every main-road location reported 10**6 free plots, so cash was the only
+    limit on how big anything could get and location carried no cost. A plot is
+    now an asset in its own right: an agent buys it, holds it, develops it,
+    attaches it to a business, and sells it to whoever will pay.
+
+    Separating OWNERSHIP from ASSIGNMENT is what makes that a market rather than
+    a fee. Land can be held vacant, bought before it is needed, and sold without
+    selling the business standing next to it -- so someone can corner the ground
+    around Town without ever running a shop, which is the interesting move.
+
+    `developed` is the difference between ground and floor space. Raw land
+    counts for nothing: it holds no stock and seats no employee until somebody
+    spends the time or the money to build on it.
+    """
+
+    id: str
+    location: str
+    owner: str | None = None                  # agent id; None == still the world's
+    business: str | None = None               # business it is attached to, if any
+    developed: bool = False
+    # Set while a build is running; the engine finishes it. See `Engine._develop`.
+    developing_until: float | None = None
+    developing_for: str | None = None         # business the build is for
+    # Asking price if the owner has put it on the market, else None.
+    for_sale_at: float | None = None
+
+    def is_building(self, now: float) -> bool:
+        return self.developing_until is not None and now < self.developing_until
+
+
+@dataclass
 class Reasoning:
     """One decision in the agent's own words, and what it did about it.
 
@@ -429,6 +464,10 @@ class Business:
     cash: float = 0.0
     roster: list[Employment] = field(default_factory=list)
     inventory: dict[str, int] = field(default_factory=dict)
+    # How tall the storehouse is. Production sites grow UPWARD -- a taller
+    # barn holds more without taking more ground, which keeps a site's land
+    # budget spent on people rather than on stockpile.
+    storage_tier: int = 0
     retail_prices: dict[str, float] = field(default_factory=dict)
     # Wages live in their OWN dict. They used to be stuffed into retail_prices
     # under a "wage:<role>" key, and anything that walked that dict expecting
@@ -722,6 +761,16 @@ class Consignment:
     created_at: float
     status: str = "awaiting_courier"   # awaiting_courier|claimed|delivered|cancelled
     courier: str | None = None
+    # A vehicle the poster is LENDING for this job, if any. Bound to the
+    # consignment rather than transferred: a consignment moves whole, so a
+    # 100-unit load is unclaimable by anyone on foot (capacity 5), and without
+    # lending only agents who already own a cart can take the jobs that matter.
+    # It returns to its owner on delivery, cancellation or abandonment, so
+    # lending carries no risk of losing it and needs no trust system.
+    lent_vehicle: str | None = None
+    # True when the SELLER posted this to push stock out, rather than the buyer
+    # posting it to pull stock in. See `post_delivery_job`.
+    seller_posted: bool = False
 
 
 @dataclass
@@ -965,6 +1014,7 @@ class World:
     businesses: dict[str, Business] = field(default_factory=dict)
     vehicles: dict[str, VehicleInstance] = field(default_factory=dict)
     properties: dict[str, Property] = field(default_factory=dict)
+    plots: dict[str, Plot] = field(default_factory=dict)
     convoys: dict[str, Convoy] = field(default_factory=dict)
     market: Market = field(default_factory=Market)
     guilds: dict[str, Guild] = field(default_factory=dict)

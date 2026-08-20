@@ -27,6 +27,7 @@ from .state import (
     Employment,
     Guild,
     JobPosting,
+    Plot,
     Property,
     StolenStack,
     Transaction,
@@ -185,15 +186,23 @@ def _may_buy_from(buyer: Business, seller: Business) -> tuple[bool, str]:
     return True, ""
 
 
-def employee_cap(biz: Business) -> int | None:
+def employee_cap(world: World, biz: Business) -> int | None:
     """How many production staff a business may hold. None == uncapped.
 
-    Ownership, not type: the government is a backstop employer and is held to
-    a small cap, while anything a player builds may hire freely.
+    HEADCOUNT IS A PROPERTY OF LAND. Until 2026-08-19 this returned None for
+    every player business, so hiring was limited by cash alone -- 46 hires
+    across the 84-hour run with no ceiling anywhere. `BusinessType.max_employees`
+    had existed since Phase 1, was set to 2 on every store, and was read by
+    nothing; there is still a constant called `MAX_EMPLOYEES_PRODUCTION_UNUSED`.
+
+    Now a business seats one employee per developed plot past the building
+    itself, so growing a crew means going out and buying ground for them. The
+    government keeps its own small cap: it is a backstop employer standing on
+    land it was given, not a player competing for it.
     """
     if biz.is_government:
         return D.GOVERNMENT_MAX_EMPLOYEES
-    return None
+    return E.employee_slots(world, biz)
 
 
 def apply_for_job(
@@ -246,9 +255,13 @@ def apply_for_job(
     # PRODUCTION staff only -- applying it to researchers would block the
     # high-research store strategy entirely.
     if not as_researcher:
-        cap = employee_cap(biz)
+        cap = employee_cap(world, biz)
         if cap is not None and len(biz.production_staff()) >= cap:
-            return False, f"no vacancy ({len(biz.production_staff())}/{cap} filled)"
+            return False, (
+                f"no vacancy ({len(biz.production_staff())}/{cap} filled). "
+                f"A business seats one employee per developed plot beyond its "
+                f"{D.STRUCTURE_PLOTS}-plot building -- buy_land, then develop_plot."
+            )
 
     # Wage rules (designer decisions, 2026-08-11):
     #   * An OWNER staffing their own business draws no wage -- they are paid by
@@ -474,21 +487,23 @@ def start_business(
     if not spec:
         return False, f"unknown business type {type!r}"
 
-    # Mines and farms are worked land -- they only exist down a spur, and they
-    # take eight plots of it. Everything else sits on the main road.
-    plots = 0
+    # EVERY business stands on land now. Mines and farms are worked ground and
+    # still only exist down a spur; everything else belongs on the main road.
+    # What changed is that the main road is no longer exempt from land at all.
     if type in world_map.PLOT_CONSUMING_BUSINESSES:
         if not D.is_spur(agent.location):
             return False, f"a {type} can only be founded down a spur road"
-        free = world_map.plots_free(world, agent.location)
-        if free < world_map.SITE_BASE_PLOTS:
-            return False, (
-                f"{agent.location} has only {free} plots left; a {type} needs "
-                f"{world_map.SITE_BASE_PLOTS}"
-            )
-        plots = world_map.SITE_BASE_PLOTS
     elif D.is_spur(agent.location):
         return False, f"a {type} belongs on the main road, not down a spur"
+
+    need = D.STORE_BASE_PLOTS if type in D.STORE_BUSINESS_TYPES else D.SITE_BASE_PLOTS
+    free = world_map.plots_free(world, agent.location)
+    if free < need:
+        return False, (
+            f"{agent.location} has only {free} unsold plots left; a {type} needs "
+            f"{need}. Buy land from whoever owns it, or found somewhere else."
+        )
+    plots = need
 
     total = spec.startup_cost + seed_cash
     if agent.denari < total:
@@ -506,46 +521,230 @@ def start_business(
     )
     world.businesses[biz.id] = biz
     agent.owned_businesses.append(biz.id)
+    # The starter ground comes WITH the business, already built on. Charging
+    # separately for it would roughly double the entry price, and PHASE4 already
+    # halved founding costs because entry was absorbing whole runs -- in the
+    # first 72-hour run one agent in twelve founded anything, on its fifth
+    # attempt at hour 60 of 72. Land is meant to constrain GROWTH, not re-close
+    # the door this economy spent a phase getting open.
+    for _ in range(plots):
+        _claim_plot(world, agent, agent.location, business=biz.id, developed=True)
     log.emit(
         world.sim_time, "business_founded", actor=agent.id, subject=biz.id,
-        location=agent.location, business_type=type, cost=spec.startup_cost, seed=seed_cash,
+        location=agent.location, business_type=type, cost=spec.startup_cost,
+        seed=seed_cash, plots=plots,
+        employee_slots=E.employee_slots(world, biz),
     )
-    return True, f"founded {biz.name}"
+    return True, (
+        f"founded {biz.name} on {plots} plots -- room for "
+        f"{E.employee_slots(world, biz)} employees"
+    )
 
 
-def expand_site(
-    world: World, log: EventLog, agent: Agent, business_id: str
+def _claim_plot(
+    world: World, agent: Agent, location: str, *,
+    business: str | None = None, developed: bool = False,
+):
+    """Move one unsold plot from the world to an agent. No money changes hands here."""
+    plot = Plot(
+        id=world.new_id("L"), location=location, owner=agent.id,
+        business=business, developed=developed,
+    )
+    world.plots[plot.id] = plot
+    return plot
+
+
+def buy_land(
+    world: World, log: EventLog, agent: Agent, plots: int = 1
 ) -> Result:
-    """Buy more land for a mine or farm: +4 plots, and more room to stockpile.
+    """Buy unsold ground where you are standing, at the world's price.
 
-    Storage is the point. A worked site holds only so much before production
-    stalls for want of anywhere to put the output, so expanding buys time
-    between hauling runs -- which is what makes a distant, high-yield claim
-    workable at all.
+    Raw land. It seats nobody and holds nothing until it is developed -- that is
+    the difference between owning a field and owning floor space, and it is what
+    stops land being a pure cash sink for whoever is richest.
+    """
+    if plots < 1:
+        return False, "buy at least one plot"
+    free = world_map.plots_free(world, agent.location)
+    if free < plots:
+        return False, (
+            f"{agent.location} has only {free} unsold plots. The rest is owned; "
+            f"buy it from whoever holds it."
+        )
+    cost = D.LAND_BASE_PRICE * plots
+    if agent.denari < cost:
+        return False, f"{plots} plots cost {cost:.0f} Denari"
+
+    agent.denari -= cost
+    world.government.collect(cost)
+    ids = [_claim_plot(world, agent, agent.location).id for _ in range(plots)]
+    log.emit(
+        world.sim_time, "land_bought", actor=agent.id, location=agent.location,
+        significance=Significance.MEDIUM,
+        plots=plots, cost=cost, plot_ids=",".join(ids),
+    )
+    return True, (
+        f"bought {plots} plot(s) at {agent.location} for {cost:.0f}. "
+        f"Undeveloped -- use develop_plot to build on it."
+    )
+
+
+def develop_plot(
+    world: World, log: EventLog, agent: Agent, business_id: str, instant: bool = False
+) -> Result:
+    """Build on one of your raw plots, adding an employee place to a business.
+
+    Time OR money, never neither. The standard route takes hours and costs
+    little; paying `DEVELOPMENT_INSTANT_MULTIPLIER` times as much skips the
+    wait. Both scale by half again for every plot the site already has, so a
+    tenth plot is a project and a fifth is an afternoon.
     """
     biz = world.businesses.get(business_id)
     if not biz or biz.closed or biz.owner != agent.id:
         return False, "not your business"
-    if biz.type not in world_map.PLOT_CONSUMING_BUSINESSES:
-        return False, f"a {biz.type} sits on the main road and cannot expand"
 
-    add = world_map.SITE_EXPANSION_PLOTS
-    free = world_map.plots_free(world, biz.location)
-    if free < add:
-        return False, f"{biz.location} has only {free} plots left"
+    spare = [
+        p for p in world.plots.values()
+        if p.owner == agent.id and p.location == biz.location
+        and p.business is None and not p.developed and not p.is_building(world.sim_time)
+    ]
+    if not spare:
+        return False, (
+            f"you own no undeveloped land at {biz.location} -- buy_land first"
+        )
 
-    cost = D.SITE_EXPANSION_COST
+    have = E.developed_plots(world, biz)
+    cost = D.development_cost(have)
+    hours = D.development_hours(have)
+    if instant:
+        cost = round(cost * D.DEVELOPMENT_INSTANT_MULTIPLIER, 2)
     if agent.denari < cost:
-        return False, f"expanding costs {cost:.0f} Denari"
+        return False, (
+            f"developing plot {have + 1} costs {cost:.2f} "
+            f"({'instant' if instant else f'{hours:.2f}h'})"
+        )
 
     agent.denari -= cost
-    biz.plots += add
+    plot = spare[0]
+    if instant:
+        plot.developed = True
+        plot.business = biz.id
+        log.emit(
+            world.sim_time, "plot_developed", actor=agent.id, subject=biz.id,
+            location=biz.location, significance=Significance.MEDIUM,
+            plot=plot.id, cost=cost, instant=True,
+            employee_slots=E.employee_slots(world, biz),
+        )
+        return True, (
+            f"built on {plot.id} instantly for {cost:.2f} -- "
+            f"{biz.name} now seats {E.employee_slots(world, biz)} employees"
+        )
+
+    plot.developing_until = world.sim_time + hours * 3600.0
+    plot.developing_for = biz.id
     log.emit(
-        world.sim_time, "site_expanded", actor=agent.id, subject=biz.id,
-        location=biz.location, plots=biz.plots,
-        capacity=E.site_storage_capacity(biz.plots), cost=cost,
+        world.sim_time, "development_started", actor=agent.id, subject=biz.id,
+        location=biz.location, significance=Significance.MEDIUM,
+        plot=plot.id, cost=cost, hours=hours,
+        ready_at_hour=round((world.sim_time + hours * 3600.0) / 3600.0, 2),
     )
-    return True, f"{biz.name} expanded to {biz.plots} plots"
+    return True, (
+        f"building on {plot.id} for {cost:.2f}; ready in {hours:.2f}h. "
+        f"Pay {D.DEVELOPMENT_INSTANT_MULTIPLIER:g}x to skip the wait next time."
+    )
+
+
+def list_land(
+    world: World, log: EventLog, agent: Agent, plot_id: str, price: float
+) -> Result:
+    """Put a plot on the market at your own asking price."""
+    plot = world.plots.get(plot_id)
+    if not plot or plot.owner != agent.id:
+        return False, "not your land"
+    if plot.business:
+        return False, (
+            f"{plot_id} is built into a business; it cannot be sold out from "
+            f"under it"
+        )
+    if price <= 0:
+        return False, "name a price above zero"
+    plot.for_sale_at = float(price)
+    log.emit(
+        world.sim_time, "land_listed", actor=agent.id, location=plot.location,
+        significance=Significance.MEDIUM, plot=plot_id, price=round(price, 2),
+    )
+    return True, f"{plot_id} at {plot.location} listed for {price:.0f}"
+
+
+def buy_listed_land(
+    world: World, log: EventLog, agent: Agent, plot_id: str
+) -> Result:
+    """Buy a plot another agent has put up for sale, at their asking price."""
+    plot = world.plots.get(plot_id)
+    if not plot or plot.for_sale_at is None:
+        return False, "that plot is not for sale"
+    if plot.owner == agent.id:
+        return False, "you already own it"
+    price = plot.for_sale_at
+    if agent.denari < price:
+        return False, f"{plot_id} is listed at {price:.0f}"
+
+    seller = world.agents.get(plot.owner or "")
+    agent.denari -= price
+    if seller:
+        seller.denari += price
+    plot.owner = agent.id
+    plot.for_sale_at = None
+    log.emit(
+        world.sim_time, "land_sold", actor=agent.id, subject=plot.owner,
+        location=plot.location, significance=Significance.MEDIUM,
+        plot=plot_id, price=round(price, 2),
+        seller=seller.id if seller else None,
+    )
+    return True, f"bought {plot_id} at {plot.location} for {price:.0f}"
+
+
+def upgrade_site_storage(
+    world: World, log: EventLog, agent: Agent, business_id: str
+) -> Result:
+    """Build the storehouse taller: more stock, no more ground.
+
+    NOT `upgrade_storage` -- that name was already taken by the HOME storage
+    upgrade 500 lines below, and defining a second function with it silently
+    replaced this one at import time. Nothing failed until a call arrived with
+    the wrong arity, and the only symptom was a TypeError about positional
+    arguments in an action that looked correct on the page.
+
+    The counterpart to land for a production site. A farm's plots are for
+    people; its stockpile grows upward, so an owner choosing between a hire and
+    a bigger barn is choosing between output and the time between hauling runs.
+    """
+    biz = world.businesses.get(business_id)
+    if not biz or biz.closed or biz.owner != agent.id:
+        return False, "not your business"
+    if biz.type in D.STORE_BUSINESS_TYPES:
+        return False, (
+            f"a {biz.type} stores on its FLOOR, not upward -- buy and develop "
+            f"more land to hold more stock"
+        )
+    if biz.storage_tier >= D.MAX_STORAGE_TIER:
+        return False, f"already at the maximum storehouse size"
+    cost = D.storage_upgrade_cost(biz.storage_tier)
+    if agent.denari < cost:
+        return False, f"the next storehouse tier costs {cost:.2f}"
+
+    agent.denari -= cost
+    biz.storage_tier += 1
+    log.emit(
+        world.sim_time, "storage_upgraded", actor=agent.id, subject=biz.id,
+        location=biz.location, significance=Significance.MEDIUM,
+        tier=biz.storage_tier, cost=cost,
+        capacity=E.business_storage_capacity(world, biz),
+    )
+    return True, (
+        f"{biz.name} storehouse raised to tier {biz.storage_tier} -- holds "
+        f"{E.business_storage_capacity(world, biz)}"
+    )
 
 
 def set_production(
@@ -599,9 +798,13 @@ def post_job(
     if wage < floor:
         return False, f"below the wage floor for {role} ({floor:.2f})"
     if not as_researcher:
-        cap = employee_cap(biz)
+        cap = employee_cap(world, biz)
         if cap is not None and len(biz.production_staff()) >= cap:
-            return False, f"no vacancy ({len(biz.production_staff())}/{cap} filled)"
+            return False, (
+                f"no vacancy ({len(biz.production_staff())}/{cap} filled). "
+                f"A business seats one employee per developed plot beyond its "
+                f"{D.STRUCTURE_PLOTS}-plot building -- buy_land, then develop_plot."
+            )
     for p in world.job_postings.values():
         if (p.business_id == business_id and p.role == role
                 and p.is_live(world.sim_time)):
@@ -704,9 +907,13 @@ def hire_applicant(
             role=old_role, reason="took a better offer", employer=left,
         )
     if not p.as_researcher:
-        cap = employee_cap(biz)
+        cap = employee_cap(world, biz)
         if cap is not None and len(biz.production_staff()) >= cap:
-            return False, f"no vacancy ({len(biz.production_staff())}/{cap} filled)"
+            return False, (
+                f"no vacancy ({len(biz.production_staff())}/{cap} filled). "
+                f"A business seats one employee per developed plot beyond its "
+                f"{D.STRUCTURE_PLOTS}-plot building -- buy_land, then develop_plot."
+            )
 
     biz.roster.append(Employment(hire.id, p.role, p.wage, p.as_researcher))
     hire.current_job = (biz.id, p.role, p.wage)
@@ -768,9 +975,13 @@ def hire_npc_employee(
     # PRODUCTION staff only -- applying it to researchers would block the
     # high-research store strategy entirely.
     if not as_researcher:
-        cap = employee_cap(biz)
+        cap = employee_cap(world, biz)
         if cap is not None and len(biz.production_staff()) >= cap:
-            return False, f"no vacancy ({len(biz.production_staff())}/{cap} filled)"
+            return False, (
+                f"no vacancy ({len(biz.production_staff())}/{cap} filled). "
+                f"A business seats one employee per developed plot beyond its "
+                f"{D.STRUCTURE_PLOTS}-plot building -- buy_land, then develop_plot."
+            )
 
     wage = E.npc_wage(role)
     biz.roster.append(Employment("NPC", role, wage, as_researcher, is_npc=True))
@@ -1782,6 +1993,134 @@ def order_from_business(
     )
 
 
+def _return_lent_vehicle(world: World, con, courier: Agent | None = None) -> None:
+    """Give a lent vehicle back, wherever the job ended.
+
+    Called on delivery, cancellation and abandonment alike. A vehicle bound to a
+    consignment cannot be stolen by construction -- there is no path that leaves
+    it with the courier -- so lending one costs an owner nothing but its absence
+    while the job runs, and nobody needs a trust system to make it safe.
+    """
+    if not con.lent_vehicle:
+        return
+    vehicle = world.vehicles.get(con.lent_vehicle)
+    if vehicle is not None:
+        vehicle.location = con.destination if courier is None else courier.location
+    if courier is not None and courier.mounted_vehicle == con.lent_vehicle:
+        courier.mounted_vehicle = None
+    con.lent_vehicle = None
+
+
+def post_delivery_job(
+    world: World, log: EventLog, agent: Agent, business_id: str, item: str,
+    qty: int, to_business_id: str, fee: float, lend_vehicle: str = "",
+) -> Result:
+    """Pay someone to take YOUR stock somewhere. The seller's side of haulage.
+
+    THE MISSING PRIMITIVE. Until now only a BUYER could create haulage:
+    `order_from_business` is a pull, paid for upfront by whoever wants the
+    goods. So a mine with a full yard had no way to push -- it could only wait
+    for someone solvent to come and want its ore. At hour 53 of the 2026-08-18
+    run that was the entire jam: seven yards full, six businesses starved of
+    exactly what those yards held, and the buyers who needed it holding 40, 52
+    and 0.2 denari. One agent worked around it by shouting into world chat --
+    "my mine is full/stalled with Copper Ore, refinery owner please order 100+
+    and post a courier; stock ready" -- which is this action, improvised.
+
+    The destination must be a GOVERNMENT business or one you own. Not a
+    restriction on ambition: a delivery to a third party is a sale, and a sale
+    needs the other side to have agreed a price and to have the cash on the day.
+    That is `order_from_business`, and it already exists. This is for the two
+    cases that need no negotiation -- clearing stock to the state at its
+    standing price, and moving goods between your own sites.
+
+    The goods leave the yard NOW, which is the point: a full site starts
+    producing again the moment the load is posted, not when it is delivered.
+    """
+    biz = world.businesses.get(business_id)
+    if not biz or biz.closed or biz.owner != agent.id:
+        return False, "not your business"
+    dest = world.businesses.get(to_business_id)
+    if not dest or dest.closed:
+        return False, "no such destination business"
+    if not dest.is_government and dest.owner != agent.id:
+        return False, (
+            f"{dest.name} is somebody else's -- they must order from you with "
+            f"order_from_business. You can post deliveries to a GOVERNMENT "
+            f"business or to one of your own."
+        )
+    if dest.id == biz.id:
+        return False, "that is the same business"
+    qty = int(qty)
+    if qty < 1:
+        return False, "send at least one unit"
+    if biz.inventory.get(item, 0) < qty:
+        return False, f"{biz.name} holds {biz.inventory.get(item, 0)}x {item}"
+
+    cargo_value = D.base_price(item) * qty
+    floor = E.minimum_courier_fee(biz.location, dest.location, cargo_value)
+    if fee < floor:
+        return False, (
+            f"{fee:.2f} is below the carriage floor of {floor:.2f} for "
+            f"{qty}x {item} from {biz.location} to {dest.location}. Suggested: "
+            f"{E.suggested_courier_fee(biz.location, dest.location, cargo_value):.2f}"
+        )
+    if biz.cash < fee:
+        return False, f"{biz.name} has {biz.cash:.2f} and the fee is {fee:.2f}"
+
+    vehicle = None
+    if lend_vehicle:
+        vehicle = world.vehicles.get(lend_vehicle)
+        if not vehicle or lend_vehicle not in agent.owned_vehicles:
+            return False, "not your vehicle"
+        if agent.mounted_vehicle == lend_vehicle:
+            return False, "you are riding that one -- dismount first"
+        if D.VEHICLES[vehicle.type].cargo_capacity < qty:
+            return False, (
+                f"a {vehicle.type} carries "
+                f"{D.VEHICLES[vehicle.type].cargo_capacity} and this load is {qty}"
+            )
+
+    # Escrow the fee and take the goods out of the yard immediately.
+    biz.cash -= fee
+    biz.remove_item(item, qty)
+    con = Consignment(
+        id=world.new_id("C"), seller_business=biz.id, buyer_business=dest.id,
+        item=item, qty=qty, goods_price=0.0, courier_fee=float(fee),
+        origin=biz.location, destination=dest.location,
+        created_at=world.sim_time, seller_posted=True,
+        lent_vehicle=lend_vehicle or None,
+    )
+    world.consignments[con.id] = con
+
+    carried = (
+        f"A {vehicle.type} comes with it." if vehicle
+        else "Bring your own transport -- a load moves whole."
+    )
+    # The advert names a price and a route, not a cargo. Publishing what is in
+    # the cart would let couriers pick over the valuable loads and leave the
+    # rest, and the job board is meant to clear work, not to auction it.
+    world.chat.append(ChatMessage(
+        sim_time=world.sim_time, channel="world", sender=agent.id,
+        sender_name=agent.name,
+        text=(
+            f"CARRIAGE WANTED: a load from {biz.location} to {dest.location}, "
+            f"pays {fee:.2f}. {carried} "
+            f"accept_courier_job(\"{con.id}\") to take it."
+        ),
+    ))
+    log.emit(
+        world.sim_time, "delivery_posted", actor=agent.id, subject=biz.id,
+        location=biz.location, significance=Significance.MEDIUM,
+        consignment=con.id, item=item, qty=qty, fee=round(float(fee), 2),
+        to=dest.location, vehicle=lend_vehicle or None,
+    )
+    return True, (
+        f"posted {con.id}: {qty}x {item} to {dest.location} for {fee:.2f}. "
+        f"The goods have left your yard, so production can restart."
+    )
+
+
 def accept_courier_job(world: World, log: EventLog, agent: Agent, consignment_id: str) -> Result:
     """Claim a haulage job. You are not committed until you collect."""
     con = world.consignments.get(consignment_id)
@@ -1830,6 +2169,17 @@ def collect_consignment(world: World, log: EventLog, agent: Agent, consignment_i
     if agent.location != con.origin:
         return False, f"the goods are at {con.origin}, you are at {agent.location}"
 
+    # A lent vehicle is handed over HERE, before capacity is tested -- the whole
+    # reason it is lent is that the load will not fit otherwise. A consignment
+    # moves whole, so a 100-unit job is unclaimable by anyone on foot, and
+    # lending is what lets an owner hire a courier who does not already own a
+    # cart. It is bound to the job, never transferred: see `_return_lent_vehicle`.
+    if con.lent_vehicle and agent.mounted_vehicle != con.lent_vehicle:
+        loaner = world.vehicles.get(con.lent_vehicle)
+        if loaner is not None:
+            loaner.location = agent.location
+            agent.mounted_vehicle = con.lent_vehicle
+
     free = agent.carry_capacity(world) - agent.carried_units()
     if free < con.qty:
         return False, (
@@ -1859,6 +2209,23 @@ def deliver_consignment(world: World, log: EventLog, agent: Agent, consignment_i
     buyer = world.businesses.get(con.buyer_business)
     if buyer and not buyer.closed:
         buyer.add_item(con.item, con.qty)
+    # A SELLER-POSTED load to a government site is a sale on arrival: the state
+    # buys anything at its standing price, which is what makes "post it and get
+    # producing again" a move an owner can always make. A buyer-posted order was
+    # already paid for at order time, and a delivery between an agent's own two
+    # sites is an internal transfer, so neither moves money here.
+    if con.seller_posted and buyer is not None and buyer.is_government:
+        seller = world.businesses.get(con.seller_business)
+        if seller is not None and not seller.closed:
+            paid = E.npc_buy_price(con.item) * con.qty
+            seller.cash += paid
+            world.government.treasury -= paid
+            log.emit(
+                world.sim_time, "state_purchase", subject=seller.id,
+                location=con.destination, item=con.item, qty=con.qty,
+                paid=round(paid, 2),
+            )
+    _return_lent_vehicle(world, con, agent)
     con.status = "delivered"
     agent.hauling = None
     agent.hauling_units = 0
@@ -1876,6 +2243,21 @@ def cancel_consignment(world: World, log: EventLog, agent: Agent, consignment_id
     con = world.consignments.get(consignment_id)
     if not con:
         return False, "no such consignment"
+    if con.seller_posted:
+        seller = world.businesses.get(con.seller_business)
+        if not seller or seller.owner != agent.id:
+            return False, "not your consignment"
+        if con.status not in ("awaiting_courier", "claimed"):
+            return False, f"consignment is {con.status}"
+        seller.add_item(con.item, con.qty)
+        seller.cash += con.courier_fee
+        _return_lent_vehicle(world, con)
+        con.status = "cancelled"
+        log.emit(
+            world.sim_time, "consignment_cancelled", actor=agent.id, subject=con.id,
+            item=con.item, qty=con.qty, refunded=round(con.courier_fee, 2),
+        )
+        return True, f"cancelled {con.id}; {con.qty}x {con.item} back in the yard"
     buyer = world.businesses.get(con.buyer_business)
     if not buyer or buyer.owner != agent.id:
         return False, "not your consignment"
@@ -1901,15 +2283,58 @@ def cancel_consignment(world: World, log: EventLog, agent: Agent, consignment_id
 
 
 def open_courier_jobs(world: World, agent: Agent, limit: int = 8) -> list[dict[str, Any]]:
-    """Haulage nobody has claimed. Read-only context, not an action."""
+    """Haulage nobody has claimed, with everything needed to judge it.
+
+    THE LOAD IS SEALED. A courier is quoted a price, a route and a name -- not
+    an inventory. They are being hired to move a cart, not to appraise it, and a
+    board that published what every load was worth would be a board where the
+    valuable jobs are taken instantly and everything else rots. What the ore is
+    and how much of it there is becomes apparent at pickup, which is where it
+    should.
+
+    What IS published is everything needed to judge the offer: what it pays, how
+    far, how dangerous the worst stretch is, whether a vehicle comes with it,
+    and who is asking. Route danger is common knowledge -- it is in the static
+    briefing -- so withholding it would only make the price unreadable.
+
+    `you_can_carry_it` is derived, not disclosed: a consignment moves WHOLE, so
+    a courier on foot (capacity 5) cannot take a big load at all and would burn
+    a decision finding out. It answers for THIS agent, counting any vehicle the
+    job lends, and reveals no quantity.
+    """
     out: list[dict[str, Any]] = []
     for con in world.consignments.values():
         if con.status != "awaiting_courier" or con.courier_fee <= 0:
             continue
+        lent = world.vehicles.get(con.lent_vehicle) if con.lent_vehicle else None
+        capacity = (
+            D.VEHICLES[lent.type].cargo_capacity if lent is not None
+            else agent.carry_capacity(world)
+        )
+        worst = world_map.most_dangerous_segment(con.origin, con.destination)
+        posting_biz = world.businesses.get(
+            con.seller_business if con.seller_posted else con.buyer_business
+        )
+        poster = world.agents.get(posting_biz.owner) if posting_biz else None
         out.append({
-            "id": con.id, "item": con.item, "qty": con.qty,
+            "id": con.id,
             "from": con.origin, "to": con.destination,
             "pays": round(con.courier_fee, 2),
+            "travel_minutes": round(
+                world_map.travel_seconds(con.origin, con.destination) / 60.0, 1
+            ),
+            "worst_road": (
+                f"{worst.name} (danger {worst.danger:.2f})" if worst
+                else "no open road -- same junction"
+            ),
+            "hired_by": (
+                poster.name if poster else
+                (posting_biz.name if posting_biz else "the state")
+            ),
+            "vehicle_provided": lent.type if lent is not None else None,
+            "you_can_carry_it": capacity - agent.carried_units() >= con.qty,
         })
-    out.sort(key=lambda j: -j["pays"])
+    # Best-paying first, but unhaulable jobs last however well they pay: a job
+    # this courier cannot lift is not an opportunity, it is a wasted decision.
+    out.sort(key=lambda j: (not j["you_can_carry_it"], -j["pays"]))
     return out[:limit]

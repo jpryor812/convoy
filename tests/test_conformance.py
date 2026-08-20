@@ -549,9 +549,15 @@ def test_world_geography():
     same_junction = M.travel_seconds("Copper Gulch", "Millrace Farms")
     check("two spurs off one junction cost both detours", same_junction, 180.0)
 
-    # Plots are land, not slots: a home takes 4, a worked site 8.
+    # Plots are land, not slots. From 2026-08-19 they are also the ONLY thing
+    # that lets a business hire: the first two are the building, and every
+    # developed plot past that seats one employee. A starter site is 4 -- the
+    # building plus two places to put people -- down from 8, because the number
+    # now means something it did not before.
     check("starter home", M.HOME_BASE_PLOTS, 4)
-    check("starter mine or farm", M.SITE_BASE_PLOTS, 8)
+    check("starter mine or farm", M.SITE_BASE_PLOTS, 4)
+    check("the building itself", M.STRUCTURE_PLOTS, 2)
+    check("so a new site seats two", M.SITE_BASE_PLOTS - M.STRUCTURE_PLOTS, 2)
     check("only mines and farms take spur land",
           set(M.PLOT_CONSUMING_BUSINESSES), {"Mining Operation", "Farm"})
 

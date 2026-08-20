@@ -32,6 +32,13 @@ from convoy.events import EventLog
 from convoy.state import Employment
 from convoy.world_setup import new_world
 
+# Enough to refine with, and little enough to FIT. Refineries had no storage
+# limit at all until the land system landed on 2026-08-19 -- the cap was gated
+# on `biz.plots`, which only mines and farms ever had -- so these tests used to
+# stock 1,500 units into what is now a 240-unit yard, and the business stalled
+# itself on a full storehouse before it could make anything or pay anyone.
+FEEDSTOCK = {"Copper Ore": 60, "Tin Ore": 60, "Charcoal": 60}
+
 FAILURES: list[str] = []
 
 
@@ -70,7 +77,7 @@ def test_payroll_cannot_drive_cash_negative():
     a.owned_businesses.append(biz.id)
     biz.cash = 10.0
     biz.active_production = "Bronze"
-    biz.inventory.update({"Copper Ore": 500, "Tin Ore": 500, "Charcoal": 500})
+    biz.inventory.update(FEEDSTOCK)
     for _ in range(3):
         biz.roster.append(Employment(agent_id="NPC", role="Refinery Worker",
                                      wage=D.NPC_WAGES["Refinery Worker"], is_npc=True))
@@ -113,7 +120,7 @@ def test_producing_npcs_are_paid():
     a.owned_businesses.append(biz.id)
     biz.cash = 5000.0
     biz.active_production = "Bronze"
-    biz.inventory.update({"Copper Ore": 500, "Tin Ore": 500, "Charcoal": 500})
+    biz.inventory.update(FEEDSTOCK)
     biz.roster.append(Employment(agent_id="NPC", role="Refinery Worker",
                                  wage=D.NPC_WAGES["Refinery Worker"], is_npc=True))
 
@@ -187,7 +194,7 @@ def test_owner_sees_the_insolvency_clock():
     a.owned_businesses.append(biz.id)
     biz.cash = 10.0
     biz.active_production = "Bronze"
-    biz.inventory.update({"Copper Ore": 500, "Tin Ore": 500, "Charcoal": 500})
+    biz.inventory.update(FEEDSTOCK)
     for _ in range(3):
         biz.roster.append(Employment(agent_id="NPC", role="Refinery Worker",
                                      wage=D.NPC_WAGES["Refinery Worker"], is_npc=True))

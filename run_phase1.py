@@ -227,6 +227,13 @@ def report(world, log, hours: float) -> None:
     # classroom months later, in front of people.
     from convoy import sprites as SP
 
+    # And the LAYOUT, for the third instance of the same argument: it derives
+    # from `world_map`, and its failure mode is not an exception but a drawing
+    # that is quietly wrong -- two buildings on one spot, a shop standing in the
+    # road, a spur drawn longer than the engine says it is. All of those survive
+    # a long way before anyone notices, and the place they get noticed is a demo.
+    from convoy import layout as LY
+
     # Checkpoint completeness rides along for the same reason again: `save`
     # encodes any dataclass generically, `load` needs it registered, and the gap
     # between the two is invisible until someone restores a run. Four types had
@@ -234,6 +241,7 @@ def report(world, log, hours: float) -> None:
     problems = (
         check_invariants(world, log)
         + SP.check()
+        + LY.check()
         + [
             f"{name} is a state dataclass but is not registered in "
             f"checkpoint._CLASSES -- checkpoints containing one cannot be loaded"

@@ -833,6 +833,9 @@ POLICE_TIERS = {0: (None, 0), 1: (60.0, 1), 2: (45.0, 2), 3: (30.0, 3)}
 # here so existing imports keep working.
 from .world_map import (  # noqa: E402
     ALL_PLACES,
+    SITE_BASE_PLOTS,
+    STORE_BASE_PLOTS,
+    STRUCTURE_PLOTS,
     FULL_ROAD_SECONDS,
     LOCATIONS,
     PROTECTED_ZONES,
@@ -879,12 +882,96 @@ PROPERTY_UPGRADE_KIT = "Property Upgrade"
 # matching the "Mining/Farming Equipment Store" name.
 TOOL_EXTRACTION_BONUS = 0.25
 
-# Land and stockpiles. A worked site holds only so much output before production
-# stalls for want of anywhere to put it -- which is what forces hauling runs and
-# makes a vehicle worth owning. Base capacity is per starter site (8 plots).
-SITE_STORAGE_PER_PLOT = 30      # units of on-site stockpile per plot of land
-SITE_EXPANSION_COST = 250.0     # Denari per +4-plot expansion
+# ---------------------------------------------------------------------------
+# LAND (2026-08-19)
+# ---------------------------------------------------------------------------
+#
+# Land is the scarce thing. Before this, plots were a number on a mine and every
+# other business sat on ground that returned 10**6 free plots -- so cash was the
+# only constraint on growth, and there was no reason to care WHERE anything was.
+# Now a plot is an owned, tradeable asset, and headcount is a property of land
+# rather than of the balance sheet.
+#
+# THE SHAPE: a site's first `STRUCTURE_PLOTS` are the building itself, worked by
+# the owner. Every developed plot beyond that is one employee's place to stand.
+# So hiring is an act of construction, not of recruitment, and an owner who
+# wants a bigger crew has to go and buy ground for them.
+
+# What the world sells raw, unimproved land for. Agents may resell at any price
+# they can get -- this is the floor the market forms around, not a fixed value.
+LAND_BASE_PRICE = 100.0
+
+# STRUCTURE_PLOTS, SITE_BASE_PLOTS and STORE_BASE_PLOTS are geography and live
+# in world_map.py; they are re-exported below with the rest of it.
+
+# Turning raw land into usable ground. Takes time OR money, never neither.
+DEVELOPMENT_COST = 75.0
+DEVELOPMENT_HOURS = 1.0
+# Paying to skip the wait. A flat multiple of the standard cost, so one number
+# drives both routes and they cannot drift apart as the scaling compounds.
+DEVELOPMENT_INSTANT_MULTIPLIER = 2.0
+# Each plot past the starter costs half again as much, and takes half again as
+# long, as the one before it. Compounding is what stops a rich agent simply
+# buying the whole valley: the tenth plot costs 1,922 and takes 25 hours.
+DEVELOPMENT_SCALING = 1.5
+
+# Stores hold rather than make, so their land IS their warehouse.
+STORE_STORAGE_PER_PLOT = 100
+
+# Production sites grow UPWARD instead. A taller barn stores more without taking
+# more ground, which is what keeps a farm's land budget spent on people.
+#
+# BASE STORAGE IS THE STARTUP COST. A flat 240 for everything said a farm and a
+# refinery are the same building, and they are not: the startup cost is already
+# this economy's own statement of how substantial a thing is, so reusing it
+# needs no second table to keep in step. A refinery buffers two input streams
+# AND an output where a farm buffers one output, and at 450 against 150 it now
+# holds three times as much.
+#
+# Note this SHRINKS a farm, from 240 to 150 -- at 72 Wheat an hour that is a
+# full yard in 2h05m rather than 3h20m. Deliberate: the pressure to move goods
+# is the reason carts and couriers exist at all.
+STORAGE_PER_STARTUP_DENARI = 1.0
+# Each storehouse tier adds half the base again, so the ratio between a farm and
+# a refinery survives being upgraded. A flat increment would quietly compress
+# them together at the top.
+STORAGE_TIER_FRACTION = 0.5
+STORAGE_UPGRADE_COST = 150.0
+STORAGE_UPGRADE_SCALING = 1.5
+MAX_STORAGE_TIER = 6
+
+# Only for a business whose type carries no startup cost -- the state's own.
+FALLBACK_BASE_STORAGE = 240
+
+SITE_STORAGE_PER_PLOT = 30      # legacy: pre-land-system saves only
+SITE_EXPANSION_COST = 250.0     # legacy: superseded by buy_land + develop_plot
 EXTRACTION_BUSINESS_TYPES = ("Mining Operation", "Farm")
+
+# Business types whose land is warehouse rather than workshop.
+STORE_BUSINESS_TYPES = (
+    "Home Improvement Store", "Mining/Farming Equipment Store",
+    "Weaponsmith / Armory", "Vehicle Dealer / Stable", "Tavern / Inn",
+    "Private Security Contractor", "Insurance Brokerage",
+)
+
+
+def development_cost(existing_plots: int) -> float:
+    """What the next plot costs to develop, given how many a site already has.
+
+    Scaling is counted from the STARTER size, so the first expansion past a new
+    site costs the base rate. An owner who never expands never meets the curve.
+    """
+    steps = max(existing_plots - SITE_BASE_PLOTS, 0)
+    return round(DEVELOPMENT_COST * (DEVELOPMENT_SCALING ** steps), 2)
+
+
+def development_hours(existing_plots: int) -> float:
+    steps = max(existing_plots - SITE_BASE_PLOTS, 0)
+    return round(DEVELOPMENT_HOURS * (DEVELOPMENT_SCALING ** steps), 3)
+
+
+def storage_upgrade_cost(tier: int) -> float:
+    return round(STORAGE_UPGRADE_COST * (STORAGE_UPGRADE_SCALING ** tier), 2)
 
 # ---------------------------------------------------------------------------
 # Combat & Heroes tab -- model roster

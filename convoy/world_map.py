@@ -208,8 +208,20 @@ SPUR_SECONDS = 90.0
 # hour 48 and squeezed homes out entirely; this leaves real headroom.
 PLOTS_PER_SPUR = 40
 HOME_BASE_PLOTS = 4
-SITE_BASE_PLOTS = 8
-SITE_EXPANSION_PLOTS = 4
+
+# Plot COUNTS live here, with the geography, and `data.py` re-exports them --
+# `data` already imports this module, so defining them the other way round is a
+# circular import. They were briefly defined in both, 8 here and 4 there, which
+# is exactly the split that shows up as a founding check passing and the
+# resulting business seating the wrong number of people.
+#
+# The building itself, worked by the owner.
+STRUCTURE_PLOTS = 2
+# A new production site: the building plus two places to put people.
+SITE_BASE_PLOTS = 4
+# A store: the same, but its land is shelf space rather than standing room.
+STORE_BASE_PLOTS = 4
+SITE_EXPANSION_PLOTS = 1        # land is bought one plot at a time now
 
 # Only extraction sites live on spur land. Refineries, stores, the tavern and the
 # brokerage sit on the main road and consume no plots.
@@ -257,6 +269,46 @@ SPURS: list[Spur] = [
     Spur("Drovers End", "Town", SPUR_SECONDS, PLOTS_PER_SPUR,
          "Paddocks and grain stores where the carts come in. Crowded, and worth it."),
 ]
+
+# ---------------------------------------------------------------------------
+# Land supply on the main road (2026-08-19)
+# ---------------------------------------------------------------------------
+#
+# Junctions used to be exempt from land entirely -- `plots_free` returned 10**6
+# for anything not on a spur, so every refinery, store and tavern in the world
+# stood on ground that could never run out. Fifteen of the twenty-four
+# businesses in the 84-hour run sat on that exemption.
+#
+# Junction land is deliberately much scarcer than spur land (40 per spur, 640 in
+# total). Town is the market -- every store, and the shortest haul to a buyer --
+# so its ground is the most contested thing in the valley and ought to be. The
+# wilderness stops get little: nobody sensible builds in an ambush.
+#
+# Sized AFTER the state is seated, not before. The government occupies five
+# sites at Town and one at Refinery Row, four plots each -- so a Town supply of
+# 40 leaves 20, which is five shops for twenty agents, and the 84-hour run
+# founded more than that at Town alone. These numbers leave roughly ten player
+# businesses at Town before land starts binding, which is meant to be a
+# mid-run squeeze rather than an opening-hour wall.
+#
+# This is the knob to turn after the next run, in either direction.
+JUNCTION_PLOTS: dict[str, int] = {
+    "Town": 60,
+    "Refinery Row": 48,
+    "North Protected Zone": 28,
+    "South Protected Zone": 28,
+    "The Hills": 20,
+    "The Crossing": 20,
+    "The Climb": 20,
+}
+
+
+def plots_at(place: str) -> int:
+    """Total land at a place, spur or junction."""
+    if place in SPUR_BY_NAME:
+        return SPUR_BY_NAME[place].plots
+    return JUNCTION_PLOTS.get(place, 0)
+
 
 SPUR_BY_NAME: dict[str, Spur] = {s.name: s for s in SPURS}
 SPURS_BY_JUNCTION: dict[str, list[Spur]] = {}
@@ -383,7 +435,19 @@ def plots_used(world, spur_name: str) -> int:
 
 
 def plots_free(world, place: str) -> int:
-    """Plots left on a spur. Main-road places are not plot-limited."""
-    if place not in SPUR_BY_NAME:
-        return 10 ** 6
-    return SPUR_BY_NAME[place].plots - plots_used(world, place)
+    """UNSOLD land at a place -- ground the world still has to sell.
+
+    Junctions used to return 10**6 here, so every refinery, store and tavern in
+    the valley stood on ground that could not run out. Fifteen of the
+    twenty-four businesses in the 84-hour run sat on that exemption, and it is
+    why location cost nothing to choose.
+
+    Counts only plots nobody owns. Land somebody bought and left vacant is NOT
+    free -- it is theirs, and the whole point of a market is that you have to
+    deal with them for it.
+    """
+    supply = plots_at(place)
+    if not supply:
+        return 0
+    taken = sum(1 for p in world.plots.values() if p.location == place)
+    return max(supply - taken, 0)

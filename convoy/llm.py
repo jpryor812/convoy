@@ -93,6 +93,8 @@ class LLMPolicy:
     usage: dict[str, Usage] = field(default_factory=dict)
     _prefix: tuple[str, list[dict[str, Any]]] | None = None
     _last_call_at: float = 0.0
+    # The sim clock, stashed for `_fail`. See its docstring.
+    _sim_time: float = 0.0
 
     def __post_init__(self) -> None:
         if self.api_key is None:
@@ -110,6 +112,7 @@ class LLMPolicy:
     # -- the Policy protocol ----------------------------------------------
 
     def decide(self, world: World, agent: Agent, reason: str) -> None:
+        self._sim_time = world.sim_time
         briefing, tools = self._prefix        # type: ignore[misc]
         obs = O.observe(world, self.log, agent, reason, record_delivery=not self.dry_run)
 
@@ -351,8 +354,23 @@ class LLMPolicy:
         self._slot(agent.model).actions += 1
 
     def _fail(self, agent: Agent, detail: str) -> None:
+        """Record a transport failure AT THE HOUR IT HAPPENED.
+
+        This passed a literal 0.0 as the sim time until 2026-08-19, so every
+        API failure in every run is stamped hour 0. On the 84-hour run of
+        2026-08-18 that hid the only thing that mattered about 2,859 errors:
+        that there were none for the first 46 hours and then nothing but. Read
+        off the log they looked like a bad start rather than a cliff, and the
+        cliff is the diagnosis.
+
+        The clock is on the World, which `_fail` had no reference to -- so it is
+        stashed by `decide` rather than threaded through every call site.
+        """
         self._slot(agent.model).errors += 1
-        self.log.emit(0.0, "llm_error", actor=agent.id, model=agent.model, error=detail)
+        self.log.emit(
+            self._sim_time, "llm_error", actor=agent.id, model=agent.model,
+            error=detail,
+        )
 
     def summary(self) -> str:
         lines = [

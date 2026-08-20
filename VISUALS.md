@@ -122,11 +122,46 @@ Two settings that are load-bearing and non-obvious:
 `check_fit()` prints a CROPPED warning when a model overflows the frame. It
 caught the refinery growing past 8.5m after a hand-edit in Blender.
 
-## 9. Hand-designed layout · S–M
+## 9. Hand-designed layout · ~~S–M~~ **DONE (2026-08-19)** — `convoy/layout.py`
 
-Place layout is currently computed — junctions down a line, spurs at fixed
-offsets. Fine for a diagram, not for a place anyone believes in. Tiled exports
-JSON that the renderer can read instead, and pairs with the Kenney tiles.
+Was: junctions down a straight line, spurs at fixed ±300px offsets. Fine for a
+diagram, not for a place anyone believes in.
+
+Now `convoy/layout.py` — position as plain data in world metres, so the 2D map
+and the React Three Fiber scene consume the same coordinates. Tiled was not
+needed: the valley is 23 places on a fixed topology, so authoring the seven
+lateral offsets and the sixteen spur headings by hand is the whole job.
+
+**1347m x 3680m · 191 building slots · 366 props.** Each place carries a road
+path, `Slot`s (x, y, facing, kind) and `Prop`s (kind, position, scale,
+rotation). Preview it with no art and no run: `python3 preview_layout.py`.
+
+**The rule every number obeys: the geometry may not contradict the simulation.**
+All six road segments are the same distance in `world_map` — terrain is what
+makes them differ — and all sixteen spurs are 90 seconds deep. So the drawing
+makes them equal. The first version put junctions on a fixed vertical pitch and
+let the lateral wander lengthen the hypotenuse, which made the swing through The
+Hills 6% longer than the run to the bridge. Six percent is invisible; a map that
+cannot be called honest is not. Junction spacing now shortens the drop to absorb
+the wander, and `check()` holds it to 0.5m.
+
+**Three failures worth keeping.** All were found by measuring, not by looking:
+
+| symptom | cause |
+|---|---|
+| 6 of 16 spur loops overlapped | headings 20–25° apart. Equal-depth spurs are kept apart by ANGLE alone, and two loops need ~57° between them |
+| 26 building slots on top of each other | tuned constants. Replaced by a resolution pass that drops any slot standing on a road or another building — an invariant, not an approximation |
+| shops standing in the road at Refinery Row and Town | a full ring of market frontage, drawn round a junction the road runs through. A market square has frontage down both SIDES and the road up the middle |
+
+`layout.check()` runs inside `run_phase1.py` beside the economic invariants and
+`sprites.check()`, for the third instance of the same argument: it derives from
+`world_map`, and its failure mode is a quietly wrong picture rather than an
+exception.
+
+Everything seeded off the place's own NAME, never call order — so re-rendering
+never reshuffles the world, and adding a seventeenth spur cannot move the first
+sixteen. A world that looks different every time it is drawn cannot be learned,
+and the demo depends on a student recognising Copper Gulch on sight.
 
 ---
 

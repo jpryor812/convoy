@@ -439,6 +439,38 @@ def _recall(citations: list[Citation], question: str) -> Answer:
     return Answer(kind="recall", text="\n".join(lines), citations=citations)
 
 
+# An answer is two or three sentences. `LLMPolicy` defaults to reserving 4,096
+# completion tokens, and OpenRouter charges that RESERVATION against the key's
+# remaining credit rather than what the reply actually uses -- so a fat default
+# returns 402 ("you requested up to 4096 tokens, but can only afford 1174")
+# while a small honest one goes through on the same balance. `llm.py`'s own
+# docstring records this biting a live run at 65,536; it bit the ask box at
+# 4,096, and the fix is the same both times: reserve what the job needs.
+#
+# It also bounds the damage of a model that decides to write an essay, which is
+# worth something in a classroom where thirty students are asking at once.
+ANSWER_TOKENS = 700
+
+# How many recent decisions to fall back on for a question about the future,
+# which by definition matches no citation.
+RECENT_FALLBACK = 6
+
+def _fallback(
+    citations: list[Citation], question: str, present: str | None, note: str = ""
+) -> Answer:
+    """The no-model answer: the agent's situation, then its own words.
+
+    One helper rather than two call sites, because the two used to differ -- the
+    no-policy path carried the live situation and the transport-failure path
+    silently dropped it, so an answer got worse in a way nobody would think to
+    test for.
+    """
+    out = _recall(citations, question)
+    parts = [p for p in (note, f"Right now: {present}" if present else "", out.text) if p]
+    out.text = "\n\n".join(parts)
+    return out
+
+
 SYNTHESIS_SYSTEM = """You are {name}, an agent living in Convoy, an Iron Age economic simulation. Someone is asking you about your own decisions. Talk to them like a person, not like a database.
 
 You will be shown YOUR OWN recorded decisions -- the hour, what you did, and what you were thinking at the time. That record is your memory. It is the only thing you actually know.
@@ -454,7 +486,9 @@ What you must never do:
 - If the record does not answer what was asked, say so plainly and say what it DOES show. That is a good answer, not a failure.
 - Where what you were thinking does not match what you actually did, say so. That is the most interesting thing you can tell anyone.
 
-You are allowed to have opinions about your own choices, including that one was a mistake -- as long as the opinion is about something in the record."""
+You are allowed to have opinions about your own choices, including that one was a mistake -- as long as the opinion is about something in the record.
+
+If you are shown a RIGHT NOW block, that is your live situation this second -- where you are, what you are in the middle of, what you are carrying, and how long until you next get to choose. When someone asks what you are going to do NEXT, answer from that: say what you are planning and why, and be honest that it is a plan rather than something that has happened. A plan can change; say so if someone gives you a reason to change it. Do not describe the present as though it were finished, and do not invent a future that your situation does not support."""
 
 
 def answer(
@@ -466,6 +500,7 @@ def answer(
     model: str = "openai/gpt-5.6-luna",
     force_synthesis: bool = False,
     history: list[Any] | None = None,
+    present: str | None = None,
 ) -> Answer:
     """Answer a question about one agent, in that agent's own voice.
 
@@ -494,6 +529,14 @@ def answer(
     """
     citations = retrieve(run, agent_id, question)
 
+    # A question about the FUTURE is answerable from the present alone -- "what
+    # are you going to do next?" has no citation because it has not happened.
+    # Without this the most natural thing anyone says to a live agent falls
+    # through to "there is nothing in my record about that", which is true and
+    # useless.
+    if present and not citations:
+        citations = run.decisions(agent_id)[-RECENT_FALLBACK:]
+
     # Even a factual lookup may name nothing the retriever can match ("how did
     # it go?"). If a model is available it should still get the recent record
     # and answer conversationally rather than the question falling on the floor.
@@ -504,7 +547,7 @@ def answer(
         # unanswerable while the transcript sat right there.
         citations = run.decisions(agent_id)[-MAX_CITATIONS:]
 
-    if not citations:
+    if not citations and not present:
         return Answer(
             kind="nothing",
             text=(
@@ -515,7 +558,7 @@ def answer(
         )
 
     if policy is None:
-        return _recall(citations, question)
+        return _fallback(citations, question, present)
 
     record = "\n".join(
         f"[h{c.hour}] woken: {c.woken_because} | did: {c.did} | said: {c.text}"
@@ -531,6 +574,7 @@ def answer(
         {"role": "user", "content": (
             (f"EARLIER IN THIS CONVERSATION\n{turns}\n\n" if turns else "")
             + f"YOUR RECORDED DECISIONS\n{record}\n\n"
+            + (f"RIGHT NOW\n{present}\n\n" if present else "")
             + f"THE HOUR NOW: {run.hours()}\n\nTHEY ASK: {question}"
         )},
     ]
@@ -542,9 +586,14 @@ def answer(
     stub.model = model
     reply = policy._call(stub, messages, [])
     if not reply:
-        out = _recall(citations, question)
-        out.text = "(the model could not be reached, so here is the record)\n\n" + out.text
-        return out
+        # The present block belongs here TOO. A degraded answer that drops it
+        # tells someone watching a live agent nothing about where it is
+        # standing -- which is the half of the answer they can see on the map
+        # and would immediately notice missing.
+        return _fallback(
+            citations, question, present,
+            note="(the model could not be reached, so here is the record)",
+        )
 
     text = (reply.get("content") or reply.get("reasoning") or "").strip()
     if not text:

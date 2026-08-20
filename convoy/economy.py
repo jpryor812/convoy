@@ -251,9 +251,132 @@ def validate_quality_allocation(category: str, allocation: dict[str, float],
 # Carrying capacity (Vehicles tab governs)
 # ---------------------------------------------------------------------------
 
+# What a carriage job is worth per simulated hour of a courier's time. Anchored
+# to the Store Clerk wage, the cheapest labour in the economy: hauling is
+# unskilled work, and a fee below this is asking someone to work for less than
+# the worst job in the valley, which is why nobody would take it.
+COURIER_RATE_PER_HOUR = 15.0
+# Loading and unloading, paid regardless of distance. Without it, a job between
+# two places on the same junction pays nothing and is never worth a decision.
+COURIER_HANDLING_FEE = 2.0
+
+
+# CARRIAGE IS PRICED ON WHAT IS BEING CARRIED, not on how long it takes.
+#
+# The whole valley crosses in five simulated minutes, so a time-based fee prices
+# every job at four denari and haulage is never worth spending a decision on.
+# Worse, it prices a cart of Bronze Daggers the same as a cart of Stone. What a
+# carriage is actually worth is a share of the value in it -- that is how real
+# freight has always been priced, and it is the number an owner can weigh
+# against the production they lose by driving it themselves.
+#
+# Danger multiplies that share rather than standing alone. The road runs 0.133
+# on the market approach to 0.65 through the Broken Country, and that gradient
+# is the entire reason haulage is a paid job rather than an errand -- it had
+# never been used to price anything until now.
+COURIER_VALUE_SHARE = 0.10      # of cargo value, for carrying it at all
+COURIER_RISK_SHARE = 0.08       # of cargo value again, at maximum danger
+
+
+def suggested_courier_fee(origin: str, destination: str, cargo_value: float = 0.0) -> float:
+    """A fee a courier would plausibly accept: time, plus risk on the cargo.
+
+    THE POINT IS THAT DISTANCE AND DANGER SHOW UP IN THE PRICE. A mine two
+    junctions from a refinery should cost more to serve than one next door, and
+    a load crossing the Broken Country more than one on the market road -- and
+    those only become real advantages if the carriage cost is visible when the
+    job is posted.
+
+    Only 3 job adverts went up in the whole 84-hour run. Pricing blind is the
+    likeliest reason: an owner with no idea what haulage is worth posts nothing
+    rather than posts badly.
+
+    Roughly a TENTH of what the load is worth, rising through dangerous country.
+    That is a recommendation and nothing more -- an owner may offer whatever
+    they like above the floor, and a load nobody will take at the asking price
+    is information too.
+
+    Only the OWNER ever sees this. A courier is quoted a price and a route, not
+    an inventory: see `open_courier_jobs`.
+    """
+    from . import world_map as M
+
+    hours = M.travel_seconds(origin, destination) / 3600.0
+    worst = M.most_dangerous_segment(origin, destination)
+    danger = worst.danger if worst else 0.0
+    # Value is the base; danger raises the share; time is a small tiebreaker so
+    # that a longer haul on safe road still pays more than a short one, which is
+    # what gives a mine near its refinery a real advantage.
+    share = COURIER_VALUE_SHARE + COURIER_RISK_SHARE * danger
+    return round(
+        COURIER_HANDLING_FEE + cargo_value * share + hours * COURIER_RATE_PER_HOUR, 2
+    )
+
+
+def minimum_courier_fee(origin: str, destination: str, cargo_value: float = 0.0) -> float:
+    """The floor. Half the suggestion -- a hard refusal, not a haggling position."""
+    return round(suggested_courier_fee(origin, destination, cargo_value) * 0.5, 2)
+
+
 def site_storage_capacity(plots: int) -> int:
-    """How much a worked site can stockpile before production stalls."""
+    """LEGACY. Storage from raw plot count, for saves made before the land system.
+
+    Superseded by `business_storage_capacity`, which knows whether it is looking
+    at a warehouse or a workshop. Kept because a checkpoint written before
+    2026-08-19 has businesses whose storage was this and nothing else.
+    """
     return int(plots * D.SITE_STORAGE_PER_PLOT)
+
+
+def developed_plots(world, biz) -> int:
+    """Plots actually built on and attached to this business.
+
+    Raw land seats nobody. An owner who buys six plots and develops none has
+    bought a field, and the difference between ground and floor space is the
+    whole reason development costs anything.
+    """
+    return sum(
+        1 for p in world.plots.values()
+        if p.business == biz.id and p.developed
+    )
+
+
+def employee_slots(world, biz) -> int:
+    """How many people this business has somewhere to put.
+
+    The first `STRUCTURE_PLOTS` are the building, worked by the owner; every
+    developed plot past that is one employee's place to stand. So hiring is an
+    act of construction rather than of recruitment, and a crew is a thing an
+    owner had to buy ground for.
+
+    This is the FIRST employee cap in the game that is actually enforced.
+    `BusinessType.max_employees` has existed since Phase 1, is set to 2 on every
+    store, and nothing has ever read it -- there is even a constant named
+    `MAX_EMPLOYEES_PRODUCTION_UNUSED`. A run could hire without limit.
+    """
+    if biz.is_government:
+        return D.GOVERNMENT_MAX_EMPLOYEES
+    return max(developed_plots(world, biz) - D.STRUCTURE_PLOTS, 0)
+
+
+def business_storage_capacity(world, biz) -> int:
+    """How much this business can hold, by what kind of business it is.
+
+    Two rules on purpose. A STORE holds rather than makes, so its land is its
+    warehouse and every developed plot past the building adds shelf space. A
+    PRODUCTION site grows UPWARD instead -- a taller barn stores more without
+    taking more ground, so a farm's land budget stays spent on people rather
+    than on stockpile, which is what makes the employee cap bite.
+    """
+    if biz.type in D.STORE_BUSINESS_TYPES:
+        return max(
+            developed_plots(world, biz) - D.STRUCTURE_PLOTS, 0
+        ) * D.STORE_STORAGE_PER_PLOT
+    base = (
+        biz.spec.startup_cost * D.STORAGE_PER_STARTUP_DENARI
+        or D.FALLBACK_BASE_STORAGE
+    )
+    return int(base * (1.0 + biz.storage_tier * D.STORAGE_TIER_FRACTION))
 
 
 def carry_capacity(vehicle_type: str | None) -> int:

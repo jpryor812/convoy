@@ -66,7 +66,14 @@ class Backend:
         if use_model:
             load_env()
             try:
-                self.policy = llm.LLMPolicy(log=EventLog(None, echo_min=99))
+                self.policy = llm.LLMPolicy(
+                    log=EventLog(None, echo_min=99),
+                    max_completion_tokens=I.ANSWER_TOKENS,
+                    # Answering is interactive; a student waiting on a
+                    # reply must not be held behind the simulation's
+                    # per-model pacing.
+                    requests_per_minute=0,
+                )
             except RuntimeError as exc:
                 # No key is a downgrade, not a failure: every lookup still works
                 # and only synthesis is lost. Said out loud so it is not a

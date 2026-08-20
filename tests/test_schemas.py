@@ -302,9 +302,34 @@ def test_prefix_cost_is_within_budget():
     # almost nothing per call -- the guard is here to keep growth deliberate,
     # not to freeze the action set. Raise it only alongside a feature, and say
     # which one, as here.
+    #
+    # 13,000 -> 13,500 on 2026-08-19, for the LAND SYSTEM: five actions
+    # (buy_land, develop_plot, list_land, buy_listed_land, upgrade_storage) and
+    # the rules that decide who may hire. `expand_site` was deleted in the same
+    # change rather than left as a dead tool, which paid for a fifth of it.
+    #
+    # 13,500 -> 14,000 on 2026-08-19, for SELLER-POSTED HAULAGE:
+    # `post_delivery_job`, plus the job details a courier needs to judge a load
+    # (distance, danger, cargo value, whether they can physically carry it).
+    # The enum headroom below was spent first, as far as it safely goes:
+    # "On Foot" was removed from the `item` enum, which is a correctness fix as
+    # much as a saving -- it is the null vehicle and cannot be held or hauled.
+    #
+    # RAISING THIS IS NOT FREE. The 84-hour run of 2026-08-18 died at hour 47 to
+    # `Prompt tokens limit exceeded` -- OpenRouter scales a hard per-request
+    # ceiling with the key's remaining credit, and the prefix is most of what is
+    # measured against it. A 14,081-token prompt was accepted after a top-up, so
+    # 14,000 is inside what has been observed to work, but that headroom shrinks
+    # as the balance does.
+    #
+    # The remaining lever is the rest of the `item` enum: ~1,900 tokens of the
+    # same 62 names repeated across every tool that takes one. It was NOT spent
+    # here because dropping it invites invented item names, and more refusals is
+    # the failure mode this project has spent thirteen entries of PHASE4 §2 on.
+    # Spend it deliberately, with a run to measure the refusal rate after.
     tools_tok = len(json.dumps(S.tool_schemas())) // 4
     prefix_tok = len(O.static_briefing()) // 4 + tools_tok
-    ok("cached prefix under 13k tokens", prefix_tok < 13000, f"~{prefix_tok} tokens")
+    ok("cached prefix under 14k tokens", prefix_tok < 14000, f"~{prefix_tok} tokens")
     ok("prefix is large enough to cache", prefix_tok > 1024, f"~{prefix_tok} tokens")
 
 

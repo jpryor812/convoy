@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from . import data as D
 from .events import EventLog
-from .state import Agent, Business, World
+from .state import Agent, Business, Plot, World
 
 # Placement now comes from the world design: the state's mine and farm sit on the
 # two spurs closest to the refineries, so its own supply chain is short and
@@ -31,6 +31,14 @@ GOVERNMENT_DEFAULT_OUTPUT: dict[str, str] = {
 
 
 def build_government(world: World, log: EventLog) -> None:
+    """The state's own sites, standing on the state's own land.
+
+    Government plots are recorded like anyone else's rather than left implicit,
+    so `plots_free` counts them and a player cannot found a shop on ground the
+    state is already standing on. They are owned by "Government", which owns no
+    agent record -- so the land market cannot buy them either, which is correct:
+    the backstop is not for sale.
+    """
     for btype, location in GOVERNMENT_SITES.items():
         biz = Business(
             id=world.new_id("G"),
@@ -40,9 +48,15 @@ def build_government(world: World, log: EventLog) -> None:
             location=location,
             cash=0.0,
             active_production=GOVERNMENT_DEFAULT_OUTPUT.get(btype),
-            plots=(SITE_BASE_PLOTS if btype in PLOT_CONSUMING_BUSINESSES else 0),
+            plots=D.SITE_BASE_PLOTS,
         )
         world.businesses[biz.id] = biz
+        for _ in range(D.SITE_BASE_PLOTS):
+            plot = Plot(
+                id=world.new_id("L"), location=location, owner="Government",
+                business=biz.id, developed=True,
+            )
+            world.plots[plot.id] = plot
 
 
 def spawn_agents(world: World, log: EventLog, roster: list[tuple[str, str]]) -> None:

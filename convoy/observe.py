@@ -113,10 +113,27 @@ def _static_map() -> str:
     lines.append("")
     lines.append(
         f"Sixteen spur roads dead-end off the main road, {M.SPUR_SECONDS:.0f}s deep each. "
-        f"Mines, farms and homes live on spurs and nowhere else. A spur holds "
-        f"{M.PLOTS_PER_SPUR} plots: a home takes {M.HOME_BASE_PLOTS}, a mine or farm "
-        f"takes {M.SITE_BASE_PLOTS}. Travelling spur-to-spur means climbing back to "
-        f"the main road and down again."
+        f"Mines, farms and homes live on spurs and nowhere else. Travelling "
+        f"spur-to-spur means climbing back to the main road and down again."
+    )
+    lines.append("")
+    # LAND, stated once, in the cached prefix. The rules below decide who can
+    # hire and how big anything gets, and repeating them per-tool would cost the
+    # same tokens on every call for every agent forever.
+    lines.append(
+        f"LAND. Plots are finite everywhere and can sell out; Town is scarcest. "
+        f"Unsold land is {D.LAND_BASE_PRICE:.0f}/plot (buy_land), else buy from a "
+        f"holder (buy_listed_land) or sell your own (list_land).\n"
+        f"A BUSINESS SEATS ONE EMPLOYEE PER DEVELOPED PLOT beyond its "
+        f"{D.STRUCTURE_PLOTS}-plot building, which you work unpaid. Founding gives "
+        f"{D.SITE_BASE_PLOTS} plots = 2 hires; for a third, buy_land then "
+        f"develop_plot.\n"
+        f"Stock: a store holds {D.STORE_STORAGE_PER_PLOT}/plot -- its land is shelf "
+        f"space. A mine/farm/refinery holds as much as it cost to found (a Farm "
+        f"{D.BUSINESS_TYPES['Farm'].startup_cost:.0f}, a Refinery "
+        f"{D.BUSINESS_TYPES['Refinery'].startup_cost:.0f}) and grows upward "
+        f"(upgrade_site_storage), keeping its land for people. A FULL YARD STOPS "
+        f"PRODUCTION DEAD -- move stock out before it fills."
     )
     for junction in M.LOCATIONS:
         spurs = M.SPURS_BY_JUNCTION.get(junction, [])
@@ -649,12 +666,39 @@ def affordances(world: World, agent: Agent) -> list[str]:
             f"current job unless an owner takes you on: " + "; ".join(lines)
         )
 
-    if M.is_spur(agent.location):
-        free = M.plots_free(world, agent.location)
+    # LAND, wherever you are standing. Every location has a finite supply now,
+    # and headcount is a property of land -- so an owner who cannot see the
+    # ground market cannot grow, and would read a hiring refusal as the world
+    # being arbitrary. PHASE4 §2, in advance, for a system built today.
+    free = M.plots_free(world, agent.location)
+    mine_here = [
+        p for p in world.plots.values()
+        if p.owner == agent.id and p.location == agent.location
+    ]
+    spare = [p for p in mine_here if not p.developed and p.business is None
+             and not p.is_building(world.sim_time)]
+    if free:
         out.append(
-            f"This is spur land: {free} of {M.PLOTS_PER_SPUR} plots free. You can "
-            f"found a mine or farm ({M.SITE_BASE_PLOTS} plots) or buy a home "
-            f"({M.HOME_BASE_PLOTS} plots) here."
+            f"LAND HERE: {free} of {M.plots_at(agent.location)} plots unsold at "
+            f"{D.LAND_BASE_PRICE:.0f} each -- buy_land(plots=N). Raw land seats "
+            f"nobody until develop_plot builds on it."
+        )
+    else:
+        out.append(
+            f"LAND HERE: every one of {M.plots_at(agent.location)} plots is owned. "
+            f"To build here you must buy from a holder -- check land for sale."
+        )
+    if spare:
+        out.append(
+            f"You hold {len(spare)} undeveloped plot(s) here. develop_plot(business) "
+            f"turns one into a place for one more employee."
+        )
+
+    if M.is_spur(agent.location):
+        out.append(
+            f"This is spur land: found a mine or farm ({M.SITE_BASE_PLOTS} plots, "
+            f"included in the startup cost) or buy a home ({M.HOME_BASE_PLOTS} "
+            f"plots) here."
         )
     else:
         # Saying only what CANNOT be built here reads as "you cannot build here",
@@ -668,11 +712,17 @@ def affordances(world: World, agent: Agent) -> list[str]:
             if name not in M.PLOT_CONSUMING_BUSINESSES
             and spec.startup_cost <= agent.denari
         )
-        if affordable:
+        if affordable and free >= D.STORE_BASE_PLOTS:
             out.append(
                 "Main road: mines and farms need spur land, but you could found "
                 + ", ".join(f"a {n} ({c:.0f})" for c, n in affordable[:5])
                 + " right here."
+            )
+        elif affordable:
+            out.append(
+                f"Main road: you can afford to found here but there are only "
+                f"{free} unsold plots and a business needs "
+                f"{D.STORE_BASE_PLOTS}. Buy land from a holder, or found elsewhere."
             )
         else:
             cheapest = min(
@@ -848,6 +898,16 @@ def _owned_business_view(world: World, bid: str) -> dict[str, Any]:
         "cash": round(b.cash, 2),
         "stock": dict(b.inventory),
         "workers": len(b.production_staff()),
+        # Land, and what it buys. An owner refused a hire needs to be able to
+        # see WHY without guessing -- "no vacancy" is arbitrary unless the same
+        # observation says how many places the site has and how to add one.
+        "developed_plots": E.developed_plots(world, b),
+        "employee_places": E.employee_slots(world, b),
+        "employee_places_free": max(
+            E.employee_slots(world, b) - len(b.production_staff()), 0
+        ),
+        "storage_capacity": E.business_storage_capacity(world, b),
+        "storage_used": sum(b.inventory.values()),
         "researchers": len(b.researchers()),
         "research_tier": b.research.efficiency_tier,
         "unspent_rp": round(b.research.unspent_rp, 1),
@@ -1093,6 +1153,42 @@ def observe(
     if advice:
         obs["advice"] = advice
 
+    # LAND YOU OWN, with ids. `develop_plot` and `list_land` both take one, and
+    # an id that exists only inside the engine is an action nobody can call --
+    # the same failure that made 15 bought vehicles unusable in the 2026-08-15
+    # run, and B2B unusable on arrival before that.
+    my_land = [p for p in world.plots.values() if p.owner == agent.id]
+    if my_land:
+        obs["your_land"] = [
+            {
+                "id": p.id, "at": p.location,
+                "state": (
+                    "building" if p.is_building(world.sim_time)
+                    else "developed" if p.developed else "raw"
+                ),
+                "attached_to": p.business,
+                "listed_at": p.for_sale_at,
+            }
+            for p in sorted(my_land, key=lambda x: x.id)[:12]
+        ]
+
+    # Land other agents have put up for sale. Without this, `buy_listed_land`
+    # is an action whose only argument is unobtainable.
+    listed = [
+        p for p in world.plots.values()
+        if p.for_sale_at is not None and p.owner != agent.id
+    ]
+    if listed:
+        obs["land_for_sale"] = [
+            {
+                "id": p.id, "at": p.location, "price": round(p.for_sale_at, 2),
+                "developed": p.developed,
+                "seller": (world.agents[p.owner].name
+                           if p.owner in world.agents else p.owner),
+            }
+            for p in sorted(listed, key=lambda x: x.for_sale_at or 0)[:10]
+        ]
+
     local = _local_prices(world, agent)
     if local:
         obs["player_prices_here"] = local
@@ -1224,6 +1320,8 @@ def render(obs: dict[str, Any]) -> str:
         ("you", "YOU"),
         ("here", "WHERE YOU ARE"),
         ("player_prices_here", "PLAYER PRICES HERE"),
+        ("your_land", "LAND YOU OWN"),
+        ("land_for_sale", "LAND FOR SALE (other agents' asking prices)"),
         ("you_can", "WHAT YOU CAN DO FROM HERE"),
         ("taxes_now", "CURRENT TAX RATES"),
         ("where_to_buy_stock", "WHERE TO ORDER FEEDSTOCK (you need not travel)"),

@@ -72,21 +72,58 @@ class Engine:
 
     def run(self) -> None:
         w, cfg = self.world, self.config
-        end = cfg.duration_hours * 3600.0
-        started_wall = time.monotonic()
 
         self.log.emit(
             w.sim_time, "sim_start",
             agents=len(w.agents), businesses=len(w.businesses),
             duration_hours=cfg.duration_hours,
         )
+        self.step_until(cfg.duration_hours * 3600.0)
+        self.log.emit(
+            w.sim_time, "sim_end",
+            leaderboard=[(n, round(v, 1)) for n, v in w.leaderboard()[:10]],
+            treasury=round(w.government.treasury, 1),
+        )
+        self.log.flush()
 
-        while w.sim_time < end:
+    def step_until(
+        self, end_sim_time: float, *, wall_budget_s: float | None = None
+    ) -> bool:
+        """Advance to `end_sim_time`, or until `wall_budget_s` of real time is up.
+
+        THE SEAM FOR WATCHING A WORLD LIVE. `run` was a closed loop from zero to
+        the end of the run, so the only thing anyone could do with a world was
+        start one and wait for it -- which is why advice could be given to a
+        finished run and change nothing. There was no future left to change.
+        Pulling the loop out here lets a caller hold a world open and push it
+        forward a little at a time, which is what makes "tell an agent something
+        and watch what it does" possible at all.
+
+        `wall_budget_s` exists because the caller is usually answering an HTTP
+        request. Stepping an hour takes about eight wall minutes at the measured
+        rate, so a request that asked for an hour and got no reply until it had
+        one would simply time out. With a budget the call returns whatever it
+        managed and the caller comes back for more; the world is left in a
+        perfectly valid state either way, since a tick is atomic.
+
+        Returns True if it reached `end_sim_time`, False if the budget ran out
+        first -- so a caller can tell "done" from "there is more to do".
+        """
+        w, cfg = self.world, self.config
+        started_wall = time.monotonic()
+        # Wall-clock pacing is relative to where this call STARTED, not to the
+        # world's zero -- a session resumed at hour 53 would otherwise compute a
+        # target hundreds of hours in the past and never sleep at all.
+        base_sim = w.sim_time
+
+        while w.sim_time < end_sim_time:
             self.tick(TICK_SECONDS)
 
-            if cfg.speed < 1000:  # real-time or near-real-time: pace against wall clock
-                target_wall = started_wall + w.sim_time / cfg.speed
-                drift = target_wall - time.monotonic()
+            if cfg.speed < 1000:  # real-time or near-real-time: pace to the clock
+                drift = (
+                    started_wall + (w.sim_time - base_sim) / cfg.speed
+                    - time.monotonic()
+                )
                 if drift > 0:
                     time.sleep(drift)
 
@@ -96,12 +133,14 @@ class Engine:
                 if self.on_checkpoint:
                     self.on_checkpoint(w)
 
-        self.log.emit(
-            w.sim_time, "sim_end",
-            leaderboard=[(n, round(v, 1)) for n, v in w.leaderboard()[:10]],
-            treasury=round(w.government.treasury, 1),
-        )
-        self.log.flush()
+            if (
+                wall_budget_s is not None
+                and time.monotonic() - started_wall >= wall_budget_s
+            ):
+                self.log.flush()
+                return False
+
+        return True
 
     # -- one simulated minute ---------------------------------------------
 
@@ -111,6 +150,7 @@ class Engine:
         hours = dt / 3600.0
 
         self._advance_travel(dt)
+        self._finish_developments()
         self._sustenance(hours)
         self._produce(hours)
         self._pay_wages(hours)
@@ -282,6 +322,194 @@ class Engine:
             return self.world.vehicles[agent.mounted_vehicle].type
         return None
 
+    def _finish_developments(self) -> None:
+        """Hand over plots whose build time is up.
+
+        Development is deliberately a WAIT rather than a purchase, so that an
+        owner choosing the cheap route has committed hours they cannot get back
+        and the instant route is worth its premium. The engine is what makes
+        that real: nothing else advances a build.
+        """
+        w = self.world
+        for plot in w.plots.values():
+            if plot.developing_until is None or w.sim_time < plot.developing_until:
+                continue
+            plot.developed = True
+            plot.business = plot.developing_for
+            plot.developing_until = None
+            plot.developing_for = None
+            biz = w.businesses.get(plot.business or "")
+            self.log.emit(
+                w.sim_time, "plot_developed", subject=plot.business,
+                location=plot.location, significance=Significance.MEDIUM,
+                plot=plot.id, instant=False,
+                employee_slots=E.employee_slots(w, biz) if biz else 0,
+            )
+
+    def production_rate(
+        self, biz: "Business", *, credit_skill_hours: float = 0.0
+    ) -> float:
+        """Units per simulated hour this business is currently making.
+
+        PULLED OUT OF `_produce` SO A COUNTDOWN CANNOT LIE. `production_buffer`
+        fills at this rate and pops a whole unit at 1.0, so "time until the next
+        unit" is `(1 - buffer) / rate` -- but only if the viewer's rate is the
+        SAME rate the engine is about to apply. Recomputing it alongside would
+        work until somebody changed one of them, and then the bar would count
+        down to a moment at which nothing happens, with nothing erroring. One
+        function, two callers.
+
+        `credit_skill_hours` is the practice a worker earns for the hours it just
+        put in, and is 0 for anyone merely asking. A viewer polling four times a
+        second must not be able to train the whole valley to mastery.
+        """
+        w = self.world
+        output = biz.active_production
+        if not output or biz.closed:
+            return 0.0
+        headcount = biz.active_headcount(w)
+        if headcount == 0:
+            return 0.0
+
+        # Efficiency comes from the ALLOCATED tier, not from raw RP -- RP has
+        # to be spent on a track before it speeds anything up.
+        eff = E.efficiency_bonus(biz.research.efficiency_tier)
+        base_rate = self._base_rate_for(output)
+
+        if biz.is_government:
+            # Always fully staffed by exemption; a stable one-worker market floor.
+            return base_rate
+
+        rate = 0.0
+        for emp in biz.production_staff():
+            if emp.is_npc:
+                # NPC hires work at Novice skill, always on shift.
+                rate += E.worker_output_rate(base_rate, headcount, 0.0, eff)
+                continue
+            agent = w.agents.get(emp.agent_id)
+            if not (agent and agent.alive and agent.activity.kind == "work"
+                    and agent.activity.detail.get("business") == biz.id):
+                continue
+            # Upgraded Tools speed up raw extraction only -- mining and
+            # farming, per the Equipment Store's name.
+            tools = (
+                D.TOOL_EXTRACTION_BONUS
+                if agent.equipped_tools and biz.type in D.EXTRACTION_BUSINESS_TYPES
+                else 0.0
+            )
+            # Hungry/Starving cut production speed; a Laborer's Bread
+            # adds a bonus for the meal's duration (Sustenance tab).
+            rate += E.worker_output_rate(
+                base_rate, headcount,
+                agent.skill_hours.get(emp.role, 0.0), eff + tools,
+            ) * E.sustenance_speed_multiplier(agent.sustenance_stage) \
+                * (1.0 + agent.meal_work_bonus)
+            if credit_skill_hours:
+                agent.skill_hours[emp.role] = (
+                    agent.skill_hours.get(emp.role, 0.0) + credit_skill_hours
+                )
+        return rate
+
+    def production_headroom(self, biz: "Business") -> tuple[float, str]:
+        """How many more units this business could make before something stops it.
+
+        The other half of an honest countdown, and the half a viewer cannot
+        safely reimplement. The exemptions are not symmetrical: a state business
+        sources its own inputs, so the FEEDSTOCK test skips it -- but it is not
+        exempt from its yard, and reading "government" as "unconstrained" had the
+        forecast promising 36 units an hour out of a mine the engine had already
+        stalled for lack of anywhere to put them.
+
+        Returns (units, why) with `inf` when nothing binds. `why` names the
+        binding constraint in words, because "blocked" and "slow" look identical
+        on a progress bar and need completely different things done about them.
+        """
+        w = self.world
+        output = biz.active_production
+        if not output or biz.closed:
+            return 0.0, "nothing set to produce"
+
+        caps: list[tuple[float, str]] = []
+        recipe = D.REFINING_RECIPES.get(output) or D.CRAFTING_RECIPES.get(output)
+        if recipe and not biz.is_government:
+            short = [i for i, q in recipe.inputs.items() if biz.inventory.get(i, 0) < q]
+            caps.append((
+                min((biz.inventory.get(i, 0) // q for i, q in recipe.inputs.items()),
+                    default=0),
+                "out of " + ", ".join(short) if short
+                else "feedstock runs out (" + ", ".join(recipe.inputs) + ")",
+            ))
+        # EVERY business has a finite storehouse now. This used to be gated on
+        # `biz.plots`, which only mines and farms ever had -- so refineries,
+        # taverns and every store in the world stockpiled without limit.
+        room = E.business_storage_capacity(w, biz) - sum(biz.inventory.values())
+        caps.append((
+            max(room, 0),
+            "the yard is full -- nothing can be made until stock is moved out",
+        ))
+        return min(caps, default=(float("inf"), ""))
+
+    def worker_shares(self, biz: "Business") -> list[dict]:
+        """Each worker's share of the output, for an owner watching a crew.
+
+        Output is POOLED. A business fills one buffer and pops whole units from
+        it; individual workers do not each finish their own unit and carry it in,
+        so "when will this miner deliver" has no answer -- what does is "this
+        miner is a third of why the next one arrives when it does."
+
+        Saying that plainly beats inventing a per-worker timer the engine would
+        not honour. It is also the number an owner actually wants: it prices the
+        crew.
+        """
+        total = self.production_rate(biz)
+        out = []
+        for emp in biz.production_staff():
+            solo = self._solo_rate(biz, emp)
+            out.append({
+                "agent": emp.agent_id, "role": emp.role,
+                "is_npc": emp.is_npc,
+                "units_per_hour": round(solo, 3),
+                "share": round(solo / total, 3) if total else 0.0,
+                "wage": round(emp.wage, 2),
+            })
+        return out
+
+    def _solo_rate(self, biz: "Business", emp) -> float:
+        """One employee's contribution, on the same terms `production_rate` uses."""
+        w = self.world
+        output = biz.active_production
+        if not output:
+            return 0.0
+        headcount = biz.active_headcount(w)
+        if headcount == 0:
+            return 0.0
+        eff = E.efficiency_bonus(biz.research.efficiency_tier)
+        base_rate = self._base_rate_for(output)
+        if biz.is_government:
+            # A state business produces `base_rate` flat, by exemption, however
+            # many people stand in it -- so per-worker attribution is a fiction
+            # and the only honest split is an equal one. Running the normal
+            # per-worker maths here instead had two refinery workers credited
+            # with 90% of the output EACH, which sums to 180% of a number the
+            # engine holds fixed.
+            staff = list(biz.production_staff())
+            return base_rate / len(staff) if staff else 0.0
+        if emp.is_npc:
+            return E.worker_output_rate(base_rate, headcount, 0.0, eff)
+        agent = w.agents.get(emp.agent_id)
+        if not (agent and agent.alive and agent.activity.kind == "work"
+                and agent.activity.detail.get("business") == biz.id):
+            return 0.0
+        tools = (
+            D.TOOL_EXTRACTION_BONUS
+            if agent.equipped_tools and biz.type in D.EXTRACTION_BUSINESS_TYPES
+            else 0.0
+        )
+        return E.worker_output_rate(
+            base_rate, headcount, agent.skill_hours.get(emp.role, 0.0), eff + tools,
+        ) * E.sustenance_speed_multiplier(agent.sustenance_stage) \
+            * (1.0 + agent.meal_work_bonus)
+
     def _produce(self, hours: float) -> None:
         """Extraction, refining and crafting, at the Businesses tab decay rate."""
         w = self.world
@@ -298,42 +526,7 @@ class Engine:
             if headcount == 0:
                 continue    # zero workers == zero output, per the Businesses tab
 
-            # Efficiency comes from the ALLOCATED tier, not from raw RP -- RP has
-            # to be spent on a track before it speeds anything up.
-            eff = E.efficiency_bonus(biz.research.efficiency_tier)
-
-            base_rate = self._base_rate_for(output)
-            role = D.ROLE_FOR_OUTPUT.get(output, "Laborer")
-
-            if biz.is_government:
-                # Always fully staffed by exemption; a stable one-worker market floor.
-                rate = base_rate
-            else:
-                rate = 0.0
-                for emp in biz.production_staff():
-                    if emp.is_npc:
-                        # NPC hires work at Novice skill, always on shift.
-                        rate += E.worker_output_rate(base_rate, headcount, 0.0, eff)
-                        continue
-                    agent = w.agents.get(emp.agent_id)
-                    if not (agent and agent.alive and agent.activity.kind == "work"
-                            and agent.activity.detail.get("business") == biz.id):
-                        continue
-                    # Upgraded Tools speed up raw extraction only -- mining and
-                    # farming, per the Equipment Store's name.
-                    tools = (
-                        D.TOOL_EXTRACTION_BONUS
-                        if agent.equipped_tools and biz.type in D.EXTRACTION_BUSINESS_TYPES
-                        else 0.0
-                    )
-                    # Hungry/Starving cut production speed; a Laborer's Bread
-                    # adds a bonus for the meal's duration (Sustenance tab).
-                    rate += E.worker_output_rate(
-                        base_rate, headcount,
-                        agent.skill_hours.get(emp.role, 0.0), eff + tools,
-                    ) * E.sustenance_speed_multiplier(agent.sustenance_stage) \
-                        * (1.0 + agent.meal_work_bonus)
-                    agent.skill_hours[emp.role] = agent.skill_hours.get(emp.role, 0.0) + hours
+            rate = self.production_rate(biz, credit_skill_hours=hours)
 
             recipe = D.REFINING_RECIPES.get(output) or D.CRAFTING_RECIPES.get(output)
 
@@ -344,20 +537,14 @@ class Engine:
             # time the buffer is filling -- in which a business with no feedstock
             # at all still looks productive. NPC pay keys off this flag, and that
             # window was billing idle NPCs (caught by test_business_solvency).
-            blocked = False
-            if recipe and not biz.is_government:
-                blocked = min(
-                    (biz.inventory.get(i, 0) // q for i, q in recipe.inputs.items()),
-                    default=0,
-                ) < 1
-            if not blocked and biz.plots:
-                if E.site_storage_capacity(biz.plots) - sum(biz.inventory.values()) <= 0:
-                    self.log.emit(
-                        w.sim_time, "site_full", subject=biz.id,
-                        location=biz.location, business=biz.name,
-                        capacity=E.site_storage_capacity(biz.plots),
-                    )
-                    blocked = True
+            headroom, why = self.production_headroom(biz)
+            blocked = headroom < 1
+            if blocked and why and "yard" in why:
+                self.log.emit(
+                    w.sim_time, "site_full", subject=biz.id,
+                    location=biz.location, business=biz.name,
+                    capacity=E.business_storage_capacity(w, biz),
+                )
             biz.production_blocked = blocked
             if blocked:
                 biz.production_buffer = min(biz.production_buffer, 1.0)
@@ -391,7 +578,7 @@ class Engine:
             if biz.plots:
                 units = min(
                     units,
-                    E.site_storage_capacity(biz.plots) - sum(biz.inventory.values()),
+                    E.business_storage_capacity(w, biz) - sum(biz.inventory.values()),
                 )
                 if units <= 0:
                     biz.production_buffer = min(biz.production_buffer, 1.0)

@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from convoy import data as D
 from convoy import economy as E
 from convoy.engine import Engine, EngineConfig
+from convoy.state import Plot
 from convoy.events import EventLog
 from convoy.state import Activity, Agent, Business, Employment, World
 
@@ -44,6 +45,12 @@ def measure_output(headcount: int, hours: float = 1.0) -> float:
         id="B0001", type="Farm", name="Load Test Farm", owner="A0001",
         location="Town", cash=1e9, active_production="Wheat",
     )
+    # A storehouse big enough that it never binds. This measures the LABOUR
+    # curve, and from 2026-08-19 every business has a finite yard -- so at ten
+    # workers the farm filled its 240-unit default part-way through the hour and
+    # the numbers flattened at ~242 for every headcount above four. That is the
+    # land system working correctly and the measurement being contaminated by it.
+    biz.storage_tier = D.MAX_STORAGE_TIER
     world.businesses[biz.id] = biz
 
     for i in range(headcount):
@@ -162,16 +169,41 @@ def test_researcher_pool_is_uncapped_at_stores():
     if hired != 6:
         FAILURES.append(f"researcher pool capped at {hired}, should be uncapped")
 
-    # A PLAYER-owned store is uncapped (designer decision, 2026-08-14): the
-    # headcount limit belongs to the government backstop, not to anything a
-    # player builds, so out-hiring the state is a strategy that can be tried.
+    # PRODUCTION staff are capped by LAND (2026-08-19). This used to assert the
+    # opposite -- "player-owned production staff should be uncapped" -- which was
+    # the designer decision of 2026-08-14 and held until land became the scarce
+    # thing. A business now seats one employee per developed plot beyond its
+    # building, so hiring is an act of construction.
+    #
+    # Researchers stay uncapped, and that separation is the point of this test:
+    # the Research tab says "no cap on Researcher count", so land must gate the
+    # people who take up floor space and not the ones who do not.
     prod = 0
     for _ in range(5):
         ok, _ = A.hire_npc_employee(world, log, owner, biz.id, "Blacksmith")
         if ok:
             prod += 1
-    if prod != 5:
-        FAILURES.append(f"player-owned production staff should be uncapped, got {prod}")
+    if prod != 0:
+        FAILURES.append(
+            f"a store on no developed land should seat nobody, hired {prod}"
+        )
+
+    # Give it ground, and it can hire exactly as much as the ground allows.
+    for _ in range(D.STRUCTURE_PLOTS + 3):
+        world.plots[world.new_id("L")] = Plot(
+            id=f"L{len(world.plots):04d}", location="Town", owner=owner.id,
+            business=biz.id, developed=True,
+        )
+    seats = E.employee_slots(world, biz)
+    if seats != 3:
+        FAILURES.append(f"5 developed plots should seat 3, got {seats}")
+    prod = 0
+    for _ in range(5):
+        ok, _ = A.hire_npc_employee(world, log, owner, biz.id, "Blacksmith")
+        if ok:
+            prod += 1
+    if prod != 3:
+        FAILURES.append(f"land should cap production staff at 3, hired {prod}")
 
     # The government business of the same type still caps.
     gov = Business(
@@ -179,7 +211,7 @@ def test_researcher_pool_is_uncapped_at_stores():
         owner="Government", location="Town", cash=1e9,
     )
     world.businesses[gov.id] = gov
-    if A.employee_cap(gov) != D.GOVERNMENT_MAX_EMPLOYEES:
+    if A.employee_cap(world, gov) != D.GOVERNMENT_MAX_EMPLOYEES:
         FAILURES.append(f"government cap should be {D.GOVERNMENT_MAX_EMPLOYEES}")
     print(f"  researchers hired at a 2-employee store: {hired} (uncapped)")
     print(f"  production staff hired at the same store: {prod} (capped)")

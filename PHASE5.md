@@ -242,6 +242,354 @@ than replacing it, so the sim still runs offline on a school laptop.
 
 ---
 
+## Step 6 — a world you can hold open (2026-08-19)
+
+`Engine.run` was a closed loop from hour zero to the end of the run. A world
+could only be watched after it was over, so advice given to a finished run
+changed nothing — there was no future left for it to change, and no amount of UI
+work on top could have fixed it.
+
+`Engine.step_until(end, wall_budget_s=)` is the seam; `convoy/live.py` is what
+sits on it. `LiveSession.open(run, branch_to=...)` resumes a checkpoint, and
+`advance()` pushes the world forward a slice at a time and returns **only the
+events from that slice** — a viewer polling wants the delta, not the history
+redrawn every frame.
+
+**Branching is the default, and it is also the persistence model.** A session
+copies the baseline and everything after belongs to whoever is driving. The
+shared hour-53 valley stays intact for the next person, and — the real reason —
+*if everyone edits one world, "what did MY advice change?" has no answer.* A
+signed-in user's world is their branch directory.
+
+### Two bugs the tests caught, both silent
+
+**The branch spliced two timelines.** A checkpoint is written hourly but the
+parent keeps running after it, so its log always overshoots the state a branch
+starts from. Copying it wholesale put **240 events from a future the branch will
+not have** into the history it starts with. Nothing raises; the map just draws
+both. `_copy_history` truncates at the fork.
+
+**The world raced.** `speed=1e9` left the sim clock unthrottled — fine for a
+batch run, where model latency was the only brake. With no calls to wait on, a
+0.4-second slice advanced the world **300 simulated hours** and starved everyone
+in it. `DEFAULT_SPEED = 60` is a CEILING: when agents are thinking the models are
+slower and the world runs at whatever they manage.
+
+### Talking to an agent that is still working (2026-08-19)
+
+`LiveSession.status()` gives a viewer, per agent: what it is doing in words
+("working as Miner", "travelling to Town"), road progress 0–1, and **when it
+next gets a turn** — in simulated seconds and in real seconds, converted at the
+rate the session has actually achieved rather than at `DEFAULT_SPEED`, which is
+a ceiling the models are usually slower than. A countdown that promises a
+decision in 20 seconds and delivers it in three minutes teaches a viewer to
+ignore it.
+
+**The countdown targets the next DECISION, not the end of the activity.** A work
+shift's `ends_at` sits in the past — measured at −337 simulated minutes on the
+saved run — because shifts run until something ends them. A bar built on it
+reads as permanently overdue. What a person needs is when the agent next
+*listens*, because that is when anything they say takes effect.
+
+`LiveSession.ask()` answers from the record **and** the present. The
+finished-run interrogator only knew the log, so asked what it was going to do
+next it could only say nothing had happened yet; half of talking to someone
+still moving is that they know where they are standing. The present is rendered
+as prose, not handed over as a dict — a model given `{"ends_at": 185340.0}` will
+narrate the epoch timestamp back at whoever asked. Asking does not wake the
+agent or touch the world; `test_asking_a_live_agent_does_not_move_the_world`
+pins that.
+
+**You do not have to wait for the shift to end.** Unheard advice already forces a
+wake — the engine does this because six recommendations once expired unseen
+while their targets stood at a bench, which is §2 one layer down: not the
+observation withholding a fact, but the schedule withholding the observation.
+
+Proven live on the h53 branch, A0021 mid-shift as a Miner:
+
+> **You:** what are you in the middle of right now?
+> **A0021:** I'm part-way through my Miner shift at the Government Mining
+> Operation, at Copper Gulch. I've got 1009 denari, I'm hungry, and I own my own
+> Mining Operation, which has 460 cash; my wage is 20.56 per hour (h53.0).
+
+> **You:** and what are you planning to do after that?
+> **A0021:** I hadn't recorded a definite plan for after this shift. My last
+> recorded plan was to eat first, then haul ore to the refinery and sell it
+> (h17.75).
+
+Advised to stop hauling and pay a courier, it was pulled off the shift, reasoned
+*"Evaluating courier options — I'm considering whether to hire a courier or use a
+hauling option for stone"*, ended the shift, and advertised in world chat:
+*"My mine B0031 at Copper Gulch is full/stalled with Copper Ore. Refinery owner
+please order 100+ Copper Ore at 5.04 and post a courier; stock ready."*
+
+It took the SPIRIT of the advice and found its own route to it, rather than
+calling the tool it was told to call. That is the behaviour worth showing a
+classroom, and it is only legible because the advice and the actions are
+recorded side by side.
+
+### The production countdown (2026-08-19)
+
+Asked for a time-based "how long until output", and it turned out to need no
+mechanics change at all: **`biz.production_buffer` already exists.** Production
+accrues fractionally at `Engine.production_rate` and pops a whole unit at 1.0, so
+
+    time to next unit = (1 - production_buffer) / rate
+
+was always derivable and had simply never been shown. Skill already feeds it too
+— `worker_output_rate` takes `skill_hours`, so a practised miner genuinely has a
+higher rate and a shorter countdown. That has been true since Phase 1 and was
+invisible.
+
+**`production_rate` was extracted out of `_produce` rather than reimplemented.**
+A viewer that recomputes the rate works until one of the two copies changes, and
+then the bar reaches zero at a moment nothing happens, with nothing raising. One
+function, two callers. It takes `credit_skill_hours`, defaulted to 0, because a
+viewer polling four times a second must not be able to train the whole valley to
+mastery — `test_asking_for_the_rate_does_not_train_the_crew`.
+
+Real cadences off the h53 branch, which are watchable at 7x:
+
+| business | making | u/hr | next unit | status |
+|---|---|---|---|---|
+| luna-14's Mine | Copper Ore | 78.8 | 0.2 sim-min | **yard is full** |
+| Government Refinery | Charcoal | 37.4 | 1.2 sim-min | running |
+| luna-07's Tavern | Meal | 11.1 | 5.2 sim-min | **out of Purified Water** |
+| luna-01's Weaponsmith | Bronze Dagger | 1.9 | 30.4 sim-min | **out of Lumber** |
+
+A stalled yard reports WHY rather than showing a bar that never moves. "Blocked"
+and "slow" look identical on a progress bar and need completely different things
+done about them.
+
+**Output is POOLED, and saying so beats faking it.** A business fills one buffer;
+individual workers do not each finish their own unit and carry it in. So "when
+will this miner deliver" has no answer, and inventing a per-worker timer the
+engine would not honour would be a lie a demo tells for a whole session.
+`worker_shares` gives what does exist and is what an owner actually wants: each
+worker's units/hour and share of output beside their wage, which prices the crew.
+
+**A bug the first render caught.** Two Government Refinery workers were credited
+with 90% of output EACH — 180% of a number the engine holds flat. A state
+business produces `base_rate` by exemption however many people stand in it, so
+per-worker attribution there is a fiction and the only honest split is an equal
+one. `test_a_state_business_splits_evenly_rather_than_double_counting`.
+
+`tests/test_live.py` is now 20 tests.
+
+### The owner's forecast (2026-08-19)
+
+`LiveSession.forecast(minutes)` projects each business forward: units expected,
+what they are worth, wage cost, cash at the end, per-worker contribution, and the
+constraint that will bite first.
+
+**Rate x time is not a forecast.** A mine running at 78.8 units an hour into a
+yard with room for nine will make nine and stop. The horizon is clipped by
+`Engine.production_headroom`, and the binding constraint is named.
+
+**The payroll asymmetry is the point.** An NPC bills only for hours the business
+can produce; an agent employee bills for every hour on shift, stalled or not
+(PHASE4 §5). So a blocked business keeps paying its people and stops paying its
+machines, and an owner could not see that anywhere. Every payroll failure in the
+84-hour run was NPC-staffed. A wage of 0 is a third case — the owner working
+their own business, the only arrangement that never failed — and a flat
+"paid even if stalled" flag called all three the same thing.
+
+**Producing is not earning.** Units land in the yard, not the till; `cash_at_end`
+falls by payroll alone. Showing projected revenue as income would make a stalled,
+cash-bleeding business look profitable.
+
+**Two bugs, both mine, both the same mistake.** The first version worked the
+constraints out inside the viewer and got the exemptions backwards — it read
+"government" as "unconstrained" and promised 36 units an hour out of a mine the
+engine had already stalled, then warned all three state sites their crews were
+about to walk over a cash balance `_pay_wages` never touches. Fixed by extracting
+`production_headroom` alongside `production_rate` and having the viewer read
+both. **Anything a dashboard asserts about the world has to come from the code
+that runs it.**
+
+### What the forecast found immediately
+
+Of 17 businesses set to produce at h53, **one will make anything in the next
+hour**:
+
+| | |
+|---|---|
+| producing | **1** |
+| yard full, nothing can be made | 7 |
+| out of feedstock | 6 |
+| idle | 2 |
+
+The valley is haulage-bound, not production-bound. Mines are full and refineries
+are starved *at the same time*, which is a distribution failure — and it lines up
+with `already delivered` being the largest refusal class in PHASE4 §12, and with
+A0021 using world chat to beg someone to come and collect:
+*"My mine B0031 at Copper Gulch is full/stalled with Copper Ore. Refinery owner
+please order 100+ Copper Ore at 5.04 and post a courier; stock ready."*
+
+That is a design question, not a bug, and the dashboard is what made it visible
+in one screen.
+
+`tests/test_live.py` is now 27 tests.
+
+### On "make it real time"
+
+Measured, and two of three proposed changes turned out to be unnecessary:
+
+| | |
+|---|---|
+| decisions per simulated hour | 29.2 |
+| API calls per decision | 2.8 |
+| **calls per simulated hour** | **82** |
+| at 10 rpm, serial | **8.2 wall minutes per sim hour → 7.3x** |
+| whole valley end to end | 5 sim min = **41 wall seconds** |
+| mine (spur) to town | 6.5 sim min = **53 wall seconds** |
+
+- **Scaling production 5x: don't.** `--time-scale` exists and its own docstring
+  says why — wages are per simulated hour, so 5x output makes labour 5x cheaper
+  and the economy stops describing anything.
+- **Paying every 10 minutes instead of hourly: already done.** `_pay_wages(hours)`
+  runs every tick against `dt / 3600`. Payroll has always been continuous.
+- **A tighter map: not needed.** A cart already crosses the whole valley in 41
+  wall seconds.
+
+**The sim clock was never the bottleneck — it has been unthrottled all along.**
+The limiter is request throughput, so the levers are the account's rpm and
+concurrency (PHASE4 §12, still unbuilt: calls are serial).
+
+`tests/test_live.py` — 10 tests against a scripted transport. The two that matter
+are `test_branch_does_not_inherit_the_parents_future` and
+`test_advice_reaches_a_LIVE_agent`.
+
+**Blocked on credit.** Verified live: resumed h53, branched, advice delivered
+(seen 3x from h53.02), checkpoint saved, reopened where it left off. Agents took
+zero actions — every call returned `Prompt tokens limit exceeded: 14002 > 4801`.
+The ceiling scales with the remaining balance and fell from 7,044 to 4,801 during
+one afternoon's testing.
+
+---
+
+## Step 7 — land, and the seller's side of haulage (2026-08-19)
+
+### Land
+
+Plots became an owned, tradeable asset and **headcount became a property of
+land**. A business stands on `STRUCTURE_PLOTS` (2), worked by the owner unpaid,
+and seats one employee per developed plot beyond that. Founding gives 4, so two
+hires; a third means buying ground and building on it (75 + 1h, or 2x to skip
+the wait, both +50% per plot already held).
+
+`employee_cap` returned None for every player business until now, so hiring was
+limited by cash alone. `BusinessType.max_employees` had existed since Phase 1,
+was set to 2 on every store, and was read by nothing — there is still a constant
+called `MAX_EMPLOYEES_PRODUCTION_UNUSED`.
+
+Junctions had land added: they returned `10**6` free plots, and **15 of the 24
+businesses in the 84-hour run stood on that exemption**. Town 60, Refinery Row
+48, waystations 28, wilderness 20. At 20 agents with a business and a home each
+(160 plots) land does NOT bind — spurs 18% used, junctions 23%. It binds at
+**Town specifically** (10 businesses after the state seats itself) and on
+expansion. Town's 60 is the knob, not the total.
+
+**Storage is the startup cost.** A flat 240 said a farm and a refinery are the
+same building. Farm 150, Mining 175, Refinery 450; tiers add half the base again
+so the ratio survives upgrading. This SHRINKS a farm from 240 — at 72 Wheat an
+hour, a full yard in 2h05m rather than 3h20m. Deliberate: the pressure to move
+goods is why carts and couriers exist.
+
+Stores keep the per-plot rule (100/plot) — their land IS their shelf space.
+
+### Two corrections to what this document said
+
+**Inputs already required hauling.** Auto-sourcing was removed for player
+businesses on 2026-08-15; only government sites still auto-source, as the market
+floor. The comment in `_produce` describing auto-shipped raw materials is stale
+and was believed for most of a session.
+
+**The courier market is not broken.** In the 2026-08-18 run: 30 claimed, 30
+collected, **30 delivered**, one refusal on delivery and zero on capacity. The
+124 `already delivered` failures in PHASE4 §12 are from the older run.
+
+### The actual jam, and the primitive that fixes it
+
+**Only a BUYER could create haulage.** `order_from_business` is a pull, paid
+upfront. So a mine with a full yard had no way to push — it could only wait for
+someone solvent to want its ore. The stalled refineries at h53 held 40, 52 and
+0.2 denari. Mines full of exactly what they needed; nobody able to pay to move
+it.
+
+`post_delivery_job` is the seller's side: pay a courier to move YOUR stock to a
+government business or one you own. **The goods leave the yard at once**, so a
+full site produces again the moment the load is posted. Announced in world chat.
+Delivery to a state site is a sale on arrival at the standing price, which makes
+"post it and get producing again" a move an owner can always make.
+
+Third-party delivery is deliberately refused and points at
+`order_from_business` — a delivery to someone else is a sale, and a sale needs
+the other side to agree a price and hold the cash on the day.
+
+### Carriage is priced on cargo value, not time — and the load is SEALED
+
+The valley crosses in five simulated minutes, so a time-based fee prices every
+job at four denari and prices a cart of daggers like a cart of stone.
+
+The **owner** is recommended roughly a tenth of what the load is worth, half
+again through the worst country — `value x (10% + 8% x danger)` plus handling
+and a small time term. It is a recommendation: they may offer anything above the
+floor, and a load nobody will take at the asking price is information too.
+
+| route | danger | cargo | fee | % |
+|---|---|---|---|---|
+| Millrace Farms -> Refinery Row | 0.00 | 200 | **22.38** | 11.2% |
+| Millrace Farms -> Town | 0.65 | 200 | **34.02** | 17.0% |
+| Copper Gulch -> Refinery Row | 0.00 | 600 | **62.38** | 10.4% |
+| Copper Gulch -> Town | 0.65 | 600 | **94.82** | 15.8% |
+
+Same cargo, half again as much to cross the Broken Country — the distance
+advantage, visible in the price. The per-segment danger model has existed since
+Phase 1 and had never priced anything.
+
+**The COURIER sees none of that.** A carriage advert names a price, a route and
+a name — not an inventory:
+
+    CARRIAGE WANTED: a load from Copper Gulch to Refinery Row, pays 62.00.
+    A Donkey Cart comes with it. accept_courier_job("C0059") to take it.
+
+    {"id": "C0059", "from": "Copper Gulch", "to": "Refinery Row", "pays": 62.0,
+     "travel_minutes": 1.5, "worst_road": "no open road -- same junction",
+     "hired_by": "Marcus", "vehicle_provided": "Donkey Cart",
+     "you_can_carry_it": true}
+
+A courier is hired to move a cart, not to appraise it. A board that published
+what every load was worth would be one where the valuable jobs go instantly and
+everything else rots. What is in the cart becomes apparent at pickup.
+
+`you_can_carry_it` is DERIVED, never disclosed — a consignment moves whole, so a
+courier on foot would otherwise burn a decision finding out it cannot lift the
+load. It answers for that agent, counting any lent vehicle, and leaks no
+quantity. Route danger stays public because it already is: it is in the static
+briefing, and withholding it would only make the price unreadable.
+
+### Lent vehicles
+
+A consignment moves WHOLE, so a courier on foot (capacity 5) cannot take a
+100-unit load at all. An owner may lend a vehicle with the job; it is bound to
+the consignment, never transferred, and returns on delivery, cancellation or
+abandonment. It cannot be stolen by construction, so lending needs no trust
+system.
+
+Jobs a courier cannot carry sort last however well they pay: an unliftable job
+is not an opportunity, it is a wasted decision.
+
+### Still true, and worth knowing
+
+Production stops when the owner hauls — `production_rate` requires
+`activity.kind == "work"` at that business — and employees can haul while the
+owner keeps producing. Both were already the case; no change needed.
+
+`tests/test_b2b_haulage.py` gained 9 tests.
+
+---
+
 ## Step 4 — the 3D world
 
 Stack: **Meshy → GLB → React Three Fiber** (see `art/PROMPTS.md`).

@@ -22,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from convoy import actions as A
+from convoy import economy as E
 from convoy import data as D
 from convoy.events import EventLog
 from convoy.world_setup import new_world
@@ -261,6 +262,195 @@ def test_a_claimed_job_stays_visible_to_its_courier():
     A.collect_consignment(world, log, courier, con.id)
     seen = O.render(O.observe(world, log, courier, "reevaluation"))
     ok("after loading it says where to deliver", con.destination in seen)
+
+
+# ---------------------------------------------------------------------------
+# SELLER-POSTED HAULAGE (2026-08-19)
+# ---------------------------------------------------------------------------
+
+def _full_mine():
+    """An owner whose mine is stalled on a full yard, and a courier on foot."""
+    log = EventLog(None, echo_min=99)
+    world = new_world(log, [("owner", "rb"), ("courier", "rb")])
+    owner, courier = list(world.agents.values())
+    owner.denari = 3000.0
+    owner.location = "Copper Gulch"
+    A.start_business(world, log, owner, "Mining Operation")
+    mine = world.businesses[owner.owned_businesses[0]]
+    mine.cash = 500.0
+    mine.active_production = "Copper Ore"
+    mine.inventory["Copper Ore"] = E.business_storage_capacity(world, mine)
+    gov = next(b for b in world.businesses.values()
+               if b.type == "Refinery" and b.is_government)
+    return world, log, owner, courier, mine, gov
+
+
+def test_a_seller_can_push_stock_without_a_buyer():
+    """THE MISSING PRIMITIVE.
+
+    `order_from_business` is a PULL, paid upfront by the buyer -- so a mine with
+    a full yard could only wait for someone solvent to want its ore. At hour 53
+    of the 2026-08-18 run that was the whole jam: seven yards full, six
+    businesses starved of exactly what those yards held, and the buyers holding
+    40, 52 and 0.2 denari between them.
+    """
+    world, log, owner, _c, mine, gov = _full_mine()
+    before = mine.inventory["Copper Ore"]
+    good, msg = A.post_delivery_job(world, log, owner, mine.id, "Copper Ore",
+                                    100, gov.id, 40.0)
+    ok("seller can post haulage", good, msg)
+    ok("goods leave the yard AT ONCE, so production restarts",
+       mine.inventory["Copper Ore"] == before - 100,
+       f"{before} -> {mine.inventory['Copper Ore']}")
+    ok("the fee is escrowed", mine.cash == 500.0 - 40.0, f"{mine.cash}")
+
+
+def test_the_job_is_announced_in_world_chat():
+    """A job nobody hears about is a job nobody takes."""
+    world, log, owner, _c, mine, gov = _full_mine()
+    before = len(world.chat)
+    A.post_delivery_job(world, log, owner, mine.id, "Copper Ore", 100, gov.id, 40.0)
+    ok("chat carries it", len(world.chat) == before + 1)
+    text = world.chat[-1].text
+    ok("names the pay", "40.00" in text, text)
+    ok("carries the id to act on", "accept_courier_job" in text, text)
+
+
+def test_carriage_is_priced_on_cargo_value_and_danger():
+    """Time alone prices every job in this valley at four denari.
+
+    The whole road crosses in five simulated minutes, so a time-based fee makes
+    haulage never worth a decision AND prices a cart of daggers like a cart of
+    stone. Distance still has to matter, though -- that is what gives a mine
+    near its refinery a real advantage.
+    """
+    value = D.base_price("Copper Ore") * 100
+    near = E.suggested_courier_fee("Millrace Farms", "Refinery Row", value)
+    far = E.suggested_courier_fee("Millrace Farms", "Town", value)
+    # About a tenth of the load's value on safe road, half again through the
+    # worst country. The premium is the whole reason a mine near its refinery is
+    # a better mine.
+    ok("the dangerous haul pays meaningfully more", far > near * 1.35,
+       f"{near:.2f} vs {far:.2f}")
+    cheap = E.suggested_courier_fee("Kiln Row", "Town", 100.0)
+    dear = E.suggested_courier_fee("Kiln Row", "Town", 2000.0)
+    ok("valuable cargo pays more on the same road", dear > cheap * 4,
+       f"{cheap:.2f} vs {dear:.2f}")
+
+
+def test_a_lowball_fee_is_refused_with_the_number():
+    world, log, owner, _c, mine, gov = _full_mine()
+    good, msg = A.post_delivery_job(world, log, owner, mine.id, "Copper Ore",
+                                    100, gov.id, 2.0)
+    ok("refused", not good)
+    ok("and says what would work", "Suggested" in msg, msg)
+
+
+def test_a_lent_vehicle_makes_a_load_haulable_and_comes_back():
+    """A consignment moves WHOLE, so on foot (capacity 5) a 100-unit job is
+    unclaimable. Lending is what lets an owner hire a courier without a cart."""
+    from convoy.state import VehicleInstance
+
+    world, log, owner, courier, mine, gov = _full_mine()
+    v = VehicleInstance(id=world.new_id("V"), type="Donkey Cart",
+                        owner=owner.id, location="Copper Gulch")
+    world.vehicles[v.id] = v
+    owner.owned_vehicles.append(v.id)
+    A.post_delivery_job(world, log, owner, mine.id, "Copper Ore", 100, gov.id,
+                        40.0, lend_vehicle=v.id)
+    job = A.open_courier_jobs(world, courier)[0]
+    ok("the listing says a vehicle comes with it",
+       job["vehicle_provided"] == "Donkey Cart", str(job))
+    ok("and that this courier can therefore lift it", job["you_can_carry_it"])
+    ok("without disclosing how much that is", "qty" not in job, str(job))
+
+    A.accept_courier_job(world, log, courier, job["id"])
+    courier.location = "Copper Gulch"
+    good, msg = A.collect_consignment(world, log, courier, job["id"])
+    ok("loaded using the lent cart", good, msg)
+    ok("courier is riding it", courier.mounted_vehicle == v.id)
+
+    courier.location = gov.location
+    A.deliver_consignment(world, log, courier, job["id"])
+    ok("cart handed back", courier.mounted_vehicle is None)
+    ok("and cannot be kept", world.vehicles[v.id].owner == owner.id)
+
+
+def test_delivering_to_the_state_pays_the_seller():
+    # 4 units, not 100: this courier is on foot with a capacity of 5 and no cart
+    # was lent, and a consignment moves WHOLE. The load simply never loads.
+    world, log, owner, courier, mine, gov = _full_mine()
+    A.post_delivery_job(world, log, owner, mine.id, "Copper Ore", 4, gov.id, 40.0)
+    job = A.open_courier_jobs(world, courier)[0]
+    A.accept_courier_job(world, log, courier, job["id"])
+    courier.location = "Copper Gulch"
+    A.collect_consignment(world, log, courier, job["id"])
+    courier.location = gov.location
+    before_mine, before_courier = mine.cash, courier.denari
+    A.deliver_consignment(world, log, courier, job["id"])
+    ok("the state paid the seller", mine.cash > before_mine,
+       f"{before_mine} -> {mine.cash}")
+    ok("the courier was paid the fee",
+       abs(courier.denari - before_courier - 40.0) < 1e-6,
+       f"{courier.denari - before_courier}")
+
+
+def test_you_cannot_post_a_delivery_to_someone_elses_business():
+    """That is a SALE, and a sale needs the other side to agree a price."""
+    world, log, owner, courier, mine, _gov = _full_mine()
+    courier.denari = 3000.0
+    courier.location = "Refinery Row"
+    A.start_business(world, log, courier, "Refinery", seed_cash=50.0)
+    theirs = world.businesses[courier.owned_businesses[0]]
+    good, msg = A.post_delivery_job(world, log, owner, mine.id, "Copper Ore",
+                                    100, theirs.id, 40.0)
+    ok("refused", not good)
+    ok("and points at the action that does work",
+       "order_from_business" in msg, msg)
+
+
+def test_cancelling_returns_the_goods_and_the_fee():
+    world, log, owner, _c, mine, gov = _full_mine()
+    before_stock, before_cash = mine.inventory["Copper Ore"], mine.cash
+    A.post_delivery_job(world, log, owner, mine.id, "Copper Ore", 100, gov.id, 40.0)
+    cid = next(iter(world.consignments))
+    good, msg = A.cancel_consignment(world, log, owner, cid)
+    ok("cancelled", good, msg)
+    ok("stock back", mine.inventory["Copper Ore"] == before_stock, str(mine.inventory))
+    ok("fee refunded", abs(mine.cash - before_cash) < 1e-6, f"{mine.cash}")
+
+
+def test_the_load_is_sealed():
+    """A courier is quoted a price and a route, not an inventory.
+
+    Publishing what every load is worth makes a board where the valuable jobs
+    go instantly and everything else rots. What is in the cart becomes apparent
+    at pickup, which is where it should.
+    """
+    world, log, owner, courier, mine, gov = _full_mine()
+    A.post_delivery_job(world, log, owner, mine.id, "Copper Ore", 4, gov.id, 40.0)
+    job = A.open_courier_jobs(world, courier)[0]
+    for hidden in ("item", "qty", "cargo_worth"):
+        ok(f"{hidden} is not published", hidden not in job, str(job))
+    for shown in ("pays", "from", "to", "hired_by"):
+        ok(f"{shown} is", shown in job, str(job))
+    ok("and it names who is asking", job["hired_by"] == owner.name, str(job))
+
+    text = world.chat[-1].text
+    ok("the advert names no cargo", "Copper Ore" not in text, text)
+    ok("nor a quantity", " 4x" not in text and "4x " not in text, text)
+    ok("but does name the price", "40.00" in text, text)
+
+
+def test_a_job_you_cannot_lift_sorts_last():
+    """A job this courier cannot carry is not an opportunity, it is a wasted turn."""
+    world, log, owner, courier, mine, gov = _full_mine()
+    A.post_delivery_job(world, log, owner, mine.id, "Copper Ore", 100, gov.id, 90.0)
+    A.post_delivery_job(world, log, owner, mine.id, "Copper Ore", 4, gov.id, 20.0)
+    jobs = A.open_courier_jobs(world, courier)
+    ok("the liftable one is offered first", jobs[0]["you_can_carry_it"], str(jobs))
+    ok("even though it pays less", jobs[0]["pays"] < jobs[1]["pays"])
+    ok("and the big one is still listed", not jobs[1]["you_can_carry_it"])
 
 
 def main() -> int:

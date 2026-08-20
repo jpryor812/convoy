@@ -294,9 +294,17 @@ def test_payload_stays_within_budget():
     # refuses purchases, so an agent that does not know it will be refused. The
     # 2026-08-16 run is the argument -- four taverns spent 156 denari on Dirty
     # Water that the rule now forbids outright.
+    #
+    # 5,000 -> 5,100 on 2026-08-19, for the LAND SYSTEM. The briefing must carry
+    # it for the same reason: land is now the only thing that lets a business
+    # hire, and an owner refused a hire who has never been told that plots gate
+    # headcount reads the refusal as the world being arbitrary. The whole of
+    # PHASE4 §2 is that failure. The land block replaced the old spur-plot
+    # sentence rather than being added beside it, and `expand_site` was deleted
+    # in the same change, so the net growth is smaller than the feature.
     ok(
-        "briefing under 5k tokens",
-        len(brief) // 4 < 5000,
+        "briefing under 5.1k tokens",
+        len(brief) // 4 < 5100,
         f"~{len(brief) // 4} tokens",
     )
     ok(

@@ -93,9 +93,29 @@ DESCRIPTIONS: dict[str, str] = {
         "plots; everything else sits on the main road. You pay the startup cost "
         "and take no wage -- owners earn the profit instead."
     ),
-    "expand_site": (
-        f"Expand your mine or farm by {M.SITE_EXPANSION_PLOTS} plots, raising its "
-        "storage. Needs free plots on the spur."
+    # Terse on purpose. The cached prefix is the single largest cost in the run
+    # and it has a hard ceiling -- the 84-hour run died at hour 47 to a prompt
+    # limit. The LAND RULES are explained once in the static briefing; these say
+    # only what the call does.
+    "buy_land": (
+        f"Buy unsold land here, {D.LAND_BASE_PRICE:.0f} each. Raw until develop_plot."
+    ),
+    "develop_plot": (
+        "Build on one raw plot: +1 employee place. Cheap and slow, or "
+        f"{D.DEVELOPMENT_INSTANT_MULTIPLIER:g}x to finish now."
+    ),
+    "post_delivery_job": (
+        "Pay a courier to move YOUR stock to a government business or one you "
+        "own. Goods leave the yard at once, so a full site produces again. "
+        "Announced in chat as a price and a route -- couriers are not told what "
+        "is in the load. A courier usually wants about a tenth of what it is "
+        "worth, more through dangerous country; you may offer what you like "
+        "above the floor. Lend a vehicle so a courier without one can take it."
+    ),
+    "list_land": "Offer a plot you own for sale at your price.",
+    "buy_listed_land": "Buy a plot another agent listed, at their price.",
+    "upgrade_site_storage": (
+        "Raise a production site's storehouse: more stock, no more land."
     ),
     "set_production": "Choose which item your business produces.",
     "set_wage": "Set the hourly wage your business offers for a role. Higher wages attract workers.",
@@ -223,7 +243,12 @@ DESCRIPTIONS: dict[str, str] = {
 # Static value sets. Runtime IDs are excluded on purpose -- see the module note.
 def _enum_for(action: str, param: str) -> list[str] | None:
     if param in ("item", "output"):
-        return list(D.ALL_ITEMS)
+        # "On Foot" is in ALL_ITEMS as the null vehicle, and is not a thing
+        # anyone can hold, stock, haul or sell. Offering it as a valid `item`
+        # invites a call that can only ever be refused, and costs the enum's
+        # tokens on every tool that takes one, on every call, forever. The other
+        # five vehicles stay: a Vehicle Dealer really does stock them.
+        return [i for i in D.ALL_ITEMS if i != "On Foot"]
     if param == "destination":
         return list(D.ALL_PLACES)
     if param == "vehicle_type":

@@ -28,6 +28,7 @@ from .state import (
     Guild,
     JobPosting,
     Market,
+    Plot,
     Property,
     Proposal,
     Reasoning,
@@ -45,7 +46,7 @@ _CLASSES = {
     c.__name__: c
     for c in (
         Activity, Agent, Bounty, Business, ChatMessage, Consignment, Convoy,
-        ConvoyMember, Employment, Government, Guild, JobPosting, Market, Property,
+        ConvoyMember, Employment, Government, Guild, JobPosting, Market, Plot, Property,
         Proposal, Reasoning, Recommendation, ResearchState, Snapshot, StolenStack,
         TradeOffer, Transaction, VehicleInstance, World,
     )
