@@ -113,9 +113,11 @@ def collect_assets() -> dict[str, str]:
 
     for btype in SP.STRUCTURE_FOR_BUSINESS:
         art[f"biz:{_slug(btype)}"] = data_uri(SP.structure_for(btype))
-    for faction in ("blue", "red", "green", "grey"):
-        for pose in SP.POSES:
-            art[f"unit:{faction}:{pose}"] = data_uri(SP.unit(faction, pose))
+    for person in list(SP.PERSON_FOR_MODEL.values()) + [SP.HAULER]:
+        for facing in ("S", "N", "W", "E"):
+            path = SP.PEOPLE / f"{person}-{facing}-0.png"
+            if path.exists():
+                art[f"person:{person}:{facing}"] = data_uri(path)
     return art
 
 
@@ -206,8 +208,10 @@ def starting_world(places: dict[str, L.Place]) -> dict:
         people.append({
             "x": slot.x + rng.uniform(-46, 46),
             "y": slot.y + rng.uniform(34, 78),
-            "faction": rng.choice(("blue", "red", "green", "grey")),
-            "pose": rng.choice(("villager", "villager", "hooded", "cloaked")),
+            "person": rng.choice(list(SP.PERSON_FOR_MODEL.values())),
+            # Facing the viewer mostly, so faces are visible; a few turned so
+            # a standing crowd does not look like a chorus line.
+            "facing": rng.choice(("S", "S", "S", "S", "W", "E", "N")),
             "owner": agent.id,
         })
     return {"buildings": buildings, "people": people, "flags": flags}
@@ -603,7 +607,7 @@ function draw(){
   for (const b of DATA.buildings)
     standing.push({y: wy(b), f: () => building(b)});
   for (const p of DATA.people)
-    standing.push({y: wy(p), f: () => sprite(`unit:${p.faction}:${p.pose}`,
+    standing.push({y: wy(p), f: () => sprite(`person:${p.person}:${p.facing}`,
                                              wx(p), wy(p), 1)});
   standing.sort((a, b) => a.y - b.y).forEach(s => s.f());
 

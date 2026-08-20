@@ -106,6 +106,38 @@ POSE_FOR_ROLE = {
 
 
 RENDERED_CHARACTERS = GENERATED / "characters"
+PEOPLE = GENERATED / "people"
+
+# Model -> the person who stands for it, and `layout`/`render` pick the facing.
+#
+# WHY PEOPLE AND NOT THE PACK'S UNITS. Kenney's figures are drawn top-down, so
+# there is no face on them to see -- you are looking at the crown of a head. The
+# five below are front-on at near eye level with eyes, arms and legs, and a
+# three-frame walk in four directions, which is also the animation the map lost
+# when the Meshy characters were dropped. See `art/people.py`.
+#
+# One look per model, all five tellable apart by silhouette AND by clothes at
+# 32px: a green tunic, an oxblood dress, a tan smock, spiked hair over leather,
+# and blue hair. `check()` asserts no two models share a look.
+PERSON_FOR_MODEL = {
+    "openai/gpt-5.6-terra": "luke",
+    "deepseek/deepseek-v4-flash-0731": "salley",
+    "openai/gpt-5.6-luna": "child-1",
+    "x-ai/grok-4.3": "zack",
+    "inclusionai/ling-3.0-flash": "noah",
+}
+
+# Not tied to a model. The hooded figure is what an agent looks like when it is
+# on the road carrying somebody else's cargo -- the one state worth seeing from
+# across the map, because it means goods are moving.
+HAULER = "cloaked-figure"
+
+
+def person_sprite(model: str, facing: str = "S", frame: int = 0,
+                  hauling: bool = False) -> Path:
+    """One agent, facing one way, on one frame of its walk."""
+    name = HAULER if hauling else PERSON_FOR_MODEL.get(model, "luke")
+    return PEOPLE / f"{name}-{facing}-{frame}.png"
 
 # Model -> rendered character variant. FIVE variants for five models, where the
 # Kenney binding had to fold five models into four faction colours and always
@@ -441,6 +473,23 @@ def check() -> list[str]:
     variants = {CHARACTER_FOR_MODEL.get(s.openrouter_id) for s in D.MODEL_ROSTER}
     if len(variants) < len(D.MODEL_ROSTER):
         problems.append("two models share a character variant")
+
+    # THE PEOPLE ON THE MAP, all four facings of each. Asserted here for the
+    # reason everything else in this function is: a missing sprite does not
+    # raise, it draws nothing, and an agent that is simply absent from the map
+    # is a bug you find by counting figures in a screenshot.
+    for slot in D.MODEL_ROSTER:
+        for facing in ("S", "N", "W", "E"):
+            exists(person_sprite(slot.openrouter_id, facing),
+                   f"{facing}-facing person for {slot.openrouter_id!r}")
+    for facing in ("S", "N", "W", "E"):
+        exists(person_sprite("any", facing, hauling=True),
+               f"{facing}-facing hauler")
+    people = {PERSON_FOR_MODEL.get(s.openrouter_id) for s in D.MODEL_ROSTER}
+    if len(people) < len(D.MODEL_ROSTER):
+        problems.append("two models share a person")
+    if HAULER in people:
+        problems.append("the hauler look is also a model's look")
 
     # Every action an agent can actually take needs a glyph. Imported here
     # rather than at module scope: `schemas` reaches `actions` -> `state`, and
