@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from convoy import actions as A
+from convoy import world_map as WM
 from convoy import data as D
 from convoy import economy as E
 from convoy.engine import Engine, EngineConfig
@@ -20,6 +21,11 @@ from convoy.events import EventLog
 from convoy.state import Activity, Agent, Business, Employment, Property, World
 
 FAILURES: list[str] = []
+
+# A spur, taken from the map. Homes and mines are spur-only, so these tests need
+# one -- and naming it (Kiln Row, for a long time) meant they broke every time
+# the map was recut.
+SPUR = WM.SPURS[0].name
 
 
 def check(label, actual, expected) -> None:
@@ -29,10 +35,10 @@ def check(label, actual, expected) -> None:
 
 def setup(denari=5000.0):
     w, log = World(), EventLog(None, echo_min=99)
-    a = Agent(id="A0001", name="Owner", model="rb", location="Kiln Row")
+    a = Agent(id="A0001", name="Owner", model="rb", location=SPUR)
     a.denari = denari
     w.agents[a.id] = a
-    prop = Property(id="P0001", owner=a.id, location="Kiln Row", plots=4)
+    prop = Property(id="P0001", owner=a.id, location=SPUR, plots=4)
     w.properties[prop.id] = prop
     a.owned_property = prop.id
     return w, log, a, prop

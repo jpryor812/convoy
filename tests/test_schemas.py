@@ -106,8 +106,15 @@ def test_static_domains_are_enums():
 
     travel = tools["travel_to"]["properties"]["destination"]
     ok("destination is constrained", "enum" in travel)
-    ok("spurs are reachable", "Kiln Row" in travel["enum"])
-    ok("road places are reachable", "The Climb" in travel["enum"])
+    # Taken from the map. Both of these were named -- Kiln Row and The Climb --
+    # and both stopped existing when the demo map was cut down, which failed the
+    # travel schema for a reason that had nothing to do with schemas.
+    from convoy import world_map as WM
+    ok("spurs are reachable", WM.SPURS[0].name in travel["enum"])
+    ok("road places are reachable", WM.LOCATIONS[0] in travel["enum"])
+    ok("every place is reachable",
+       set(travel["enum"]) >= set(WM.ALL_PLACES),
+       str(set(WM.ALL_PLACES) - set(travel["enum"])))
 
     found = tools["start_business"]["properties"]["type"]
     ok("business type is constrained", "enum" in found)

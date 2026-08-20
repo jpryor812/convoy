@@ -92,8 +92,6 @@ TERRAIN = ROOT / "art" / "generated" / "terrain"
 # is a river.
 GROUND_FOR_PLACE = {
     "The Hills": "rock",
-    "The Climb": "rock",
-    "The Crossing": "water",
 }
 
 
@@ -128,11 +126,8 @@ def _slug(name: str) -> str:
 # Business type -> the sprite that stands for it. Falls back per TYPE, so art can
 # land one building at a time; `convoy/sprites.py` owns the real binding and this
 # mirrors its filenames.
-# Eight owners, spread across the pack's four unit colours.
-FACTION_FOR_OWNER = {
-    f"A{n:04d}": ("blue", "red", "green", "grey")[n % 4]
-    for n in range(1, 9)
-}
+# The run this map is built for.
+AGENT_COUNT = 20
 
 BUILDING_FOR_TYPE = {
     "Farm": "farm",
@@ -153,58 +148,68 @@ SITE_TYPES = ["Farm", "Mining Operation", "Refinery", "Tavern / Inn"]
 # A PLAUSIBLE VALLEY
 # ---------------------------------------------------------------------------
 
-def occupancy(places: dict[str, L.Place]) -> dict:
-    """Fill the valley enough to judge how it looks when the economy is running.
+def starting_world(places: dict[str, L.Place]) -> dict:
+    """The world at hour zero, built by the simulation rather than invented.
 
-    Seeded, so the preview does not reshuffle between runs -- the same reason
-    `layout` seeds everything off place names. Roughly half of each place's slots
-    are taken, which is about where a good run gets to.
+    THIS USED TO MAKE THINGS UP. It filled every place to a share of its slots
+    with random businesses, which was the right thing while the question was
+    "does the art read at map size" -- a full valley shows more than an empty
+    one. It is the wrong thing now the question is "what does a run start from",
+    and it was actively misleading: a demo whose whole point is that AGENTS
+    develop the land opened on a map where the land was already developed.
+
+    So it calls `world_setup.new_world` and draws what comes back. Every building
+    on the map is a government branch, one per business type, because that is
+    exactly what exists before anybody has done anything. The state is a backstop
+    -- it proves each trade is possible and sets a price to undercut -- and every
+    other block is ground still for sale.
     """
+    from convoy.events import EventLog
+    from convoy.world_setup import new_world
+
+    roster = [(f"Agent{n}", "preview") for n in range(1, AGENT_COUNT + 1)]
+    world = new_world(EventLog(None, echo_min=99), roster)
+
+    # A slot per government branch, taken in the order `layout` lays them out --
+    # centre first, so the state holds the ground fronting each settlement.
+    next_slot: dict[str, int] = {}
+    buildings, flags = [], []
+    for biz in world.businesses.values():
+        place = places.get(biz.location)
+        if place is None:
+            continue
+        i = next_slot.get(biz.location, 0)
+        if i >= len(place.slots):
+            continue
+        next_slot[biz.location] = i + 1
+        slot = place.slots[i]
+        buildings.append({
+            "x": slot.x, "y": slot.y, "type": biz.type, "owner": "Government",
+            "sprite": _slug(biz.type), "scale": L.building_scale(biz.plots),
+            "plots": biz.plots, "place": biz.location,
+        })
+        near = sorted(place.parcels,
+                      key=lambda q: (q.x - slot.x) ** 2 + (q.y - slot.y) ** 2)
+        for n, parcel in enumerate(near[:biz.plots]):
+            flags.append({"x": parcel.x, "y": parcel.y,
+                          "owner": "Government", "home": n < 4})
+
+    # Everyone starts in Town, so they are drawn milling about the market rather
+    # than spread evenly over a valley nobody has walked into yet.
     rng = random.Random(20260820)
-    buildings, people, flags = [], [], []
-    owners = list(FACTION_FOR_OWNER)
-
-    for name, place in sorted(places.items()):
-        spur = place.kind == "spur"
-        take = max(1, int(len(place.slots) * (0.55 if spur else 0.6)))
-        for i, slot in enumerate(place.slots[:take]):
-            if spur:
-                btype = rng.choice(["Farm", "Mining Operation"])
-            elif slot.kind == "store":
-                btype = rng.choice(STORE_TYPES)
-            else:
-                btype = rng.choice(SITE_TYPES)
-            owner = rng.choice(owners)
-            # Expansion shows: most sites sit on their founding four plots, a
-            # few have bought and developed their way up.
-            plots = rng.choice([4, 4, 4, 5, 6, 8, 12])
-            buildings.append({
-                "x": slot.x, "y": slot.y, "type": btype, "owner": owner,
-                "sprite": _slug(btype),
-                "scale": L.building_scale(plots), "plots": plots,
-                "place": name,
-            })
-            # Ground around a holding, flagged to whoever owns it.
-            # A site's OWN four plots are the block it stands on; anything past
-            # four is ground it went out and bought, which is why the extra
-            # squares appear away from the building rather than under it.
-            near = sorted(place.parcels,
-                          key=lambda q: (q.x - slot.x) ** 2 + (q.y - slot.y) ** 2)
-            for n, parcel in enumerate(near[:plots]):
-                flags.append({"x": parcel.x, "y": parcel.y, "owner": owner,
-                              "home": n < 4})
-
-        for _ in range(1 if spur else 3):
-            slot = rng.choice(place.slots)
-            person = rng.choice(owners)
-            people.append({
-                "x": slot.x + rng.uniform(-30, 30),
-                "y": slot.y + rng.uniform(26, 52),
-                "faction": FACTION_FOR_OWNER[person],
-                "pose": rng.choice(["villager", "villager", "hooded",
-                                    "cloaked", "armed", "owner"]),
-                "owner": person,
-            })
+    people = []
+    for agent in world.agents.values():
+        place = places.get(agent.location)
+        if place is None or not place.slots:
+            continue
+        slot = rng.choice(place.slots)
+        people.append({
+            "x": slot.x + rng.uniform(-46, 46),
+            "y": slot.y + rng.uniform(34, 78),
+            "faction": rng.choice(("blue", "red", "green", "grey")),
+            "pose": rng.choice(("villager", "villager", "hooded", "cloaked")),
+            "owner": agent.id,
+        })
     return {"buildings": buildings, "people": people, "flags": flags}
 
 
@@ -235,7 +240,7 @@ def build_payload() -> dict:
             }
             for p in places.values()
         ],
-        **occupancy(places),
+        **starting_world(places),
     }
 
 

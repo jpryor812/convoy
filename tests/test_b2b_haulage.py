@@ -360,8 +360,9 @@ def test_carriage_is_priced_on_cargo_value_and_danger():
     ok("danger outweighs distance", short_bad > long_mild,
        f"1 bad segment {short_bad:.2f} vs 3 milder ones {long_mild:.2f}")
 
-    cheap = E.suggested_courier_fee("Kiln Row", "Town", 100.0)
-    dear = E.suggested_courier_fee("Kiln Row", "Town", 2000.0)
+    spur = M.SPURS[0].name
+    cheap = E.suggested_courier_fee(spur, "Town", 100.0)
+    dear = E.suggested_courier_fee(spur, "Town", 2000.0)
     ok("valuable cargo pays more on the same road", dear > cheap * 4,
        f"{cheap:.2f} vs {dear:.2f}")
 

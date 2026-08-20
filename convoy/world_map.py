@@ -1,15 +1,33 @@
-"""The world: one dangerous road, five places on it, ten spurs hanging off it.
+"""The world: one dangerous road, three places on it, four spurs off the middle.
 
-THE DEMO MAP (2026-08-20). This is the seven-place valley with both protected
-zones cut out. They were waystations where no blade may be drawn and no purse
-cut -- and combat, theft and insurance are all unbuilt, so the safety they sold
-was safety from nothing. Six spurs hung off them and went with them.
+THE DEMO MAP (2026-08-20), cut down from the seven-place valley twice.
 
-What is left is tighter in every direction: four road segments instead of six,
-so Refinery Row and Town are two thirds as far apart, and land supply cut to
-suit twenty agents rather than the couple of hundred businesses the full valley
-could seat. `git checkout full-valley-map` is the world this was cut from,
-complete and passing, with a rendered page at reference/full-valley-map.html.
+First the protected zones went. They were waystations selling freedom from
+combat, theft and insurance claims, none of which are built, so they were safe
+from nothing -- and six spurs went with them.
+
+Then everything but the middle went. What is left is the smallest world that
+still contains the whole economy:
+
+    Refinery Row  ──  The Hills  ──  Town
+    (smelting)        (ore, grain,     (the market)
+                       and everybody's
+                       house)
+
+SMALL ON PURPOSE, BECAUSE LAND IS SUPPOSED TO BIND. The full valley sold 864
+plots to twenty agents and location cost nothing to choose; this sells 160, of
+which the state already holds forty. Town has five free blocks for every shop
+anybody wants to open, and the four spurs hold twenty sites between mines, farms
+and the homes of twenty people. Somebody will have to buy a neighbour out, and
+that is the point.
+
+EVERY BUILDING TYPE EXISTS EXACTLY ONCE at hour zero, as a government branch.
+The state is a backstop, not a participant: it proves each trade is possible and
+sets a price to undercut. Everything else on the map is ground an agent bought.
+
+`git checkout full-valley-map` is the world this was cut from -- seven places,
+sixteen spurs, complete and passing, with a rendered page at
+reference/full-valley-map.html.
 
 Geography comes from the World tab (a single road from
 Refinery Row to Town, ~5 minutes end to end at Medium speed, spur roads that
@@ -18,13 +36,13 @@ elevation, per-segment danger, spur placement -- is the 2026-08-12 world design.
 
 THE SHAPE OF IT
 
-    Refinery Row ── The Hills ── The Crossing ── The Climb ── Town
+    Refinery Row ── The Hills ── Town
 
-Production sits at the north end (every refinery in the world) and the market at
-the south end (Town). Nothing hangs off either: all ten spurs, and so every mine
-and farm, sit on the three middle junctions. Ore travels north to be smelted and
-the goods travel south to be sold, in opposite directions across the same
-dangerous middle -- which is the whole game.
+Production sits at the north end and the market at the south, and NOTHING hangs
+off either: all four spurs are on The Hills, so every mine, farm and house in the
+world is in the middle. Ore travels north to be smelted, goods travel south to be
+sold, and the southern leg is a bridge -- one chokepoint that every load reaching
+a buyer has to cross. That is the whole game.
 
 WHY EACH SEGMENT IS DANGEROUS IN ITS OWN WAY
 
@@ -71,16 +89,6 @@ LOCATIONS_SPEC: list[Location] = [
         "offers an ambusher better cover to set up unseen.",
     ),
     Location(
-        "The Crossing", "wilderness", 20, False,
-        "The river, and the only bridge over it. The lowest, narrowest point on "
-        "the road -- and the one place a convoy cannot simply leave the road.",
-    ),
-    Location(
-        "The Climb", "wilderness", 340, False,
-        "Switchbacks up the mountain's shoulder. Carts crawl, and every metre of "
-        "the ascent is overlooked from the rocks above.",
-    ),
-    Location(
         "Town", "hub", 30, True,
         # The tavern is at South Protected Zone, not here -- see GOVERNMENT_SITES.
         # This line used to claim it was in Town, and agents believed it: every
@@ -96,7 +104,7 @@ LOCATION_BY_NAME: dict[str, Location] = {loc.name: loc for loc in LOCATIONS_SPEC
 PROTECTED_ZONES: set[str] = {loc.name for loc in LOCATIONS_SPEC if loc.protected}
 
 # ---------------------------------------------------------------------------
-# The four road segments between them
+# The two road segments between them
 # ---------------------------------------------------------------------------
 
 
@@ -142,23 +150,15 @@ SEGMENTS: list[RoadSegment] = [
         "the same as safe.",
     ),
     RoadSegment(
-        "The Hills", "The Crossing", "Broken Country", "boulders and blind bends",
-        _BASE, 0.90, 0.85, 0.45, 0.35,
-        "The classic ambush ground. A crew can sit in the rocks a spear's throw "
-        "from the road and never be seen until the carts are level with them.",
-    ),
-    RoadSegment(
-        "The Crossing", "The Climb", "The Bridge", "river crossing",
-        _BASE, 1.00, 0.35, 0.30, 0.90,
-        "One bridge, water on both sides. An ambusher here is easy to spot and "
-        "impossible to escape -- there is no off-road to flee onto.",
-    ),
-    RoadSegment(
-        "The Climb", "Town", "The Switchbacks", "mountain ascent to market",
-        _BASE, 0.65, 0.55, 0.90, 0.50,
-        "Carts crawl up the switchbacks while anyone above picks their moment, "
-        "then drop into the market. The slowest ground on the road and the most "
-        "thoroughly overlooked.",
+        # THE ONLY WAY TO A BUYER. Both deleted junctions took a segment with
+        # them, and of the two that remain this is the one every finished good
+        # must cross, so it inherits the bridge: a chokepoint with water on both
+        # sides, priced accordingly and impossible to run from.
+        "The Hills", "Town", "The Bridge", "river crossing to market",
+        _BASE, 0.85, 0.45, 0.35, 0.90,
+        "One bridge between the hills and the market, water on both sides. "
+        "Everything anyone has ever sold in this valley crossed it, and there is "
+        "no off-road to flee onto.",
     ),
 ]
 
@@ -168,7 +168,7 @@ for _s in SEGMENTS:
     SEGMENT_BY_PAIR[(_s.b, _s.a)] = _s
 
 # ---------------------------------------------------------------------------
-# Ten spur roads
+# Four spur roads, all on The Hills
 # ---------------------------------------------------------------------------
 
 
@@ -193,15 +193,16 @@ SPUR_SECONDS = 90.0
 #   starter home        4 plots   (+1 per storage or garage tier)
 #   starter mine/farm   8 plots   (+4 per expansion)
 #
-# SIZED FOR TWENTY AGENTS. The full valley sold 864 plots -- 216 businesses --
-# against twenty agents who between them want perhaps forty sites and forty
-# homes. Land that cannot run out is not a market, and it is why every location
-# decision in the 84-hour run was made as though ground were free: it was.
+# SIZED TO BIND, NOT TO SUFFICE. The full valley sold 864 plots and location cost
+# nothing to choose; the first cut sold 308, which was still roughly twice what
+# twenty agents need and so still not a market. This sells 160.
 #
-# The demo sells 308, roughly twice what twenty agents need. That is deliberate
-# headroom rather than a squeeze -- enough that nobody is walled out in the
-# opening hours, tight enough that Town fills and somebody has to either pay a
-# holder for their ground or build further out.
+# SPUR LAND IS THE TIGHT ONE and it is tight on purpose. Mines, farms AND homes
+# are all spur-only (see PLOT_CONSUMING_BUSINESSES and `buy_property`), so four
+# spurs at twenty plots hold twenty sites in total -- and the state mine and farm
+# take two of them. Eighteen sites, twenty agents, each of whom would like a
+# house AND somewhere to dig. Most of them cannot have both, which means buying a
+# neighbour out or doing without, which is what a land market is.
 #
 # EVERY NUMBER HERE DIVIDES BY FOUR, because a site is a 2x2 block of plots and
 # `layout` lays the ground out in blocks. A supply that does not divide leaves an
@@ -247,8 +248,6 @@ PLOT_CONSUMING_BUSINESSES = ("Mining Operation", "Farm")
 # the two protected zones. Where a description used to name a neighbour it no
 # longer has -- "minutes from the smelters" -- it says the new truth instead.
 SPURS: list[Spur] = [
-    # North Protected Zone -- safe ground behind the garrison wall, and the
-    # valley's best farmland now that it is not competing with the smelters.
     Spur("Blindfold Draw", "The Hills", SPUR_SECONDS, PLOTS_PER_SPUR,
          "A dead-end draw in the hills. Good stone, bad neighbours."),
     Spur("Rockfall Cut", "The Hills", SPUR_SECONDS, PLOTS_PER_SPUR,
@@ -258,26 +257,9 @@ SPURS: list[Spur] = [
          "and every load of it has to run the hill road north to be smelted."),
     # The Crossing -- the river and its flats. Clay, water, and the kilns that
     # want both.
-    Spur("Ferryman's Bend", "The Crossing", SPUR_SECONDS, PLOTS_PER_SPUR,
-         "River flats above the bridge. Clay, water, and a view of everyone who crosses."),
-    Spur("Millrace Farms", "The Crossing", SPUR_SECONDS, PLOTS_PER_SPUR,
+    Spur("Millrace Farms", "The Hills", SPUR_SECONDS, PLOTS_PER_SPUR,
          "Irrigated silt bottoms fed by the mill race off the river -- the water the name refers "
          "to is right here. The government farm holds the best of it, on open ground."),
-    Spur("Potters Yard", "The Crossing", SPUR_SECONDS, PLOTS_PER_SPUR,
-         "Clay pits and drying sheds on the riverbank, where the good clay is."),
-    Spur("Kiln Row", "The Crossing", SPUR_SECONDS, PLOTS_PER_SPUR,
-         "Workshops and firing yards above the ford, sited for the clay and the water rather "
-         "than for the buyers, who are a long cart south."),
-    # The Climb -- the mountain shoulder. Iron in the rock, and the spoil of it.
-    Spur("Eagle's Rest", "The Climb", SPUR_SECONDS, PLOTS_PER_SPUR,
-         "Cut into the mountainside. Hard ground, hard living, and it sees everything."),
-    Spur("Scree Terrace", "The Climb", SPUR_SECONDS, PLOTS_PER_SPUR,
-         "Stepped ledges hacked from the slope. Iron in the rock and a long way down."),
-    Spur("Slagfoot Yards", "The Climb", SPUR_SECONDS, PLOTS_PER_SPUR,
-         "Tailings and cinder flats under the mountain. Cheap ground, filthy air, ore underfoot, "
-         "and the whole length of the valley between it and a smelter."),
-    # South Protected Zone -- the desirable southern addresses, and the last
-    # ground before the market.
 ]
 
 # ---------------------------------------------------------------------------
@@ -303,17 +285,19 @@ SPURS: list[Spur] = [
 #
 # This is the knob to turn after the next run, in either direction.
 JUNCTION_PLOTS: dict[str, int] = {
-    # Twelve blocks, of which the state already holds five -- both stores, the
-    # weaponsmith, the stables and the brokerage. Seven for everybody else, which
-    # makes this the tightest ground in the world, as it should be.
-    "Town": 48,
-    # Six blocks, one of them the state refinery.
+    # Ten blocks, of which the state holds five -- both stores, the weaponsmith,
+    # the stables and the brokerage. FIVE FREE BLOCKS, for every shop that twenty
+    # agents might want to open next to the only buyers in the world. This is the
+    # most contested ground on the map and the number to turn if it proves too
+    # cruel.
+    "Town": 40,
+    # Six blocks, one of them the state refinery. Refining is where the value is
+    # added, so there should be room for rivals -- but not much.
     "Refinery Row": 24,
-    # Three blocks each. Nobody sensible builds in an ambush, and the two that
-    # host a government site have two left over.
-    "The Hills": 12,
-    "The Crossing": 12,
-    "The Climb": 12,
+    # Four blocks, two already the state's tavern and security contractor. The
+    # main-road frontage of a wilderness stop: nobody sensible builds in an
+    # ambush, and there is barely anywhere to.
+    "The Hills": 16,
 }
 
 
@@ -340,10 +324,11 @@ GOVERNMENT_SITES: dict[str, str] = {
     "Mining/Farming Equipment Store": "Town",
     "Weaponsmith / Armory": "Town",
     "Vehicle Dealer / Stable": "Town",
-    # The bridge inn. It was at South Protected Zone, which no longer exists, and
-    # The Crossing is the right heir: the one chokepoint everyone on the road has
-    # to pass through, which is where an innkeeper would in fact stand.
-    "Tavern / Inn": "The Crossing",
+    # The road house. It has now outlived two homes -- South Protected Zone and
+    # The Crossing -- and lands where an innkeeper would actually stand: the only
+    # stop between the smelters and the market, at the head of every spur where
+    # people live.
+    "Tavern / Inn": "The Hills",
     # Guards belong where the road is worst, not where it is safest -- and with
     # the garrison gone, the worst ground is The Hills.
     "Private Security Contractor": "The Hills",
@@ -438,11 +423,19 @@ TOTAL_PLOTS = sum(s.plots for s in SPURS)
 # ~3.5 minutes end to end, where the full valley was ~5. Four segments instead
 # of six is most of it, and it is the point: a demo wants the road crossed often
 # enough that somebody can be watched crossing it.
-assert 200 <= FULL_ROAD_SECONDS <= 220, FULL_ROAD_SECONDS
-assert len(SPURS) == 10
-assert len(LOCATIONS) == 5
-assert TOTAL_PLOTS == 200, TOTAL_PLOTS
-assert sum(JUNCTION_PLOTS.values()) + TOTAL_PLOTS == 308
+# ~1.6 minutes end to end against the full valley's ~5. Two segments, and the
+# spur detours (90s each way) now cost more than the road itself -- which is
+# correct for a world where everything is close and the decisions are about
+# WHERE to stand rather than how long it takes to get there.
+assert 95 <= FULL_ROAD_SECONDS <= 115, FULL_ROAD_SECONDS
+assert len(SPURS) == 4
+assert len(LOCATIONS) == 3
+assert TOTAL_PLOTS == 80, TOTAL_PLOTS
+assert sum(JUNCTION_PLOTS.values()) + TOTAL_PLOTS == 160
+
+# Every business type exists exactly once at hour zero, as a government branch.
+assert len(set(GOVERNMENT_SITES.values()) | set()) >= 1
+assert all(p in ALL_PLACES for p in GOVERNMENT_SITES.values()), GOVERNMENT_SITES
 # Every supply divides into whole 2x2 blocks; see PLOTS_PER_SPUR.
 assert all(n % SITE_BASE_PLOTS == 0 for n in JUNCTION_PLOTS.values())
 assert PLOTS_PER_SPUR % SITE_BASE_PLOTS == 0

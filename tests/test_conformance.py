@@ -488,13 +488,12 @@ def test_travel_times():
     """The full road, end to end.
 
     The World tab says ~5 minutes and the seven-place valley delivered 299s. The
-    demo map is four segments rather than six, so it comes out around 209s -- and
-    that is the point of it. A shorter road means the road gets crossed more
-    often per run, which is what makes a haul something a viewer can watch happen
-    rather than read about afterwards.
+    demo map is two segments and comes out around 98s. That is the point of it: a
+    spur detour now costs more than the road itself, so the decisions are about
+    WHERE to stand rather than how long it takes to get anywhere.
     """
     full = E.travel_seconds("Refinery Row", "Town", "Horse")
-    check("full road is ~3.5 minutes", 200 <= full <= 220, True)
+    check("full road is ~1.6 minutes", 95 <= full <= 115, True)
     check(
         "one segment on foot is slower than mounted",
         E.travel_seconds("Town", M.LOCATIONS[-2], None)
@@ -514,12 +513,15 @@ def test_world_geography():
     """
     from convoy import world_map as M
 
-    check("five named locations", len(M.LOCATIONS), 5)
-    check("four road segments", len(M.SEGMENTS), 4)
-    check("ten spur roads", len(M.SPURS), 10)
+    check("three named locations", len(M.LOCATIONS), 3)
+    check("two road segments", len(M.SEGMENTS), 2)
+    check("four spur roads", len(M.SPURS), 4)
     check("spurs are 90 seconds deep", M.SPUR_SECONDS, 90.0)
-    check("308 plots of land in total",
-          sum(M.plots_at(n) for n in M.ALL_PLACES), 308)
+    check("160 plots of land in total",
+          sum(M.plots_at(n) for n in M.ALL_PLACES), 160)
+    # EVERY BUSINESS TYPE EXISTS EXACTLY ONCE at hour zero, as a state branch.
+    check("one government branch per business type",
+          sorted(M.GOVERNMENT_SITES), sorted(D.BUSINESS_TYPES))
     # Land is sold in whole 2x2 blocks; a supply that does not divide by four
     # leaves a strip nothing can be built on. See PLOTS_PER_SPUR.
     check("every supply divides into whole sites",
@@ -546,26 +548,26 @@ def test_world_geography():
 
     # Danger varies by segment, and the three dangerous ones sit in the middle.
     danger = {s.name: s.danger for s in M.SEGMENTS}
-    check("switchbacks are the most dangerous",
-          max(danger, key=danger.get), "The Switchbacks")
-    check("slagside is safer than broken country",
-          danger["Slagside Road"] < danger["Broken Country"], True)
+    # THE BRIDGE IS NOW THE WORST, and it is also the only way to a buyer, which
+    # is the shape of the demo map: the market charges an entry toll in risk.
+    check("the bridge is the most dangerous",
+          max(danger, key=danger.get), "The Bridge")
+    check("slagside is safer than the bridge",
+          danger["Slagside Road"] < danger["The Bridge"], True)
     # The mildest stretch is the northern approach to the refineries; everything
     # south of the hills is worse. Market Road was the other mild one and went
     # with South Protected Zone.
     check("slagside is the mildest road",
           min(danger, key=danger.get), "Slagside Road")
-    check("slagside is safer than the bridge",
-          danger["Slagside Road"] < danger["The Bridge"], True)
 
     # A bridge has a river on both sides -- Flee Off-Road is not available.
-    bridge = M.SEGMENT_BY_PAIR[("The Crossing", "The Climb")]
+    bridge = M.SEGMENT_BY_PAIR[("The Hills", "Town")]
     check("cannot flee off-road on the bridge", bridge.can_flee_offroad(), False)
-    hills = M.SEGMENT_BY_PAIR[("The Hills", "The Crossing")]
-    check("can flee off-road in the hills", hills.can_flee_offroad(), True)
+    open_road = M.SEGMENT_BY_PAIR[("Refinery Row", "The Hills")]
+    check("can flee off-road on open ground", open_road.can_flee_offroad(), True)
 
-    # The Climb is genuinely slower ground.
-    climb = M.SEGMENT_BY_PAIR[("The Climb", "Town")]
+    # The bridge approach is genuinely slower ground.
+    climb = M.SEGMENT_BY_PAIR[("The Hills", "Town")]
     flat = M.SEGMENT_BY_PAIR[("Refinery Row", "The Hills")]
     check("the climb is slower than the flats", climb.seconds > flat.seconds, True)
 

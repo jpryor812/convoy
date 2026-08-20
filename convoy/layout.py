@@ -257,11 +257,9 @@ class _Stream:
 # deliberately the straightest part: a crossing is a fixed point on a river, and
 # a road meets it head on.
 _WANDER: dict[str, float] = {
-    "Refinery Row":          -40.0,
-    "The Hills":            -105.0,
-    "The Crossing":            0.0,
-    "The Climb":             -85.0,
-    "Town":                   30.0,
+    "Refinery Row":          -55.0,
+    "The Hills":              20.0,
+    "Town":                  -30.0,
 }
 
 
@@ -366,9 +364,10 @@ _DUE_EAST, _DUE_WEST = 90.0, 270.0
 
 _SPUR_HEADINGS: dict[str, list[float]] = {
     "Refinery Row":         [],
-    "The Hills":            [*_WEST_PAIR, _DUE_EAST],
-    "The Crossing":         [*_EAST_PAIR, *_WEST_PAIR],
-    "The Climb":            [*_WEST_PAIR, _DUE_EAST],
+    # All four hang off the one junction, so this is the only place the fan has
+    # to be balanced -- two either side, straddling the perpendicular. With no
+    # neighbouring junction carrying spurs there is nothing left to collide with.
+    "The Hills":            [*_EAST_PAIR, *_WEST_PAIR],
     "Town":                 [],
 }
 
@@ -481,7 +480,7 @@ RIVER_BANK_CLEARANCE = 26.0
 def river_axis() -> float:
     """The river's centre, as a position along the valley road (world y).
 
-    ON THE BRIDGE SEGMENT, NOT AT THE CROSSING JUNCTION -- read off `world_map`
+    ON THE BRIDGE SEGMENT, NOT AT A JUNCTION -- read off `world_map`
     rather than guessed. Exactly one road segment in the world has
     `can_flee_offroad()` False, it is named "The Bridge", and the reason given
     there is that a bridge has a river on both sides. So that segment IS the
@@ -495,8 +494,8 @@ def river_axis() -> float:
     one road crosses it, and the rule that you cannot leave the road on this
     stretch is something a viewer can now see.
     """
-    a = junction_center("The Crossing").y
-    b = junction_center("The Climb").y
+    a = junction_center("The Hills").y
+    b = junction_center("Town").y
     return (a + b) / 2.0
 
 
@@ -626,8 +625,6 @@ def _block_on_road(bx: float, by: float, roads: list[list[Point]]) -> bool:
 _SCATTER: dict[str, tuple[tuple[str, ...], int]] = {
     "Refinery Row":         (("rock", "stump", "rock"), 16),
     "The Hills":            (("rock", "rock", "tree", "tree"), 34),
-    "The Crossing":         (("tree", "tree", "rock"), 20),
-    "The Climb":            (("rock", "rock", "rock", "stump"), 30),
     "Town":                 (("tree", "tree"), 14),
 }
 _SPUR_SCATTER = (("tree", "tree", "rock"), 14)
