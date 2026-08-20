@@ -111,17 +111,18 @@ def test_agent_sprite_reflects_what_the_agent_is() -> None:
           SP.agent_sprite(model, owns_business=True, hauling=True), owner)
 
 
-def test_the_rendered_set_trades_poses_for_identity() -> None:
-    """A deliberate trade, pinned so it is a decision rather than a drift.
+def test_no_two_models_share_a_look() -> None:
+    """The invariant, whichever art set is switched on.
 
-    Kenney's 24 sprites gave SIX poses per faction but only FOUR factions, so
-    two of the five models always looked identical on the map. The rendered
-    characters invert that: five distinct people, two states each.
+    This is the property that keeps a mixed-model run readable without a legend,
+    and it has now been broken twice from opposite directions, which is why it is
+    asserted about the ACTIVE binding rather than about one art set.
 
-    LOST: hauling and role no longer change the sprite. That belongs in the
-    status bubble (VISUALS section 1), which can say what an agent is doing
-    rather than merely what it is.
-    GAINED: no two models share a look.
+    The pack gives four faction colours for five models, so `terra` and `ling`
+    came out as the same blue villager -- the same PNG, twice. The rendered
+    characters fixed that with five distinct people and broke it back the moment
+    `sprites.PREFER_RENDERED` was turned off again. It is settled now by giving
+    ling a different POSE inside its colour; see `BASE_POSE_FOR_MODEL`.
     """
     plain = {SP.agent_sprite(s.openrouter_id) for s in D.MODEL_ROSTER}
     check("every model gets its own sprite", len(plain), len(D.MODEL_ROSTER))

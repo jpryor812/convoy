@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from convoy import actions as A
 from convoy import economy as E
 from convoy import data as D
+from convoy import world_map as M
 from convoy.events import EventLog
 from convoy.world_setup import new_world
 
@@ -321,17 +322,39 @@ def test_carriage_is_priced_on_cargo_value_and_danger():
 
     The whole road crosses in five simulated minutes, so a time-based fee makes
     haulage never worth a decision AND prices a cart of daggers like a cart of
-    stone. Distance still has to matter, though -- that is what gives a mine
-    near its refinery a real advantage.
+    stone. Distance still has to matter, though -- that is what makes where you
+    build a decision rather than a detail.
+
+    WHAT "NEAR" MEANS CHANGED ON 2026-08-20. This used to compare a haul from a
+    Refinery Row spur to the refineries against the same load carried the length
+    of the valley, because the state mine and farm sat minutes from the smelters.
+    Clearing both ends of the road moved every mine and farm into the middle, so
+    no site is near its refinery any more and that comparison prices out almost
+    flat -- 89 against 94.
+
+    The advantage did not disappear, it ROTATED. The poles are the two ends, so
+    what a site's position now buys is which END it serves cheaply: northern
+    ground hauls to the smelters for what southern ground pays to reach the
+    market, and neither can have both. That is the property worth guarding, so it
+    is the one asserted here.
     """
     value = D.base_price("Copper Ore") * 100
-    near = E.suggested_courier_fee("Millrace Farms", "Refinery Row", value)
-    far = E.suggested_courier_fee("Millrace Farms", "Town", value)
+    north = next(s.name for s in M.SPURS if s.junction == M.LOCATIONS[1])
+    south = next(s.name for s in M.SPURS if s.junction == M.LOCATIONS[-2])
+    refineries, market = M.LOCATIONS[0], M.LOCATIONS[-1]
+
+    near = E.suggested_courier_fee(north, refineries, value)
+    far = E.suggested_courier_fee(south, refineries, value)
     # About a tenth of the load's value on safe road, half again through the
-    # worst country. The premium is the whole reason a mine near its refinery is
-    # a better mine.
-    ok("the dangerous haul pays meaningfully more", far > near * 1.35,
-       f"{near:.2f} vs {far:.2f}")
+    # worst country.
+    ok("hauling the length of the valley pays meaningfully more",
+       far > near * 1.35, f"{near:.2f} vs {far:.2f}")
+    # And the mirror: the southern site is the one with the cheap run to market.
+    ok("the advantage is a direction, not a place",
+       E.suggested_courier_fee(south, market, value)
+       < E.suggested_courier_fee(north, market, value) * 0.8,
+       f"{E.suggested_courier_fee(south, market, value):.2f} vs "
+       f"{E.suggested_courier_fee(north, market, value):.2f}")
     cheap = E.suggested_courier_fee("Kiln Row", "Town", 100.0)
     dear = E.suggested_courier_fee("Kiln Row", "Town", 2000.0)
     ok("valuable cargo pays more on the same road", dear > cheap * 4,

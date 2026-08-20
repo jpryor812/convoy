@@ -31,7 +31,18 @@ from . import data as D
 from . import world_map as M
 
 ROOT = Path(__file__).resolve().parent.parent
-KENNEY = ROOT / "kenney_medieval-rts" / "PNG" / "Retina"
+# DEFAULT SIZE, NOT RETINA. The pack ships both; Retina is the same art on a
+# 128px canvas. That was the right pick while sprites were scaled to fit
+# whatever box the renderer had, because more pixels survive a downscale.
+#
+# It is the wrong pick now that the map is a grid. A site is a 2x2 block of 32m
+# parcels and one metre is one pixel, so a building has exactly 64 pixels to
+# stand in -- and a Retina structure carries up to 125px of content, near enough
+# to twice its plot. Scaling it down to fit would resample pixel art, which is
+# the one thing that reliably makes pixel art look bad.
+#
+# The 64px set fits the block as drawn, with no resampling anywhere.
+KENNEY = ROOT / "kenney_medieval-rts" / "PNG" / "Default size"
 GENERATED = ROOT / "art" / "generated"
 
 
@@ -63,6 +74,21 @@ FACTION_FOR_MODEL = {
     "deepseek/deepseek-v4-flash-0731": "red",
     "x-ai/grok-4.3": "grey",
     "inclusionai/ling-3.0-flash": "blue",
+}
+
+# Model -> the pose it wears when nothing else claims one.
+#
+# FIVE MODELS, FOUR COLOURS. The pack has 24 units as four factions by six
+# poses, so colour alone cannot separate five models and `terra` and `ling` both
+# came out blue villagers -- literally the same PNG on the map. Ling gets a
+# different POSE inside the same colour instead, which keeps the colour grouping
+# readable and still gives every model a look of its own. `check()` asserts it.
+BASE_POSE_FOR_MODEL = {
+    "openai/gpt-5.6-terra": "villager",
+    "inclusionai/ling-3.0-flash": "hooded",
+    "deepseek/deepseek-v4-flash-0731": "villager",
+    "x-ai/grok-4.3": "villager",
+    "openai/gpt-5.6-luna": "villager",
 }
 
 # Role -> pose. Ordered: the FIRST match wins, so an owner reads as an owner even
@@ -112,12 +138,21 @@ def agent_sprite(model: str, *, owns_business: bool = False,
     if dead:
         return GENERATED / "ui" / "death.svg"
 
-    variant = CHARACTER_FOR_MODEL.get(model)
-    if variant is not None:
-        name = f"agent-{variant}" + ("-owner" if owns_business else "")
-        rendered = RENDERED_CHARACTERS / f"{name}.png"
-        if rendered.exists():
-            return rendered
+    # People follow the buildings. The same argument as `PREFER_RENDERED` below,
+    # and it bites harder here: a character sprite is twenty-four pixels tall,
+    # which is far too few to carry a photographed face, and a reduced-photograph
+    # person standing next to a flat vector house is the most visible style clash
+    # on the map. The pack's 24 units are four colours by six poses -- MORE
+    # distinct looks than the ten Meshy characters, just organised by colour and
+    # trade rather than by face. What is lost is the four facings; agents mostly
+    # stand still at a place, and the reference art is static poses too.
+    if PREFER_RENDERED:
+        variant = CHARACTER_FOR_MODEL.get(model)
+        if variant is not None:
+            name = f"agent-{variant}" + ("-owner" if owns_business else "")
+            rendered = RENDERED_CHARACTERS / f"{name}.png"
+            if rendered.exists():
+                return rendered
 
     faction = FACTION_FOR_MODEL.get(model, "blue")
     if owns_business:
@@ -125,55 +160,93 @@ def agent_sprite(model: str, *, owns_business: bool = False,
     elif hauling:
         pose = "cloaked"
     else:
-        pose = POSE_FOR_ROLE.get(role or "", "villager")
+        pose = POSE_FOR_ROLE.get(role or "", BASE_POSE_FOR_MODEL.get(model, "villager"))
     return unit(faction, pose)
 
 
 # ---------------------------------------------------------------------------
 # BUILDINGS
 # ---------------------------------------------------------------------------
-# Identified by rendering the pack at 5x and looking at it. The three the brief
-# called missing are all here in substance: Structure_20 carries a stone chimney
-# (Refinery), Structure_19 is a forge with a glowing furnace mouth
-# (Weaponsmith), Structure_07 is a stall hung with loaves (Tavern).
+# Pipoya, cut by `art/pipoya.py` -- see that file's header for why the pack
+# changed. In short: the two buildings this economy is actually about are the
+# farm and the mine, and Pipoya has a farmhouse with a ploughed field and a rock
+# face with a timbered adit where Kenney had a windmill and a grey ramp.
+#
+# CHOSEN FOR SILHOUETTE AND ROOF COLOUR as much as for subject. At 48px a player
+# tells two buildings apart by shape and colour well before recognising what
+# either one is, so no two of these share both. Some are generic -- Pipoya has no
+# forge and no market stall -- and a flagged keep standing in for the Weaponsmith
+# is a compromise, taken because consistency across the whole map is worth more
+# than one literal building in a set that would otherwise clash.
 
-def _structure(n: int) -> Path:
-    return KENNEY / "Structure" / f"medievalStructure_{n:02d}.png"
+def _pipoya(name: str) -> Path:
+    return GENERATED / "pipoya" / f"{name}.png"
 
 
 STRUCTURE_FOR_BUSINESS = {
-    "Mining Operation": _structure(8),            # a ramp cut into the ground
-    "Farm": _structure(14),                       # windmill
-    "Refinery": _structure(20),                   # house with a stone chimney
-    "Weaponsmith / Armory": _structure(19),       # forge, furnace mouth glowing
-    "Tavern / Inn": _structure(7),                # stall hung with loaves
-    "Vehicle Dealer / Stable": _structure(16),    # open-fronted barn
-    "Home Improvement Store": _structure(21),     # house with a timber lean-to
-    "Mining/Farming Equipment Store": _structure(22),   # awninged market stall
-    "Private Security Contractor": _structure(5),       # stone post, banner
-    "Insurance Brokerage": _structure(4),               # civic hall
+    "Mining Operation": _pipoya("mine"),          # rock face, timbered adit
+    "Farm": _pipoya("farm"),                      # farmhouse and ploughed field
+    "Refinery": _pipoya("refinery"),              # squat stone furnace tower
+    "Weaponsmith / Armory": _pipoya("weaponsmith"),     # flagged keep
+    "Tavern / Inn": _pipoya("tavern"),            # small timber building
+    "Vehicle Dealer / Stable": _pipoya("stable"), # long brown building
+    "Home Improvement Store": _pipoya("home-store"),    # wide-doored hall
+    "Mining/Farming Equipment Store": _pipoya("equipment-store"),   # market tent
+    "Private Security Contractor": _pipoya("security"),  # round watchtower
+    "Insurance Brokerage": _pipoya("brokerage"),         # civic hall
 }
+
+# Ground clutter, also Pipoya, so a tree beside a farmhouse is from the same hand
+# as the farmhouse. `layout` decides where these go; this says what they look
+# like. No bush entry: see `_SCATTER` in `layout`.
+#
+# The bridge is here rather than with the buildings because nobody owns it -- it
+# is part of the road, like the road surface.
+PROP_SPRITES = {
+    "tree": [_pipoya("tree-small"), _pipoya("tree-mid"), _pipoya("tree-big")],
+    "rock": [_pipoya("rock-small"), _pipoya("rock-big")],
+    "stump": [_pipoya("rock-small"), _pipoya("rock-big")],
+}
+
+BRIDGE_DECK = _pipoya("bridge-deck")
+BRIDGE_PIER = _pipoya("bridge-pier")
 
 # Government branches use the same building with a stone-grey civic marker in
 # the renderer, rather than a second sprite set: same trade, different owner.
-GOVERNMENT_BADGE = _structure(6)                  # the town gatehouse
+GOVERNMENT_BADGE = _pipoya("signpost")            # a posted notice
 
 # Blender-rendered replacements, drawn by `art/blender_assets.py` through the
 # rig in `art/blender_rig.py`.
 RENDERED_BUILDINGS = GENERATED / "buildings"
 
 
-def structure_for(business_type: str) -> Path:
-    """The best available sprite for a business type.
+# THE PACK WINS (2026-08-20).
+#
+# This used to prefer a Blender-rendered PNG whenever one existed, so art could
+# be replaced one building at a time. That was the right rule while the renders
+# were procedural low-poly built to Kenney's own recipe -- flat fills, a darker
+# keyline, one highlight plane. It stopped being right when the renders became
+# reduced photographs of Meshy models.
+#
+# The reason is not that the models are bad. They are far better MODELS than
+# anything in the pack. It is that a photogrammetry-style asset keeps its
+# information in texture detail, and a map sprite is about eighty pixels tall,
+# where texture detail is noise. Side by side at map size the Meshy farm read as
+# a brown mass and the pack's windmill read instantly as a windmill.
+#
+# Style consistency is worth more than fidelity here. One flat vector building
+# beside one reduced photograph looks wrong however good each is alone, and the
+# map's whole job is to be read at a glance.
+#
+# THE RENDERS ARE NOT WASTED. They are the 3D scene's assets, where the detail is
+# visible and the argument reverses. Flipping this one flag brings them back.
+PREFER_RENDERED = False
 
-    A rendered PNG wins over the Kenney stand-in, and the Kenney one is used
-    until a rendered one exists. That is what lets the art be replaced ONE
-    BUILDING AT A TIME without a flag day: render a refinery, and every refinery
-    on the map is a refinery next time the page is built, while the other nine
-    types carry on unchanged.
-    """
+
+def structure_for(business_type: str) -> Path:
+    """The sprite for a business type. See `PREFER_RENDERED`."""
     rendered = RENDERED_BUILDINGS / f"{_slug(business_type)}.png"
-    if rendered.exists():
+    if PREFER_RENDERED and rendered.exists():
         return rendered
     return STRUCTURE_FOR_BUSINESS[business_type]
 

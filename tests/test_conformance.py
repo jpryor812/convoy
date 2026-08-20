@@ -539,15 +539,36 @@ def test_world_geography():
     flat = M.SEGMENT_BY_PAIR[("Refinery Row", "North Protected Zone")]
     check("the climb is slower than the flats", climb.seconds > flat.seconds, True)
 
-    # Government mine and farm sit on the two spurs closest to the refineries.
-    check("state mine on a Refinery Row spur",
-          M.junction_of(M.GOVERNMENT_SITES["Mining Operation"]), "Refinery Row")
-    check("state farm on a Refinery Row spur",
-          M.junction_of(M.GOVERNMENT_SITES["Farm"]), "Refinery Row")
+    # THE ENDS ARE PURE (2026-08-20). Refining happens at one end of the road and
+    # selling at the other, and nothing else is at either: no spur hangs off
+    # Refinery Row or Town, so every mine and farm in the world must haul its
+    # output to be smelted and haul it again to be sold. This used to be the
+    # opposite -- the state mine and farm sat on Refinery Row spurs, minutes from
+    # the smelters, which is exactly the free lunch the change removes.
+    ends = {M.LOCATIONS[0], M.LOCATIONS[-1]}
+    check("the road runs refineries to market", ends, {"Refinery Row", "Town"})
+    check("no spur hangs off either end",
+          [s.name for s in M.SPURS if s.junction in ends], [])
+    for site in ("Mining Operation", "Farm"):
+        check(f"state {site.lower()} sits between the ends",
+              M.junction_of(M.GOVERNMENT_SITES[site]) not in ends, True)
 
-    # Spurs dead-end, so spur-to-spur travel climbs out and back down.
-    same_junction = M.travel_seconds("Copper Gulch", "Millrace Farms")
-    check("two spurs off one junction cost both detours", same_junction, 180.0)
+    # Neither state site may hide behind a wall. A production site nobody can rob
+    # is a different game from the one the theft rules describe, and the farm
+    # landed on protected ground once already while spurs were being moved.
+    for site in ("Mining Operation", "Farm"):
+        check(f"state {site.lower()} stands on open ground",
+              M.junction_of(M.GOVERNMENT_SITES[site]) in M.PROTECTED_ZONES, False)
+
+    # Spurs dead-end, so spur-to-spur travel climbs out and back down. Taken from
+    # the map rather than named, so moving a spur cannot quietly stop this from
+    # testing what it says it tests -- which is how it broke last time.
+    junction, siblings = next(
+        (j, s) for j, s in M.SPURS_BY_JUNCTION.items() if len(s) >= 2
+    )
+    check(f"two spurs off {junction} cost both detours",
+          M.travel_seconds(siblings[0].name, siblings[1].name),
+          M.SPUR_SECONDS * 2)
 
     # Plots are land, not slots. From 2026-08-19 they are also the ONLY thing
     # that lets a business hire: the first two are the building, and every

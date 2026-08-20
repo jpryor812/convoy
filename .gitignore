@@ -35,3 +35,11 @@ env/
 # art/Meshy/ is where the exports actually landed.
 art/source/
 art/Meshy/
+
+# Third-party art sources. Both are processed into art/generated/, and THAT
+# output is small and IS committed, because it is what the renderer loads.
+#
+# Pipoya RPG World Tileset -- 2.4MB of autotile sheets, cut by art/pipoya.py.
+# The zip beside it is the same thing undone.
+Pipoya RPG World Tileset*/
+Pipoya RPG World Tileset*.zip

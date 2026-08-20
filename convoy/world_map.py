@@ -227,47 +227,76 @@ SITE_EXPANSION_PLOTS = 1        # land is bought one plot at a time now
 # brokerage sit on the main road and consume no plots.
 PLOT_CONSUMING_BUSINESSES = ("Mining Operation", "Farm")
 
+# THE VALLEY IS A GRADIENT, AND THE ENDS ARE PURE (2026-08-20)
+#
+# Refinery Row and Town used to carry three spurs each. That put mines, farms and
+# homes AT both ends of the road as well as along it, and the two ends are the
+# only places in the economy with a job: everything is refined at one and sold at
+# the other. A mine on a Refinery Row spur was a mine that never had to haul, and
+# a workshop on a Town spur was a seller that never had to travel -- the two
+# shortcuts that let an agent opt out of the road entirely.
+#
+# So both ends are now clear of spurs. Refineries at the far north, the market at
+# the far south, and all sixteen extraction and housing spurs strung between them
+# across the five middle junctions. Every load of ore now travels to be smelted
+# and every finished good travels to be sold, in opposite directions, which is
+# the whole shape of the economy made geographic.
+#
+# Spurs were matched to the ground they sit on rather than shuffled: ore went to
+# the hills and the mountain, clay and water to the river crossing, farming to
+# the two protected zones. Where a description used to name a neighbour it no
+# longer has -- "minutes from the smelters" -- it says the new truth instead.
 SPURS: list[Spur] = [
-    # Refinery Row -- three spurs, the industrial north. The state's mine and
-    # farm sit on the first two, closest to the smelters.
-    Spur("Copper Gulch", "Refinery Row", SPUR_SECONDS, PLOTS_PER_SPUR,
-         "Ore country, minutes from the smelters. The government mine works the head of the gulch."),
-    Spur("Millrace Farms", "Refinery Row", SPUR_SECONDS, PLOTS_PER_SPUR,
-         "Irrigated bottomland fed by the mill race. The government farm holds the best of it."),
-    Spur("Slagfoot Yards", "Refinery Row", SPUR_SECONDS, PLOTS_PER_SPUR,
-         "Tailings and cinder flats below the refineries. Cheap ground, filthy air, ore underfoot."),
-    # North Protected Zone -- safe ground behind the garrison wall.
+    # North Protected Zone -- safe ground behind the garrison wall, and the
+    # valley's best farmland now that it is not competing with the smelters.
     Spur("Garrison Fields", "North Protected Zone", SPUR_SECONDS, PLOTS_PER_SPUR,
          "Smallholdings under the garrison's eye. Safe, and priced like it."),
     Spur("Watchman's Lane", "North Protected Zone", SPUR_SECONDS, PLOTS_PER_SPUR,
          "A quiet row of holdings inside the northern writ. Nothing happens here, which is the point."),
-    # The Hills -- broken country, the classic ambush ground.
+    # NOT the government farm. Putting the state's farm behind the garrison wall
+    # would have made it the one production site in the world nobody can rob,
+    # which is a bigger change than moving a spur -- so the walled ground here is
+    # ordinary bottomland and the state farm stayed on open country downriver.
+    Spur("Wash Hollow", "North Protected Zone", SPUR_SECONDS, PLOTS_PER_SPUR,
+         "Damp bottomland walled in behind the northern gate. Grows anything, and the "
+         "garrison counts every cart that leaves."),
+    # The Hills -- broken country, the classic ambush ground, and where the ore is.
     Spur("Blindfold Draw", "The Hills", SPUR_SECONDS, PLOTS_PER_SPUR,
          "A dead-end draw in the hills. Good stone, bad neighbours."),
     Spur("Rockfall Cut", "The Hills", SPUR_SECONDS, PLOTS_PER_SPUR,
          "A scar of loose scree and boulders. Rich in stone and clay, and impossible to watch."),
-    # The Crossing -- the river and its flats.
+    Spur("Copper Gulch", "The Hills", SPUR_SECONDS, PLOTS_PER_SPUR,
+         "Ore country, cut deep into the hills. The government mine works the head of the gulch, "
+         "and every load of it has to run the hill road north to be smelted."),
+    # The Crossing -- the river and its flats. Clay, water, and the kilns that
+    # want both.
     Spur("Ferryman's Bend", "The Crossing", SPUR_SECONDS, PLOTS_PER_SPUR,
          "River flats above the bridge. Clay, water, and a view of everyone who crosses."),
-    Spur("Wash Hollow", "The Crossing", SPUR_SECONDS, PLOTS_PER_SPUR,
-         "Silt bottoms below the ford. Floods in season, grows anything the rest of the year."),
-    # The Climb -- the mountain shoulder.
+    Spur("Millrace Farms", "The Crossing", SPUR_SECONDS, PLOTS_PER_SPUR,
+         "Irrigated silt bottoms fed by the mill race off the river -- the water the name refers "
+         "to is right here. The government farm holds the best of it, on open ground."),
+    Spur("Potters Yard", "The Crossing", SPUR_SECONDS, PLOTS_PER_SPUR,
+         "Clay pits and drying sheds on the riverbank, where the good clay is."),
+    Spur("Kiln Row", "The Crossing", SPUR_SECONDS, PLOTS_PER_SPUR,
+         "Workshops and firing yards above the ford, sited for the clay and the water rather "
+         "than for the buyers, who are a long cart south."),
+    # The Climb -- the mountain shoulder. Iron in the rock, and the spoil of it.
     Spur("Eagle's Rest", "The Climb", SPUR_SECONDS, PLOTS_PER_SPUR,
          "Cut into the mountainside. Hard ground, hard living, and it sees everything."),
     Spur("Scree Terrace", "The Climb", SPUR_SECONDS, PLOTS_PER_SPUR,
          "Stepped ledges hacked from the slope. Iron in the rock and a long way down."),
-    # South Protected Zone -- the desirable southern addresses.
+    Spur("Slagfoot Yards", "The Climb", SPUR_SECONDS, PLOTS_PER_SPUR,
+         "Tailings and cinder flats under the mountain. Cheap ground, filthy air, ore underfoot, "
+         "and the whole length of the valley between it and a smelter."),
+    # South Protected Zone -- the desirable southern addresses, and the last
+    # ground before the market.
     Spur("Southgate Commons", "South Protected Zone", SPUR_SECONDS, PLOTS_PER_SPUR,
          "Orchards and cottages behind the southern wall. The desirable address."),
     Spur("Orchard Walk", "South Protected Zone", SPUR_SECONDS, PLOTS_PER_SPUR,
          "Walled gardens and grain plots inside the southern writ. Safe, fertile, and sought after."),
-    # Town -- three spurs, closest to every buyer in the world.
-    Spur("Kiln Row", "Town", SPUR_SECONDS, PLOTS_PER_SPUR,
-         "Workshops and yards on the town's edge. Closest to a buyer, dearest to hold."),
-    Spur("Potters Yard", "Town", SPUR_SECONDS, PLOTS_PER_SPUR,
-         "Clay pits and drying sheds a stone's throw from the market square."),
-    Spur("Drovers End", "Town", SPUR_SECONDS, PLOTS_PER_SPUR,
-         "Paddocks and grain stores where the carts come in. Crowded, and worth it."),
+    Spur("Drovers End", "South Protected Zone", SPUR_SECONDS, PLOTS_PER_SPUR,
+         "Paddocks and grain stores inside the southern gate, one stage short of the market. "
+         "Crowded, and worth it for the last easy run into Town."),
 ]
 
 # ---------------------------------------------------------------------------
