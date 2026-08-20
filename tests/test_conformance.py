@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from convoy import data as D
 from convoy import economy as E
+from convoy import world_map as M
 
 FAILURES: list[str] = []
 
@@ -484,40 +485,64 @@ def test_price_floor():
 
 
 def test_travel_times():
-    """World tab: '~5 min full transit at Medium speed'.
+    """The full road, end to end.
 
-    Terrain now varies the pace, so the total is 299s rather than a flat 300 --
-    still within the tab's stated approximation.
+    The World tab says ~5 minutes and the seven-place valley delivered 299s. The
+    demo map is four segments rather than six, so it comes out around 209s -- and
+    that is the point of it. A shorter road means the road gets crossed more
+    often per run, which is what makes a haul something a viewer can watch happen
+    rather than read about afterwards.
     """
     full = E.travel_seconds("Refinery Row", "Town", "Horse")
-    check("full road at Medium is ~5 minutes", 290 <= full <= 310, True)
+    check("full road is ~3.5 minutes", 200 <= full <= 220, True)
     check(
         "one segment on foot is slower than mounted",
-        E.travel_seconds("Town", "South Protected Zone", None)
-        > E.travel_seconds("Town", "South Protected Zone", "Horse"),
+        E.travel_seconds("Town", M.LOCATIONS[-2], None)
+        > E.travel_seconds("Town", M.LOCATIONS[-2], "Horse"),
         True,
     )
 
 
 def test_world_geography():
-    """The 2026-08-12 world design: 7 places, 6 segments, 8 spurs."""
+    """The demo map: 5 places, 4 segments, 10 spurs, 308 plots.
+
+    Cut down from the 2026-08-12 design's 7 places, 6 segments and 16 spurs by
+    dropping both protected zones and the six spurs that hung off them -- they
+    sold safety from combat, theft and insurance claims, none of which are built.
+    The full valley is on the `full-valley-map` branch if these numbers ever need
+    comparing against what they came from.
+    """
     from convoy import world_map as M
 
-    check("seven named locations", len(M.LOCATIONS), 7)
-    check("six road segments", len(M.SEGMENTS), 6)
-    check("sixteen spur roads", len(M.SPURS), 16)
+    check("five named locations", len(M.LOCATIONS), 5)
+    check("four road segments", len(M.SEGMENTS), 4)
+    check("ten spur roads", len(M.SPURS), 10)
     check("spurs are 90 seconds deep", M.SPUR_SECONDS, 90.0)
-    check("640 plots of land in total", sum(s.plots for s in M.SPURS), 640)
+    check("308 plots of land in total",
+          sum(M.plots_at(n) for n in M.ALL_PLACES), 308)
+    # Land is sold in whole 2x2 blocks; a supply that does not divide by four
+    # leaves a strip nothing can be built on. See PLOTS_PER_SPUR.
+    check("every supply divides into whole sites",
+          all(M.plots_at(n) % M.SITE_BASE_PLOTS == 0 for n in M.ALL_PLACES), True)
 
     # Protected zones: no combat, no theft, police present -- and a spur inherits
     # its junction's protection.
-    check("north waystation protected", M.is_protected("North Protected Zone"), True)
-    check("south waystation protected", M.is_protected("South Protected Zone"), True)
+    # THE DEMO MAP HAS NO PROTECTED WAYSTATIONS. Both were cut: they sold safety
+    # from combat, theft and insurance claims, none of which are built, so they
+    # were safe from nothing. Town keeps its protection because a market square
+    # where deals are taken rather than struck is a different claim.
+    check("the market is protected", M.is_protected("Town"), True)
+    check("the open road is not", M.is_protected("The Hills"), False)
+    check("no waystation survives",
+          [l.name for l in M.LOCATIONS_SPEC if l.kind == "waystation"], [])
     check("town protected", M.is_protected("Town"), True)
     check("refinery row is NOT protected", M.is_protected("Refinery Row"), False)
     check("the hills are NOT protected", M.is_protected("The Hills"), False)
-    check("a spur inherits protection", M.is_protected("Southgate Commons"), True)
-    check("a wild spur does not", M.is_protected("Blindfold Draw"), False)
+    # Spurs inherit their junction's protection. On the demo map no junction
+    # carrying spurs is protected, so every spur is open country -- which is the
+    # fact worth asserting, since it is what makes the whole road a risk.
+    check("no spur is protected",
+          [s.name for s in M.SPURS if M.is_protected(s.name)], [])
 
     # Danger varies by segment, and the three dangerous ones sit in the middle.
     danger = {s.name: s.danger for s in M.SEGMENTS}
@@ -525,8 +550,13 @@ def test_world_geography():
           max(danger, key=danger.get), "The Switchbacks")
     check("slagside is safer than broken country",
           danger["Slagside Road"] < danger["Broken Country"], True)
-    check("market road is safer than the bridge",
-          danger["Market Road"] < danger["The Bridge"], True)
+    # The mildest stretch is the northern approach to the refineries; everything
+    # south of the hills is worse. Market Road was the other mild one and went
+    # with South Protected Zone.
+    check("slagside is the mildest road",
+          min(danger, key=danger.get), "Slagside Road")
+    check("slagside is safer than the bridge",
+          danger["Slagside Road"] < danger["The Bridge"], True)
 
     # A bridge has a river on both sides -- Flee Off-Road is not available.
     bridge = M.SEGMENT_BY_PAIR[("The Crossing", "The Climb")]
@@ -535,8 +565,8 @@ def test_world_geography():
     check("can flee off-road in the hills", hills.can_flee_offroad(), True)
 
     # The Climb is genuinely slower ground.
-    climb = M.SEGMENT_BY_PAIR[("The Climb", "South Protected Zone")]
-    flat = M.SEGMENT_BY_PAIR[("Refinery Row", "North Protected Zone")]
+    climb = M.SEGMENT_BY_PAIR[("The Climb", "Town")]
+    flat = M.SEGMENT_BY_PAIR[("Refinery Row", "The Hills")]
     check("the climb is slower than the flats", climb.seconds > flat.seconds, True)
 
     # THE ENDS ARE PURE (2026-08-20). Refining happens at one end of the road and

@@ -282,11 +282,9 @@ ROAD_JUNCTION = _tile(10)       # a crossroads
 # a place is a quarry or a river crossing.
 DECOR_FOR_LOCATION = {
     "Refinery Row": [_env(9), _env(12)],       # spoil heaps and ore-flecked rock
-    "North Protected Zone": [_env(2), _env(4)],
     "The Hills": [_env(18), _env(19)],         # copper-bearing rock
     "The Crossing": [_env(6), _env(8)],        # a fallen log, a boulder
     "The Climb": [_env(10), _env(11)],         # grey rock with metal flecks
-    "South Protected Zone": [_env(1), _env(3)],
     "Town": [_env(13), _env(20)],              # kept shrubs
 }
 

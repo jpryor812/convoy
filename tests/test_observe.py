@@ -191,18 +191,21 @@ def test_memory_respects_limit_and_ordering():
 def test_affordances_track_the_ground_underfoot():
     w, log, a = setup()
 
-    # A protected spur, taken from the map rather than named. This test used to
-    # hard-code Kiln Row, which was protected only because it hung off Town; when
-    # the spurs were redistributed it became open country and the test failed for
-    # a reason that had nothing to do with affordances.
+    # PROTECTION IS TESTED WHEREVER THE MAP ACTUALLY HAS IT. This asked for a
+    # protected SPUR, which existed while spurs hung off the protected zones and
+    # then off Town; the demo map has neither, so the lookup raised StopIteration
+    # and the test died on its own fixture rather than on an affordance.
     from convoy import world_map as WM
-    protected_spur = next(
-        s.name for s in WM.SPURS if s.junction in WM.PROTECTED_ZONES
-    )
-    a.location = protected_spur
+    a.location = next(iter(WM.PROTECTED_ZONES))
+    lines = O.observe(w, log, a, "reevaluation")["you_can"]
+    ok("protected ground is not flagged unsafe",
+       not any("attacked" in x for x in lines))
+
+    # Spur land offers what only spur land can, and is open country besides.
+    a.location = WM.SPURS[0].name
     lines = O.observe(w, log, a, "reevaluation")["you_can"]
     ok("spur land offered", any("spur land" in x for x in lines))
-    ok("protected spur is not flagged unsafe", not any("attacked" in x for x in lines))
+    ok("an unprotected spur says so", any("attacked" in x for x in lines))
 
     a.location = "The Hills"                     # main road, unprotected
     lines = O.observe(w, log, a, "reevaluation")["you_can"]

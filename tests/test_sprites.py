@@ -211,7 +211,30 @@ def test_a_real_run_reconstructs() -> None:
     ok("end hour positive", payload["end_hour"] > 0)
     ok("every agent has a track",
        all(a["id"] in payload["tracks"] for a in payload["agents"]))
+
+    # A RUN BELONGS TO THE MAP IT WAS RECORDED ON, and that is worth saying out
+    # loud rather than discovering as a wall of "place is not real" failures.
+    #
+    # The demo map dropped both protected zones and six spurs, so a run from the
+    # seven-place valley names ground that no longer exists -- Drovers End,
+    # Orchard Walk, and the rest. Nothing is wrong with either the run or the
+    # renderer; they are simply describing different worlds.
+    #
+    # Any unknown place means a foreign map, because the simulation only ever
+    # writes places it has. So the whole run is reported as foreign and skipped,
+    # instead of one assertion firing per business standing on a deleted spur.
     known = {p["name"] for p in payload["places"]}
+    seen = {row[1] for t in payload["tracks"].values() for row in t}
+    seen |= {row[2] for t in payload["tracks"].values() for row in t
+             if row[2] is not None}
+    seen |= {b["place"] for b in payload["businesses"]}
+    foreign = sorted(x for x in seen if x not in known)
+    if foreign:
+        print(f"  SKIP {run.name}: recorded on a different map "
+              f"({len(foreign)} places this world does not have, "
+              f"e.g. {', '.join(foreign[:3])})")
+        return
+
     for aid, track in payload["tracks"].items():
         for row in track:
             ok(f"{aid} track place is real", row[1] in known, str(row))

@@ -258,12 +258,10 @@ class _Stream:
 # a road meets it head on.
 _WANDER: dict[str, float] = {
     "Refinery Row":          -40.0,
-    "North Protected Zone":   35.0,
     "The Hills":            -105.0,
     "The Crossing":            0.0,
     "The Climb":             -85.0,
-    "South Protected Zone":   50.0,
-    "Town":                    0.0,
+    "Town":                   30.0,
 }
 
 
@@ -368,11 +366,9 @@ _DUE_EAST, _DUE_WEST = 90.0, 270.0
 
 _SPUR_HEADINGS: dict[str, list[float]] = {
     "Refinery Row":         [],
-    "North Protected Zone": [*_EAST_PAIR, _DUE_WEST],
     "The Hills":            [*_WEST_PAIR, _DUE_EAST],
     "The Crossing":         [*_EAST_PAIR, *_WEST_PAIR],
     "The Climb":            [*_WEST_PAIR, _DUE_EAST],
-    "South Protected Zone": [*_EAST_PAIR, _DUE_WEST],
     "Town":                 [],
 }
 
@@ -629,12 +625,10 @@ def _block_on_road(bx: float, by: float, roads: list[list[Point]]) -> bool:
 # every bush is now a tree and the mix is trees against rock.
 _SCATTER: dict[str, tuple[tuple[str, ...], int]] = {
     "Refinery Row":         (("rock", "stump", "rock"), 16),
-    "North Protected Zone": (("tree", "tree"), 14),
     "The Hills":            (("rock", "rock", "tree", "tree"), 34),
     "The Crossing":         (("tree", "tree", "rock"), 20),
     "The Climb":            (("rock", "rock", "rock", "stump"), 30),
-    "South Protected Zone": (("tree", "tree", "tree"), 18),
-    "Town":                 (("tree", "tree"), 10),
+    "Town":                 (("tree", "tree"), 14),
 }
 _SPUR_SCATTER = (("tree", "tree", "rock"), 14)
 

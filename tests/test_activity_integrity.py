@@ -24,11 +24,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from convoy import actions as A
+from convoy import world_map as WM
 from convoy.engine import Engine, EngineConfig
 from convoy.events import EventLog
 from convoy.world_setup import new_world
 
 FAILURES: list[str] = []
+
+# Somewhere on the main road that is not where an agent starts. Taken from the
+# map rather than named: this file used to travel to South Protected Zone, which
+# stopped existing when the demo map dropped the protected zones.
+FAR = WM.LOCATIONS[-2]
 
 
 class NullPolicy:
@@ -75,7 +81,7 @@ def test_waiting_does_not_cancel_a_journey():
     """travel_to -> wait must leave the agent EN ROUTE, not stranded."""
     world, log, a = setup()
     a.location = "Town"
-    A.travel_to(world, log, a, "South Protected Zone")
+    A.travel_to(world, log, a, FAR)
     A.wait(world, log, a, 90.0)
 
     ok("still travelling after a wait", a.activity.kind == "travel", a.activity.kind)
@@ -86,7 +92,7 @@ def test_a_waiting_traveller_actually_arrives():
     """The end-to-end version: the journey must complete under the engine."""
     world, log, a = setup()
     a.location = "Town"
-    A.travel_to(world, log, a, "South Protected Zone")
+    A.travel_to(world, log, a, FAR)
     A.wait(world, log, a, 5.0)
 
     Engine(
@@ -95,7 +101,7 @@ def test_a_waiting_traveller_actually_arrives():
         ),
     ).run()
 
-    ok("arrived", a.location == "South Protected Zone", a.location)
+    ok("arrived", a.location == FAR, a.location)
     ok("in_transit cleared on arrival", a.in_transit is None, str(a.in_transit))
 
 
@@ -107,7 +113,7 @@ def test_engine_recovers_a_desynced_traveller():
     """
     world, log, a = setup()
     a.location = "Town"
-    A.travel_to(world, log, a, "South Protected Zone")
+    A.travel_to(world, log, a, FAR)
     a.activity = A.Activity("idle", 0.0)          # simulate a bad overwrite
 
     Engine(

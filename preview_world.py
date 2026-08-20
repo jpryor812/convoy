@@ -331,9 +331,16 @@ function resize(){
   draw();
 }
 function clampPan(){
+  /* Keep the world under the viewport -- but CENTRE it in any direction where
+     the world is smaller than the view, rather than pinning it to zero. Zoomed
+     out to the whole valley the map is much wider than it is tall, so the fit is
+     decided by width and there is vertical slack; pinned at zero that slack all
+     fell below the valley and two thirds of the screen was empty grass. */
   const vw = c.width / zoom, vh = c.height / zoom;
-  panx = Math.max(Math.min(panx, 0), Math.min(0, -(WORLD_W - vw)));
-  pany = Math.max(Math.min(pany, 0), Math.min(0, -(WORLD_H - vh)));
+  panx = WORLD_W <= vw ? (vw - WORLD_W) / 2
+       : Math.max(Math.min(panx, 0), -(WORLD_W - vw));
+  pany = WORLD_H <= vh ? (vh - WORLD_H) / 2
+       : Math.max(Math.min(pany, 0), -(WORLD_H - vh));
 }
 function view(level){
   if (level === 0) zoom = Math.min(c.width / WORLD_W, c.height / WORLD_H);

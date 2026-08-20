@@ -29,7 +29,7 @@ WHERE YOU ARE
 
 WHAT YOU CAN DO FROM HERE
   - 1 business(es) here to buy from or sell to (listed above); 1 player-owned and may hire.
-  - LAND HERE: 40 of 40 plots unsold at 100 each -- buy_land(plots=N). Raw land seats nobody until develop_plot builds on it.
+  - LAND HERE: 20 of 20 plots unsold at 100 each -- buy_land(plots=N). Raw land seats nobody until develop_plot builds on it.
   - This is spur land: found a mine or farm (4 plots, included in the startup cost) or buy a home (4 plots) here.
   - Unprotected ground: you can be attacked and robbed here.
   - You are FED for another 12.0h (until hour 32.0). Eating again before then is wasted denari and a wasted decision -- you gain nothing.
