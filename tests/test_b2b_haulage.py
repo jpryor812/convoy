@@ -24,10 +24,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from convoy import actions as A
 from convoy import economy as E
 from convoy import data as D
+from convoy import world_map as M
 from convoy.events import EventLog
 from convoy.world_setup import new_world
 
 FAILURES: list[str] = []
+
+# Where a tavern belongs on this map, read off `world_map` rather than named --
+# it moved from South Protected Zone to The Crossing when the demo map cut the
+# protected zones, and a hard-coded location made that look like a haulage bug.
+TAVERN_TOWN = M.GOVERNMENT_SITES["Tavern / Inn"]
 
 
 def ok(label: str, cond: bool, detail: str = "") -> None:
@@ -50,7 +56,7 @@ def setup():
     refinery.inventory = {"Grain": 60, "Purified Water": 40}
     refinery.retail_prices = {"Grain": 4.0, "Purified Water": 2.0}
 
-    taverner.location = "South Protected Zone"
+    taverner.location = TAVERN_TOWN
     A.start_business(world, log, taverner, "Tavern / Inn", seed_cash=1000.0)
     tavern = world.businesses[taverner.owned_businesses[0]]
 
@@ -99,7 +105,7 @@ def test_a_full_delivery_conserves_goods_and_money():
     okd, msg = A.deliver_consignment(world, log, courier, con.id)
     ok("cannot deliver at the wrong place", not okd, msg)
 
-    courier.location = "South Protected Zone"
+    courier.location = TAVERN_TOWN
     paid_before = courier.denari
     okd, msg = A.deliver_consignment(world, log, courier, con.id)
     ok("delivered", okd, msg)
@@ -321,19 +327,42 @@ def test_carriage_is_priced_on_cargo_value_and_danger():
 
     The whole road crosses in five simulated minutes, so a time-based fee makes
     haulage never worth a decision AND prices a cart of daggers like a cart of
-    stone. Distance still has to matter, though -- that is what gives a mine
-    near its refinery a real advantage.
+    stone. Distance still has to matter, though -- that is what makes where you
+    build a decision rather than a detail.
+
+    WHAT LOCATION BUYS YOU CHANGED TWICE. It first meant nearness to a refinery,
+    while the state mine and farm sat minutes from the smelters. Clearing both
+    ends of the road moved every mine and farm into the middle, so it became
+    which END you served cheaply. On the demo map, with four segments instead of
+    six and no safe approach to the market, it is neither -- and the reason is
+    worth pinning down, because it is the model working rather than failing.
+
+    DANGER DOMINATES DISTANCE. The fee is priced on the worst road a load
+    crosses, so every route into Town pays the Switchbacks premium and they all
+    land within a denarius of each other whether the haul is one segment or four.
+    Reaching the market costs what it costs; only the northbound run to the
+    smelters, over the mild Slagside Road, is cheap.
+
+    So the property worth guarding is no longer about distance at all. It is that
+    the road's CHARACTER prices the load, and these two assertions say so
+    directly: mild ground is meaningfully cheaper than bad ground, and a short
+    haul over bad ground beats a long one that avoids it.
     """
     value = D.base_price("Copper Ore") * 100
-    near = E.suggested_courier_fee("Millrace Farms", "Refinery Row", value)
-    far = E.suggested_courier_fee("Millrace Farms", "Town", value)
-    # About a tenth of the load's value on safe road, half again through the
-    # worst country. The premium is the whole reason a mine near its refinery is
-    # a better mine.
-    ok("the dangerous haul pays meaningfully more", far > near * 1.35,
-       f"{near:.2f} vs {far:.2f}")
-    cheap = E.suggested_courier_fee("Kiln Row", "Town", 100.0)
-    dear = E.suggested_courier_fee("Kiln Row", "Town", 2000.0)
+    mild = E.suggested_courier_fee(M.LOCATIONS[1], M.LOCATIONS[0], value)
+    bad = E.suggested_courier_fee(M.LOCATIONS[1], M.LOCATIONS[-1], value)
+    ok("the bad road pays meaningfully more", bad > mild * 1.2,
+       f"mild {mild:.2f} vs bad {bad:.2f}")
+
+    # One segment over the worst ground against three that avoid it.
+    short_bad = E.suggested_courier_fee(M.LOCATIONS[-2], M.LOCATIONS[-1], value)
+    long_mild = E.suggested_courier_fee(M.LOCATIONS[-2], M.LOCATIONS[0], value)
+    ok("danger outweighs distance", short_bad > long_mild,
+       f"1 bad segment {short_bad:.2f} vs 3 milder ones {long_mild:.2f}")
+
+    spur = M.SPURS[0].name
+    cheap = E.suggested_courier_fee(spur, "Town", 100.0)
+    dear = E.suggested_courier_fee(spur, "Town", 2000.0)
     ok("valuable cargo pays more on the same road", dear > cheap * 4,
        f"{cheap:.2f} vs {dear:.2f}")
 

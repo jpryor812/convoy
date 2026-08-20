@@ -49,6 +49,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import inspect as inspect_mod
 from . import advice as ADV
 from . import checkpoint
 from .engine import Engine, EngineConfig
@@ -412,12 +413,11 @@ class LiveSession:
                 continue
             when, why = self.next_decision_at(a)
             sim_left = max(when - w.sim_time, 0.0)
-            detail = a.activity.detail or {}
-            doing = a.activity.kind
-            if doing == "work" and detail.get("role"):
-                doing = f"working as {detail['role']}"
-            elif doing == "travel" and a.in_transit:
-                doing = f"travelling to {a.in_transit[1]}"
+            # One phrasing, shared with the click-through panels. Two copies of
+            # this drifted into "working as Miner" here and "work" there, so a
+            # viewer polling the feed and a viewer opening the panel disagreed
+            # about what the same agent was doing.
+            doing = inspect_mod.doing_phrase(a)
             unheard = [r for r in a.live_advice(w.sim_hour) if r.times_seen == 0]
             out.append({
                 "id": a.id, "name": a.name,

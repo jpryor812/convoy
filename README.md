@@ -1,5 +1,9 @@
 # Convoy — Agent Sandbox Validation Build
 
+> **Current work is on the `demo-map` branch, not `main`.** Start with
+> `HANDOFF.md`, then `PHASE6.md`. The paragraph below describes the original
+> headless validation build; the project now also has a drawn, clickable map.
+
 A **headless economic simulation** of a Bronze & Iron Age trading-and-piracy
 economy. No rendering, no game client, no human players: 75 AI agents (15 each
 across 5 models, via OpenRouter) live in the economy for 120 real hours, each

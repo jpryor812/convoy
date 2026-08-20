@@ -5,7 +5,7 @@ YOU
   name: Tester
   denari: 500.0
   net_worth: 1442.0
-  location: Kiln Row
+  location: Blindfold Draw
   health: 100.0
   hunger: Normal, 0.0h since eating
   doing: idle
@@ -16,9 +16,9 @@ YOU
   vehicle: Donkey Cart
   weapon: Slingshot
   your_vehicles:
-    - id=V1, type=Donkey Cart, location=Kiln Row, cargo_capacity=100, mounted=True, condition=functional
+    - id=V1, type=Donkey Cart, location=Blindfold Draw, cargo_capacity=100, mounted=True, condition=functional
   businesses:
-    - id=B0001, name=Tester's Farm, type=Farm, location=Kiln Row, cash=120.0, workers=0, developed_plots=0, employee_places=0, employee_places_free=0, storage_capacity=150, storage_used=30, researchers=0, research_tier=0, unspent_rp=0.0, production=IDLE -- making nothing and earning nothing. Call set_production to start. This type can make: Dirty Water, Wheat, Hide. It also needs somebody working in it, and a price.
+    - id=B0001, name=Tester's Farm, type=Farm, location=Blindfold Draw, cash=120.0, workers=0, developed_plots=0, employee_places=0, employee_places_free=0, storage_capacity=150, storage_used=30, researchers=0, research_tier=0, unspent_rp=0.0, production=IDLE -- making nothing and earning nothing. Call set_production to start. This type can make: Dirty Water, Wheat, Hide. It also needs somebody working in it, and a price.
       stock: Grain=30
 
 WHERE YOU ARE
@@ -29,8 +29,9 @@ WHERE YOU ARE
 
 WHAT YOU CAN DO FROM HERE
   - 1 business(es) here to buy from or sell to (listed above); 1 player-owned and may hire.
-  - LAND HERE: 40 of 40 plots unsold at 100 each -- buy_land(plots=N). Raw land seats nobody until develop_plot builds on it.
+  - LAND HERE: 20 of 20 plots unsold at 100 each -- buy_land(plots=N). Raw land seats nobody until develop_plot builds on it.
   - This is spur land: found a mine or farm (4 plots, included in the startup cost) or buy a home (4 plots) here.
+  - Unprotected ground: you can be attacked and robbed here.
   - You are FED for another 12.0h (until hour 32.0). Eating again before then is wasted denari and a wasted decision -- you gain nothing.
   - Carrying 6/100 units.
 

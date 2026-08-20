@@ -1,3 +1,25 @@
+> **SUPERSEDED IN PART — 2026-08-20. Read `PHASE6.md` first.**
+>
+> This was the art plan. Most of its *reasoning* still holds; several of its
+> *conclusions* were overturned by building them.
+>
+> **What changed:**
+> - **Kenney is no longer the target style.** Ground and buildings are Pipoya;
+>   people are isaiah658's, re-clothed. Kenney's farm is a windmill and its mine
+>   a grey ramp, and its people have no faces because they are drawn top-down.
+> - **The Meshy pipeline works and is not used in 2D.** §8's rig notes are still
+>   accurate; the conclusion is not. A photographed model keeps its information
+>   in texture detail and a map sprite is 80 pixels. It is the 3D scene's art.
+> - **Per-category camera angles (§11, §13) are moot for the 2D map** — nothing
+>   is Blender-rendered on it any more.
+> - **Agent state on the map rather than a side panel (§1, §2) was built** — as
+>   white cards floating above the thing you clicked. See PHASE6 §6.
+>
+> **What still holds:** the argument for flat top-down over a perspective camera;
+> the Smallville reference; sizing framing to the largest asset rather than
+> per-asset; and §8's warning that `Standard` view transform matters and AgX
+> silently desaturates everything.
+
 # Visuals — what to build, easiest first
 
 Target: **Kenney's shape language, better executed.** Reference points are the

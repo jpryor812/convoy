@@ -33,6 +33,9 @@ from convoy.state import Agent, Business, Property, VehicleInstance, World
 FAILURES: list[str] = []
 HOUR = 3600.0
 
+# A spur, from the map rather than named. See the note in test_property_and_tools.
+SPUR = M.SPURS[0].name
+
 GOLDEN = Path(__file__).parent / "golden_observation.txt"
 
 
@@ -51,21 +54,21 @@ def setup():
     w, log = World(), EventLog(None, echo_min=99)
     w.sim_time = 20 * HOUR
 
-    a = Agent(id="A0001", name="Tester", model="rb", location="Kiln Row")
+    a = Agent(id="A0001", name="Tester", model="rb", location=SPUR)
     a.denari = 500.0
     a.inventory = {"Iron": 4, "Grain": 2}
     w.agents[a.id] = a
 
-    other = Agent(id="A0002", name="Neighbour", model="rb", location="Kiln Row")
+    other = Agent(id="A0002", name="Neighbour", model="rb", location=SPUR)
     w.agents[other.id] = other
 
-    v = VehicleInstance(id="V1", type="Donkey Cart", owner=a.id, location="Kiln Row")
+    v = VehicleInstance(id="V1", type="Donkey Cart", owner=a.id, location=SPUR)
     w.vehicles["V1"] = v
     a.owned_vehicles.append("V1")
     a.mounted_vehicle = "V1"
 
     biz = Business(
-        id="B0001", type="Farm", name="Tester's Farm", owner=a.id, location="Kiln Row",
+        id="B0001", type="Farm", name="Tester's Farm", owner=a.id, location=SPUR,
         cash=120.0, plots=M.SITE_BASE_PLOTS,
     )
     biz.inventory = {"Grain": 30}
@@ -89,7 +92,9 @@ def test_static_is_pure_and_stable():
     w.government.sales_tax = 0.19
     check("briefing ignores world state", O.static_briefing(), first)
 
-    for fact in ["The Switchbacks", "No escape off-road", "Copper Gulch", "Iron"]:
+    # Facts read off the map, not remembered from an older one: The Switchbacks
+    # was a segment on the seven-place valley and this test outlived it.
+    for fact in [M.SEGMENTS[-1].name, "No escape off-road", M.SPURS[0].name, "Iron"]:
         ok(f"briefing mentions {fact}", fact in first)
 
     # Tax RATES are dynamic and must not be baked into the cached prefix.
@@ -113,7 +118,7 @@ def test_player_prices_appear_only_when_they_deviate():
     w, log, a = setup()
     rival = Business(
         id="B0002", type="Tavern / Inn", name="Rival Store", owner="A0002",
-        location="Kiln Row",
+        location=SPUR,
     )
     w.businesses[rival.id] = rival
 
@@ -191,10 +196,21 @@ def test_memory_respects_limit_and_ordering():
 def test_affordances_track_the_ground_underfoot():
     w, log, a = setup()
 
-    a.location = "Kiln Row"                      # spur, off protected Town
+    # PROTECTION IS TESTED WHEREVER THE MAP ACTUALLY HAS IT. This asked for a
+    # protected SPUR, which existed while spurs hung off the protected zones and
+    # then off Town; the demo map has neither, so the lookup raised StopIteration
+    # and the test died on its own fixture rather than on an affordance.
+    from convoy import world_map as WM
+    a.location = next(iter(WM.PROTECTED_ZONES))
+    lines = O.observe(w, log, a, "reevaluation")["you_can"]
+    ok("protected ground is not flagged unsafe",
+       not any("attacked" in x for x in lines))
+
+    # Spur land offers what only spur land can, and is open country besides.
+    a.location = WM.SPURS[0].name
     lines = O.observe(w, log, a, "reevaluation")["you_can"]
     ok("spur land offered", any("spur land" in x for x in lines))
-    ok("protected spur is not flagged unsafe", not any("attacked" in x for x in lines))
+    ok("an unprotected spur says so", any("attacked" in x for x in lines))
 
     a.location = "The Hills"                     # main road, unprotected
     lines = O.observe(w, log, a, "reevaluation")["you_can"]
@@ -221,7 +237,7 @@ def test_here_lists_are_bounded():
     """A crowded junction must not blow up the payload."""
     w, log, a = setup()
     for i in range(40):
-        extra = Agent(id=f"A1{i:03d}", name=f"Crowd-{i}", model="rb", location="Kiln Row")
+        extra = Agent(id=f"A1{i:03d}", name=f"Crowd-{i}", model="rb", location=SPUR)
         w.agents[extra.id] = extra
 
     obs = O.observe(w, log, a, "reevaluation")

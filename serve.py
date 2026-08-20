@@ -41,6 +41,7 @@ from typing import Any
 from convoy import advice as ADV
 from convoy import checkpoint
 from convoy import conversation as CONV
+from convoy import inspect as INSPECT
 from convoy import interrogate as I
 from convoy import llm
 from convoy.config import load_env
@@ -108,6 +109,29 @@ class Backend:
             answer=ans.text, kind=ans.kind, model_called=ans.model_called,
         ))
         return {"agent": agent_id, "question": question, "who": who, **ans.as_dict()}
+
+    # -- what the map shows when you click something -------------------------
+
+    def cards(self) -> dict[str, Any]:
+        """Every clickable panel, off the run's own checkpoint.
+
+        The checkpoint rather than the event log, because a panel is a
+        SNAPSHOT -- what this business holds and what that agent is doing right
+        now -- and reconstructing present state by replaying events is both
+        slower and a second implementation of something `checkpoint` already
+        does exactly. `advise` reads the same file for the same reason.
+
+        Loaded per request, not cached: a run that is still going should answer
+        with where it has got to, not where it was when the server started.
+        """
+        path = self.run_path / "checkpoint.json"
+        if not path.exists():
+            return {"error": "this run has no checkpoint, so it has no state to show"}
+        world = checkpoint.load(path)
+        return {
+            "hour": round(world.sim_hour, 2),
+            "cards": INSPECT.cards(world),
+        }
 
     # -- advice ------------------------------------------------------------
 
@@ -231,6 +255,8 @@ def _handler(backend: Backend):
         def do_GET(self) -> None:                           # noqa: N802
             if self.path in ("/", "/run"):
                 return self._send(backend.run().summary())
+            if self.path == "/cards":
+                return self._send(backend.cards())
             m = _AGENT_RE.match(self.path)
             if not m:
                 return self._send({"error": f"no route {self.path}"}, 404)
