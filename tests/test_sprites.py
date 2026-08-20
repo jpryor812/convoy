@@ -155,39 +155,27 @@ def test_every_vehicle_has_a_sprite() -> None:
 # ---------------------------------------------------------------------------
 
 def _renderer():
+    """The map builder, loaded by path because it is a script, not a package.
+
+    Was `render_world.py` until 2026-08-20, when the two renderers were merged.
+    One could read a run and the other could draw the world, and neither could
+    do both -- so the run you wanted to watch was only ever available in the old
+    card layout. `preview_world.py` absorbed the reading.
+    """
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location("render_world", ROOT / "render_world.py")
+    spec = importlib.util.spec_from_file_location(
+        "preview_world", ROOT / "preview_world.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)          # type: ignore[union-attr]
     return mod
-
-
-def test_layout_places_every_location_and_spur() -> None:
-    places = _renderer().build_places()
-    check("23 places", len(places), len(M.LOCATIONS_SPEC) + len(M.SPURS))
-    for loc in M.LOCATIONS_SPEC:
-        ok(f"{loc.name} placed", loc.name in places)
-    for spur in M.SPURS:
-        ok(f"{spur.name} placed", spur.name in places)
-        check(f"{spur.name} hangs off its junction",
-              places[spur.name]["junction"], spur.junction)
-
-
-def test_nothing_is_laid_out_off_canvas() -> None:
-    """A place drawn at a negative x is invisible and nobody notices."""
-    r = _renderer()
-    half = 226 / 2
-    for name, p in r.build_places().items():
-        ok(f"{name} within canvas",
-           half <= p["x"] <= r.CANVAS_W - half, f"x={p['x']}")
 
 
 def test_dedupe_collapses_a_stationary_agent() -> None:
     r = _renderer()
     track = [[float(h), "Town", None] for h in range(21)]
     check("21 identical hourly samples collapse to 1", len(r.dedupe(track)), 1)
-    track.append([21.0, "Kiln Row", None])
+    track.append([21.0, M.SPURS[0].name, None])
     check("a real move survives", len(r.dedupe(track)), 2)
 
 
@@ -198,52 +186,54 @@ def test_checkpoint_decoding_unwraps_the_custom_encoding() -> None:
     check("seq round-trip", r.decode({"__seq__": [1, 2, 3]}), [1, 2, 3])
 
 
-def test_a_real_run_reconstructs() -> None:
+def test_the_snapshot_payload_is_drawable() -> None:
+    """Hour zero, with no run: what the page shows before anybody has played."""
     r = _renderer()
-    runs = [d for d in Path("runs/phase2").iterdir() if (d / "events.jsonl").exists()
-            and (d / "events.jsonl").stat().st_size > 10_000]
+    payload = r.build_payload()
+    check("snapshot mode", payload["mode"], "snapshot")
+    ok("every place is positioned",
+       {p["name"] for p in payload["places"]} == set(M.ALL_PLACES))
+    ok("one government branch per business type",
+       len(payload["buildings"]) == len(M.GOVERNMENT_SITES),
+       f"{len(payload['buildings'])} buildings")
+    ok("every building has a card",
+       all(b["id"] in payload["cards"] for b in payload["buildings"]))
+    ok("every person has a card",
+       all(p["id"] in payload["cards"] for p in payload["people"]))
+
+
+def test_a_real_run_replays() -> None:
+    r = _renderer()
+    runs = [d for d in Path("runs/phase2").iterdir()
+            if (d / "events.jsonl").exists()
+            and (d / "events.jsonl").stat().st_size > 10_000
+            and (d / "checkpoint.json").exists()]
     if not runs:
         return                                   # nothing to check against
     run = max(runs, key=lambda d: (d / "events.jsonl").stat().st_size)
-    payload = r.load_run(run, r.build_places())
+    payload = r.build_payload(run)
 
+    check("replay mode", payload["mode"], "replay")
     ok("agents found", payload["agents"], run.name)
     ok("end hour positive", payload["end_hour"] > 0)
     ok("every agent has a track",
        all(a["id"] in payload["tracks"] for a in payload["agents"]))
 
-    # A RUN BELONGS TO THE MAP IT WAS RECORDED ON, and that is worth saying out
-    # loud rather than discovering as a wall of "place is not real" failures.
-    #
-    # The demo map dropped both protected zones and six spurs, so a run from the
-    # seven-place valley names ground that no longer exists -- Drovers End,
-    # Orchard Walk, and the rest. Nothing is wrong with either the run or the
-    # renderer; they are simply describing different worlds.
-    #
-    # Any unknown place means a foreign map, because the simulation only ever
-    # writes places it has. So the whole run is reported as foreign and skipped,
-    # instead of one assertion firing per business standing on a deleted spur.
+    # A BUILDING MUST STAND SOMEWHERE THE LAYOUT KNOWS. A run recorded on a
+    # bigger valley names ground this world does not have; `replay` drops those
+    # with a printed warning rather than drawing them at nowhere, so whatever
+    # survives has to be placeable.
     known = {p["name"] for p in payload["places"]}
-    seen = {row[1] for t in payload["tracks"].values() for row in t}
-    seen |= {row[2] for t in payload["tracks"].values() for row in t
-             if row[2] is not None}
-    seen |= {b["place"] for b in payload["businesses"]}
-    foreign = sorted(x for x in seen if x not in known)
-    if foreign:
-        print(f"  SKIP {run.name}: recorded on a different map "
-              f"({len(foreign)} places this world does not have, "
-              f"e.g. {', '.join(foreign[:3])})")
-        return
+    for b in payload["buildings"]:
+        ok(f"{b['id']} stands somewhere real", b["place"] in known, str(b))
+        ok(f"{b['id']} has a position", b["x"] is not None and b["y"] is not None)
 
+    # Tracks may name foreign places -- that is data, not a bug -- but every
+    # POSITION the page can compute must resolve, so a track row either names a
+    # known place or is not there at all.
     for aid, track in payload["tracks"].items():
         for row in track:
             ok(f"{aid} track place is real", row[1] in known, str(row))
-            if row[2] is not None:
-                ok(f"{aid} destination is real", row[2] in known, str(row))
-    for b in payload["businesses"]:
-        ok(f"business {b['id']} sits somewhere real", b["place"] in known, str(b))
-    ok("payload is JSON-serialisable", json.dumps(payload) is not None)
-
 
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

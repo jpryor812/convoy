@@ -1,18 +1,31 @@
 #!/usr/bin/env python3
-"""Draw the valley with the art on it -- tiled ground, buildings, people, flags.
+"""The map: the valley drawn, and a run played back on it.
 
-    python3 preview_world.py   ->  world_preview.html
+    python3 preview_world.py                      # hour zero, no run needed
+    python3 preview_world.py --run latest         # play back the newest run
+    python3 preview_world.py --run runs/phase2/X  # play back a particular one
 
-WHAT THIS IS FOR. `preview_layout.py` answers "where does everything stand?" with
-coloured squares and no art. This answers "what does it LOOK like?", which is a
-different question and the one that decides whether the map reads as a place or
-as a diagram. Neither needs a simulation run, so both are fast enough to look at
-after every change.
+Both modes write `world_preview.html`, a single self-contained file.
 
-It draws a PLAUSIBLE occupancy, not a real one -- every place filled to a share
-of its slots, agents standing about, flags on the ground around each holding.
-That is enough to judge the art, the scale and the density. Wiring the actual
-run in is `render_world.py`'s job.
+ONE RENDERER, NOT TWO. Until 2026-08-20 there were two: `render_world.py` could
+read a run but drew the valley as cards in a row, and this file drew the valley
+properly but had never seen a run. So the run you actually wanted to watch was
+only ever available in the old layout. They are merged; the reading was ~200
+lines and the drawing ~800, so the reading moved here and the other file is
+gone.
+
+WITHOUT A RUN it draws hour zero, built by `world_setup.new_world` rather than
+invented: ten government branches, twenty agents in Town, every other block
+wooded and for sale. That is what a run starts from, and it is enough to judge
+the art, the scale and the density.
+
+WITH A RUN it plays the thing back -- agents moving along the road between
+places, businesses appearing at the hour they were founded, and every agent's
+own account of why, quoted in their card up to wherever the slider sits.
+
+`preview_layout.py` is still separate and still useful: it answers "where does
+everything stand" with coloured squares and no art, which is the question to ask
+when `layout.check()` fails.
 
 THE MAP RUNS LEFT TO RIGHT
 -----------------------------------------------------------------------------
@@ -31,11 +44,14 @@ React Three Fiber later and north should stay north in the world model.
 
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import random
+from collections import defaultdict
 from pathlib import Path
 
+from convoy import checkpoint as CP
 from convoy import inspect as I
 from convoy import layout as L
 from convoy import sprites as SP
@@ -75,6 +91,7 @@ PIXELS_PER_METRE = 1.0
 TILE_M = 48.0                        # one Pipoya tile
 
 OUT = ROOT / "world_preview.html"
+RUN_DIR = ROOT / "runs" / "phase2"
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +131,7 @@ def collect_assets() -> dict[str, str]:
 
     for btype in SP.STRUCTURE_FOR_BUSINESS:
         art[f"biz:{_slug(btype)}"] = data_uri(SP.structure_for(btype))
-    for person in list(SP.PERSON_FOR_MODEL.values()) + [SP.HAULER]:
+    for person in sorted(set(SP.PERSON_FOR_MODEL.values()) | {SP.HAULER}):
         for facing in ("S", "N", "W", "E"):
             path = SP.PEOPLE / f"{person}-{facing}-0.png"
             if path.exists():
@@ -223,7 +240,196 @@ def starting_world(places: dict[str, L.Place]) -> dict:
             "cards": I.cards(world)}
 
 
-def build_payload() -> dict:
+# ---------------------------------------------------------------------------
+# A REAL RUN
+# ---------------------------------------------------------------------------
+#
+# Ported from `render_world.py`, which is now deleted. That file could read a run
+# and this one could draw a world, and neither could do both -- so the run you
+# wanted to watch was only ever available in the old card layout. The reading is
+# ~200 lines and the drawing is ~800, so the reading moved.
+
+def newest_run() -> Path:
+    runs = [d for d in RUN_DIR.iterdir() if (d / "events.jsonl").exists()]
+    if not runs:
+        raise SystemExit(f"no runs with an events.jsonl under {RUN_DIR}")
+    return max(runs, key=lambda d: d.stat().st_mtime)
+
+
+def decode(node):
+    """Checkpoints encode dicts as {"__dict__": [[k, v], ...]}. Unwrap enough
+    to read values out without importing the whole state model."""
+    if isinstance(node, dict):
+        if "__dict__" in node:
+            return {decode(k): decode(v) for k, v in node["__dict__"]}
+        if "__seq__" in node:
+            return [decode(v) for v in node["__seq__"]]
+        if "__type__" in node:
+            return {k: decode(v) for k, v in node.items() if k != "__type__"}
+    return node
+
+
+def walk_dict(node) -> list[dict]:
+    decoded = decode(node)
+    if isinstance(decoded, dict):
+        return [v for v in decoded.values() if isinstance(v, dict)]
+    if isinstance(decoded, list):
+        return [v for v in decoded if isinstance(v, dict)]
+    return []
+
+
+def dedupe(track: list) -> list:
+    """Drop consecutive samples that say the same thing.
+
+    The diary fires hourly per agent, so one standing still for 21 hours emits
+    21 identical rows and a 20-agent 84-hour run carries thousands of them
+    straight into the page.
+    """
+    out: list = []
+    for row in track:
+        if out and out[-1][1] == row[1] and out[-1][2] == row[2]:
+            continue
+        out.append(row)
+    return out
+
+
+def replay(run: Path, places: dict[str, L.Place]) -> dict:
+    """Read a run into everything the page needs to play it back."""
+    with (run / "events.jsonl").open(encoding="utf-8") as fh:
+        events = [json.loads(line) for line in fh if line.strip()]
+    if not events:
+        raise SystemExit(f"{run}/events.jsonl is empty")
+
+    known = set(places)
+    end_hour = max(e["sim_time"] for e in events) / 3600.0
+
+    names: dict[str, str] = {}
+    models: dict[str, str] = {}
+    cp_path = run / "checkpoint.json"
+    raw_cp = json.loads(cp_path.read_text(encoding="utf-8")) if cp_path.exists() else {}
+    for entry in walk_dict(raw_cp.get("agents")):
+        if entry.get("id"):
+            names[entry["id"]] = entry.get("name", entry["id"])
+            models[entry["id"]] = entry.get("model", "")
+
+    agents: dict[str, dict] = {}
+    tracks: dict[str, list] = defaultdict(list)
+    decisions: dict[str, list] = defaultdict(list)
+    founded: dict[str, dict] = {}
+    foreign: set[str] = set()
+
+    for e in events:
+        hour = e["sim_time"] / 3600.0
+        actor, etype = e.get("actor"), e["type"]
+        detail, loc = e.get("detail", {}), e.get("location")
+        if loc and loc not in known:
+            foreign.add(loc)
+
+        if actor and actor.startswith("A"):
+            a = agents.setdefault(actor, {
+                "id": actor, "name": names.get(actor, actor),
+                "model": models.get(actor, ""), "died": None,
+            })
+            if loc in known:
+                tracks[actor].append([round(hour, 3), loc, None])
+            if etype == "travel":
+                dest = detail.get("destination")
+                secs = float(detail.get("seconds") or 0)
+                if dest in known:
+                    # Departure AND arrival, so an agent is drawn moving along
+                    # the road rather than teleporting between two places.
+                    tracks[actor].append(
+                        [round(hour, 3), loc if loc in known else dest, dest])
+                    tracks[actor].append([round(hour + secs / 3600.0, 3), dest, None])
+            if etype in ("agent_died", "starved_to_death"):
+                a["died"] = round(hour, 2)
+            if etype == "llm_reasoning":
+                decisions[actor].append({
+                    "h": round(hour, 2),
+                    "woken": detail.get("woken_because", ""),
+                    "did": detail.get("did", ""),
+                    "why": detail.get("text", ""),
+                })
+
+        if etype == "business_founded" and e.get("subject"):
+            founded[e["subject"]] = {
+                "id": e["subject"], "type": detail.get("business_type", "?"),
+                "place": loc, "owner": actor, "from": round(hour, 2),
+                "to": None, "name": detail.get("name", ""),
+            }
+        elif etype in ("business_closed", "business_bankrupt") and e.get("subject"):
+            if e["subject"] in founded:
+                founded[e["subject"]]["to"] = round(hour, 2)
+
+    for track in tracks.values():
+        track.sort(key=lambda row: row[0])
+
+    # A RUN BELONGS TO THE MAP IT WAS RECORDED ON. Said out loud rather than
+    # drawn wrong: a run from a bigger valley names ground this world does not
+    # have, and its agents would silently vanish at those places.
+    if foreign:
+        print(f"  !! {run.name} names {len(foreign)} places this world does not "
+              f"have ({', '.join(sorted(foreign)[:3])}...). It was recorded on a "
+              f"different map; positions there cannot be drawn.")
+
+    # The state's branches exist from hour zero; everything else is founded.
+    world = CP.load(cp_path) if cp_path.exists() else None
+    buildings: list[dict] = []
+    used: dict[str, int] = {}
+    government = [
+        {"id": b.id, "type": b.type, "place": b.location, "owner": None,
+         "from": 0.0, "to": None, "name": b.name}
+        for b in (world.businesses.values() if world else [])
+        if b.owner == "Government"
+    ]
+    for spec in government + sorted(founded.values(), key=lambda b: b["from"]):
+        place = places.get(spec["place"])
+        if place is None:
+            continue
+        i = used.get(spec["place"], 0)
+        if i >= len(place.slots):
+            # The land model guarantees a slot per business the ground can hold;
+            # more than that means the run outgrew this map, not a drawing bug.
+            print(f"  !! {spec['place']} has no slot left for {spec['type']}")
+            continue
+        used[spec["place"]] = i + 1
+        slot = place.slots[i]
+        buildings.append({**spec, "x": slot.x, "y": slot.y,
+                          "sprite": _slug(spec["type"]), "scale": 1.0,
+                          "plots": 0})
+
+    flags = []
+    if world:
+        for plot in world.plots.values():
+            place = places.get(plot.location)
+            if place is None or not place.parcels:
+                continue
+            idx = len([f for f in flags if f["place"] == plot.location])
+            if idx >= len(place.parcels):
+                continue
+            parcel = place.parcels[idx]
+            flags.append({"x": parcel.x, "y": parcel.y, "place": plot.location,
+                          "owner": plot.owner or "unsold", "home": plot.developed})
+
+    return {
+        "mode": "replay",
+        "run": run.name,
+        "end_hour": round(end_hour, 2),
+        # The cards and the flags come from the CHECKPOINT, which is the end of
+        # the run -- not the slider's hour. Labelled as such in the popup rather
+        # than quietly implying a business held that stock all along.
+        "checkpoint_hour": round(world.sim_hour, 2) if world else None,
+        "buildings": buildings,
+        "flags": flags,
+        "people": [],
+        "agents": sorted(agents.values(), key=lambda a: a["id"]),
+        "tracks": {k: dedupe(v) for k, v in tracks.items()},
+        "decisions": decisions,
+        "cards": I.cards(world) if world else {},
+    }
+
+
+def build_payload(run: Path | None = None) -> dict:
     places = L.build()
     minx, miny, maxx, maxy = L.bounds(places)
 
@@ -239,6 +445,8 @@ def build_payload() -> dict:
         "block_m": L.BLOCK_PITCH,
         "stride_m": L.BLOCK_STRIDE,
         "river": {"axis": L.river_axis(), "half": L.RIVER_HALF_WIDTH},
+        # `wx`/`wy` turn these into screen pixels; the replay interpolates an
+        # agent between two of them to draw it moving along the road.
         "places": [
             {
                 "name": p.name, "kind": p.kind, "protected": p.protected,
@@ -250,20 +458,43 @@ def build_payload() -> dict:
             }
             for p in places.values()
         ],
-        **starting_world(places),
+        **(replay(run, places) if run else
+           {"mode": "snapshot", **starting_world(places)}),
     }
 
 
 def main() -> int:
-    payload = build_payload()
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--run", nargs="?", const="latest", default=None,
+                    help="a run directory, or 'latest'; omit for hour zero")
+    args = ap.parse_args()
+
+    run = None
+    if args.run:
+        run = newest_run() if args.run == "latest" else Path(args.run)
+        if not (run / "events.jsonl").exists():
+            raise SystemExit(f"no events.jsonl in {run}")
+
+    payload = build_payload(run)
     art = collect_assets()
     html = (TEMPLATE
             .replace("__PROPS__", json.dumps(
                 {k: len(v) for k, v in SP.PROP_SPRITES.items()}))
+            .replace("__PEOPLE__", json.dumps(SP.PERSON_FOR_MODEL))
+            .replace("__DEFAULT_PERSON__", json.dumps(
+                next(iter(SP.PERSON_FOR_MODEL.values()))))
+            .replace("__HAULER__", json.dumps(SP.HAULER))
             .replace("__DATA__", json.dumps(payload))
             .replace("__ART__", json.dumps(art)))
     OUT.write_text(html, encoding="utf-8")
     b = payload["bounds"]
+    if payload["mode"] == "replay":
+        print(f"wrote {OUT.name} -- replaying {payload['run']} to hour "
+              f"{payload['end_hour']}, {len(payload['agents'])} agents, "
+              f"{len(payload['buildings'])} buildings, "
+              f"{sum(len(d) for d in payload['decisions'].values())} decisions "
+              f"({OUT.stat().st_size / 1024:,.0f} KB)")
+        return 0
     print(f"wrote {OUT.name} -- "
           f"{(b['maxy'] - b['miny']) * PIXELS_PER_METRE:,.0f}"
           f"x{(b['maxx'] - b['minx']) * PIXELS_PER_METRE:,.0f}px world, "
@@ -332,9 +563,19 @@ TEMPLATE = r"""<!doctype html>
   #reply{margin-top:8px;padding:7px;background:#f1eede;border-radius:4px;
          border:1px solid #ddd8c4;white-space:pre-wrap;display:none}
   #reply.show{display:block}
+
+  /* Only in replay mode; `snapshot` has no time to move through. */
+  #clock{position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:4;
+         background:#12160fe8;border:1px solid #46502f;border-radius:6px;
+         padding:8px 14px;display:none;align-items:center;gap:11px}
+  #clock.on{display:flex}
+  #clock input[type=range]{width:min(46vw,460px);accent-color:#c9d6a8}
+  #clocktext{color:#f2e9c9;min-width:120px}
 </style></head><body>
 <canvas id="c"></canvas>
 <div id="hud"></div>
+<div id="clock"><input type="range" id="slider" min="0" step="0.25">
+  <span id="clocktext"></span></div>
 <div id="popup"><button id="close" title="close">&times;</button>
   <div id="popup-body"></div></div>
 <div id="keys"><span>click</span> a building or a person &nbsp; <span>drag</span> pan
@@ -354,8 +595,88 @@ for (const [k, src] of Object.entries(ART)) {
 }
 
 const B = DATA.bounds, PPM = DATA.ppm, TILE = DATA.tile_m * PPM;
+const REPLAY = DATA.mode === "replay";
+const HAULER = __HAULER__;
+
+/* Place name -> world position, so a replayed agent can be put BETWEEN two of
+   them rather than snapped to whichever it left. */
+const PLACE = {};
+for (const p of DATA.places) PLACE[p.name] = p;
+
+let HOUR = REPLAY ? DATA.end_hour : 0;
 let ROAD_PATTERN = null, STREET_PATTERN = null, GRASS_PATTERN = null;
+
+/* ------------------------------------------------------------ replay time */
+
+function livingAt(a, h){ return a.died === null || h < a.died; }
+function bizAt(b, h){ return b.from <= h && (b.to === null || h < b.to); }
+
+/* Where an agent is at hour h. Binary search for the last sample at or before
+   h, then interpolate if that sample was a departure. */
+function positionAt(id, h){
+  const track = DATA.tracks[id];
+  if (!track || !track.length) return null;
+  let lo = 0, hi = track.length - 1, at = -1;
+  while (lo <= hi){
+    const mid = (lo + hi) >> 1;
+    if (track[mid][0] <= h){ at = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  /* Before the first sample an agent already EXISTS and is standing where it
+     started. Returning null here hid every agent at hour 0. */
+  if (at < 0){
+    const start = PLACE[track[0][1]];
+    return start ? {x: start.x, y: start.y, moving: false} : null;
+  }
+  const [t0, from, dest] = track[at];
+  const here = PLACE[from];
+  if (!here) return null;
+  if (dest && track[at + 1]){
+    const [t1, to] = track[at + 1];
+    const there = PLACE[to];
+    if (there && t1 > t0){
+      const k = Math.max(0, Math.min(1, (h - t0) / (t1 - t0)));
+      return {x: here.x + (there.x - here.x) * k,
+              y: here.y + (there.y - here.y) * k,
+              moving: true, dx: there.x - here.x, dy: there.y - here.y};
+    }
+  }
+  return {x: here.x, y: here.y, moving: false};
+}
+
+/* Which way a walking figure faces. The map lies the valley down, so world +y
+   is screen RIGHT and world +x is screen DOWN -- the axes swap. */
+function facingOf(pos){
+  if (!pos || !pos.moving) return "S";
+  return Math.abs(pos.dy) > Math.abs(pos.dx)
+       ? (pos.dy > 0 ? "E" : "W")
+       : (pos.dx > 0 ? "S" : "N");
+}
+
+/* The people on screen right now. In snapshot mode this is a fixed list; in
+   replay it is recomputed per frame from the tracks. */
+/* A business exists from the hour it was founded to the hour it closed. In
+   snapshot mode every one of them is simply there. */
+function visibleBuildings(){
+  return REPLAY ? DATA.buildings.filter(b => bizAt(b, HOUR)) : DATA.buildings;
+}
+
+function peopleNow(){
+  if (!REPLAY) return DATA.people;
+  const out = [];
+  for (const a of DATA.agents){
+    if (!livingAt(a, HOUR)) continue;
+    const pos = positionAt(a.id, HOUR);
+    if (!pos) continue;
+    out.push({
+      id: a.id, name: a.name, x: pos.x, y: pos.y,
+      person: PERSON_FOR_MODEL[a.model] || DEFAULT_PERSON,
+      facing: facingOf(pos), hauling: pos.moving,
+    });
+  }
+  return out;
+}
 const PROP_COUNT = __PROPS__;
+const PERSON_FOR_MODEL = __PEOPLE__, DEFAULT_PERSON = __DEFAULT_PERSON__;
 /* Filled by drawParcels each frame, drawn afterwards so a tree overlaps the
    square below it instead of being clipped by the next square's fill. */
 let UNSOLD = [];
@@ -385,6 +706,36 @@ let zoom = 1, panx = 0, pany = 0;
    been laid out yet. The division then puts the chosen place at pixel (0,0) and
    the map opens on an empty corner of the valley, which looks exactly like a
    layout bug and is not one. */
+/* ------------------------------------------------------------- the clock */
+
+const clock = document.getElementById("clock");
+const slider = document.getElementById("slider");
+const clocktext = document.getElementById("clocktext");
+
+if (REPLAY){
+  clock.classList.add("on");
+  slider.max = DATA.end_hour;
+  slider.value = DATA.end_hour;
+  slider.oninput = () => {
+    HOUR = parseFloat(slider.value);
+    /* An open card describes a thing that may not exist at the new hour, and a
+       card pointing at a building founded four hours from now is worse than no
+       card. */
+    if (SELECTED && SELECTED.kind === "building" &&
+        !bizAt(SELECTED.ref, HOUR)) closePanel();
+    else if (SELECTED) openPanel(SELECTED);
+    draw();
+  };
+}
+
+function updateClock(){
+  if (!REPLAY) return;
+  const live = DATA.agents.filter(a => livingAt(a, HOUR)).length;
+  const built = visibleBuildings().length;
+  clocktext.textContent =
+    `hour ${HOUR.toFixed(1)} / ${DATA.end_hour} · ${live} alive · ${built} built`;
+}
+
 let framed = false;
 function resize(){
   c.width = innerWidth; c.height = innerHeight;
@@ -511,7 +862,7 @@ function drawStreets(){
   if (!STREET_PATTERN && IMG["ground:sand"])
     STREET_PATTERN = g.createPattern(IMG["ground:sand"], "repeat");
   g.fillStyle = STREET_PATTERN || "#e8dca4";
-  for (const b of DATA.buildings)
+  for (const b of visibleBuildings())
     g.fillRect(Math.round(wx(b) - S / 2), Math.round(wy(b) - S / 2), S, S);
 }
 
@@ -610,7 +961,7 @@ function badgeAt(b){
 function drawBadges(){
   g.save();
   g.setTransform(1, 0, 0, 1, 0, 0);        /* screen space: fixed size */
-  for (const b of DATA.buildings){
+  for (const b of visibleBuildings()){
     const p = badgeAt(b);
     const x = (p.x + panx) * zoom, y = (p.y + pany) * zoom;
     if (x < -20 || y < -20 || x > c.width + 20 || y > c.height + 20) continue;
@@ -630,15 +981,15 @@ function drawBadges(){
 /* What is under the pointer, in world pixels. People beat buildings: a figure
    standing in a doorway is smaller and on top, so it is what the eye means. */
 function hitTest(px, py){
-  for (const p of DATA.people){
-    const im = IMG[`person:${p.person}:${p.facing}`];
+  for (const p of peopleNow()){
+    const im = IMG[`person:${p.hauling ? HAULER : p.person}:${p.facing}`];
     if (!im || !im.width) continue;
     const x = wx(p), y = wy(p);
     if (px >= x - im.width / 2 && px <= x + im.width / 2 &&
         py >= y - im.height && py <= y)
       return {kind: "agent", ref: p};
   }
-  for (const b of DATA.buildings){
+  for (const b of visibleBuildings()){
     const bp = badgeAt(b);
     if (Math.hypot(px - bp.x, py - bp.y) <= (BADGE_R + 3) / zoom)
       return {kind: "building", ref: b};
@@ -718,11 +1069,11 @@ function draw(){
      gets depth for free. Sorting by world position instead would be wrong the
      moment the view rotated. */
   const standing = [];
-  for (const b of DATA.buildings)
+  for (const b of visibleBuildings())
     standing.push({y: wy(b), f: () => building(b)});
-  for (const p of DATA.people)
-    standing.push({y: wy(p), f: () => sprite(`person:${p.person}:${p.facing}`,
-                                             wx(p), wy(p), 1)});
+  for (const p of peopleNow())
+    standing.push({y: wy(p), f: () => sprite(
+      `person:${p.hauling ? HAULER : p.person}:${p.facing}`, wx(p), wy(p), 1)});
   standing.sort((a, b) => a.y - b.y).forEach(s => s.f());
 
   drawBadges();
@@ -741,11 +1092,13 @@ function draw(){
   }
 
   positionPopup();
+  updateClock();
 
   hud.innerHTML =
+    (REPLAY ? `<b>${esc(DATA.run)}</b> &middot; ` : "") +
     `<b>${DATA.places.length}</b> places &middot; ` +
-    `<b>${DATA.buildings.length}</b> buildings &middot; ` +
-    `<b>${DATA.people.length}</b> people &middot; ` +
+    `<b>${visibleBuildings().length}</b> buildings &middot; ` +
+    `<b>${peopleNow().length}</b> people &middot; ` +
     `<b>${DATA.flags.length}</b> plots flagged<br>` +
     `${(WORLD_W / PPM / 1000).toFixed(1)}km valley &middot; ` +
     `zoom ${zoom.toFixed(2)}x &middot; ` +
@@ -778,7 +1131,10 @@ const SERVER = new URLSearchParams(location.search).get("server") || null;
 
 const esc = (t) => String(t).replace(/[&<>"]/g,
   ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[ch]));
-const row = (k, v) => `<div class="row"><span>${esc(k)}</span><span>${v}</span></div>`;
+/* NEITHER SIDE IS ESCAPED HERE -- every caller escapes its own dynamic parts
+   and then adds markup of its own. Escaping again turned the separator in
+   "Weaponsmith / Armory &middot; Blacksmith" into visible "&middot;". */
+const row = (k, v) => `<div class="row"><span>${k}</span><span>${v}</span></div>`;
 const money = (n) => `${Number(n).toLocaleString(undefined,
   {minimumFractionDigits: 2, maximumFractionDigits: 2})} D`;
 
@@ -848,6 +1204,21 @@ function agentPanel(card){
     h += `<h3>Works for</h3>`;
     h += card.employed_by.map(e => row(
       `${esc(e.business)} &middot; ${esc(e.role)}`, `${money(e.wage)}/h`)).join("");
+  }
+
+  /* WHAT THEY SAID, and the reason a replay is worth watching at all. The rest
+     of the card is state; this is the agent's own account of why. Filtered to
+     the slider's hour, because a decision it has not made yet is not something
+     it can be asked about. */
+  const said = (DATA.decisions && DATA.decisions[card.id] || [])
+    .filter(d => d.h <= HOUR).slice(-4).reverse();
+  if (said.length){
+    h += `<h3>What they said</h3>`;
+    h += said.map(d =>
+      `<div style="margin-bottom:7px">`
+      + `<b>h${d.h}</b> ${esc(d.did || "thought about it")}`
+      + `<div class="none" style="font-style:normal;color:#4a5340">`
+      + `${esc(d.why).slice(0, 260)}</div></div>`).join("");
   }
 
   h += chatBox(card.id, card.name, "them");
@@ -936,9 +1307,10 @@ async function openPanel(hit){
   panelBody.innerHTML =
     (card.kind === "business" ? businessPanel(card) : agentPanel(card))
     + `<div class="sub" style="margin-top:12px;margin-bottom:0">`
-    + (LIVE_HOUR === null
-        ? "hour 0 &middot; static snapshot"
-        : `hour ${LIVE_HOUR} &middot; live`)
+    + (LIVE_HOUR !== null ? `hour ${LIVE_HOUR} &middot; live`
+       : REPLAY ? `stock and staff as at hour ${DATA.checkpoint_hour} `
+                  + `(end of run) &middot; quotes to hour ${HOUR.toFixed(1)}`
+       : "hour 0 &middot; static snapshot")
     + `</div>`;
   wireChat();
   draw();

@@ -4,7 +4,7 @@
     python3 preview_layout.py                  # -> layout.html
     python3 preview_layout.py --out plan.html --scale 3.4
 
-`render_world.py` draws a finished run: agents, businesses, sprites, a time
+`preview_world.py` draws a finished run: agents, businesses, sprites, a time
 scrubber. This draws the ground they stand on, and deliberately nothing else --
 coloured blocks where buildings go, dots where trees go.
 

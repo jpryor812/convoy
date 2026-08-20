@@ -2,7 +2,7 @@
 
 WHY THIS IS A MODULE AND NOT A FEW LINES IN THE RENDERER
 
-`render_world.py` used to lay the seven junctions down a straight vertical line
+The old renderer used to lay the seven junctions down a straight vertical line
 and hang spurs off alternating sides at a fixed offset. That is a graph drawing,
 not a place: nothing is anywhere for a reason, a founded business is a dot on
 top of another dot, and there is nowhere to put a tree. It also could not be

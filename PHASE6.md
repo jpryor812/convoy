@@ -251,16 +251,45 @@ and `The Switchbacks` as road facts. Every fixture now reads its places off
 
 ---
 
-## 8. What is not done
+## 8. The two renderers became one
+
+There were two programs that drew the world and neither could do the whole job.
+`render_world.py` could read a run -- events into per-agent tracks, businesses
+with founding hours, 1,365 reasoning events -- but drew junctions as cards in a
+row. `preview_world.py` drew the valley properly and had never seen a run. So
+the run you actually wanted to watch was only available in the old layout.
+
+**The reading moved into the drawing**, measured rather than guessed: the run
+loader is ~200 lines of Python and the drawing is ~800 lines of JS, so porting
+the smaller half was three to four times less work than porting the larger.
+`render_world.py` is deleted.
+
+    python3 preview_world.py                      # hour zero
+    python3 preview_world.py --run latest         # play a run back
+
+Replay adds a time slider, agents interpolated **along the road** between two
+places rather than teleporting, businesses appearing at the hour they were
+founded, and each agent's own account of why in their card -- filtered to the
+slider's hour, because a decision it has not made yet is not one it can be asked
+about.
+
+Two honesty points in the replay:
+
+- **A run belongs to the map it was recorded on.** The 27k-event run names three
+  places this world does not have; those are reported by name and dropped rather
+  than drawn at nowhere. It also founded more businesses at Town than the demo
+  map can seat, which is reported too -- the run outgrew the map, which is not a
+  drawing bug.
+- **Cards and flags come from the CHECKPOINT, which is the end of the run**, not
+  the slider's hour. The card footer says so rather than quietly implying a
+  business held that stock all along. Only the quotes are per-hour.
+
+## 9. What is not done
 
 - **No run exists on this map.** Everything above is verified against a
   synthetic hour-zero world and unit tests.
 - **The live path has never been exercised end to end.** `serve.py --run <dir>`
   → `/cards` → the page with `?server=` is built but unproven.
-- **`render_world.py` still draws the old card layout** and has not been touched.
-  `preview_world.py` is where the map lives now. Either wire the real run into
-  the preview or port the preview's drawing into the renderer; the former is
-  less work and the two would then be one thing.
 - **The saved 27k-event run belongs to the seven-place valley** and cannot be
   replayed here. `tests/test_sprites.py` detects a foreign map and skips.
 - **Walk cycles are cut but unused.** Three frames per direction exist in

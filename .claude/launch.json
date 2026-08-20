@@ -4,8 +4,23 @@
     {
       "name": "convoy-web",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "web"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "web"
+      ],
       "port": 5173
+    },
+    {
+      "name": "map",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8777"
+      ],
+      "port": 8777
     }
   ]
 }
