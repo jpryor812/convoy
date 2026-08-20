@@ -33,8 +33,19 @@ The world was cut down twice today and `main` is stale.
 ```bash
 for t in tests/test_*.py; do python3 "$t" >/dev/null && echo "PASS $t" || echo "FAIL $t"; done
 python3 run_phase1.py | grep INVARIANT      # must say "all clean"
-python3 preview_world.py                    # -> world_preview.html, open it
+python3 preview_world.py                    # hour zero -> world_preview.html
+python3 preview_world.py --run latest       # play the newest run back
 ```
+
+`preview_world.py` is the ONLY renderer. `render_world.py` was merged into it and
+deleted on 2026-08-20 -- one could read a run and the other could draw the
+valley, so the run you wanted to watch was only available in the old card
+layout.
+
+A replayed page is ~1MB, which is too big for some preview panes to open as a
+file:// URL. Serve it instead: `.claude/launch.json` has a `map` config
+(`python3 -m http.server 8777`), then open
+`http://localhost:8777/world_preview.html`.
 
 18 test files, all passing. `run_phase1.py` also checks that every entity has
 art, every state dataclass is checkpointable, and the layout is drawable.
@@ -96,14 +107,27 @@ output in `art/generated/` is committed because it is what the renderer loads.
 
 ## The click-through UI
 
-`preview_world.py` builds a self-contained page. Click any building (each has a
-circled **i**) or any person: the camera eases to 2.5× and a **white card** opens
-above it.
+Click any building (each has a circled **i**) or any person: the camera eases to
+2.5x and a **white card** opens above it.
 
 - **Buildings**: owner, cash, land, what it is making, stock with prices, who is
   working there *and what each of them is doing*, live job postings.
 - **People**: activity, location, cash, **net worth with rank**, what they carry,
-  what they own, who they work for, and an **Ask / Advise** box.
+  what they own, who they work for, an **Ask / Advise** box, and -- when a run is
+  loaded -- **what they said**, quoted from their own reasoning up to the
+  slider's hour.
+
+### Replay mode
+
+`--run` adds a time slider. Agents interpolate **along the road** between places
+rather than teleporting, and wear the hooded cloak while in transit. Businesses
+appear at the hour they were founded.
+
+Two things it is honest about: **cards and flags come from the checkpoint** (the
+end of the run), not the slider's hour -- the card footer says so -- and only the
+quotes are per-hour. And **a run belongs to the map it was recorded on**: the
+27k-event run names three places this world does not have, which are reported by
+name and dropped rather than drawn at nowhere.
 
 `convoy/inspect.py` assembles those cards. **One assembler, two consumers**: the
 static page bakes them in and `serve.py` serves the same shapes at `/cards`.
