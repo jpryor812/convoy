@@ -3,8 +3,14 @@
 Goal: **watch agents work, ask them why, and give them advice they can act on.**
 Then show it to schools, and use the footage to market the game.
 
-This supersedes nothing. PHASE4.md is still the state of the world; VISUALS.md
-is still the art plan; this is the build order to get from those to a demo.
+> **SUPERSEDED BY `PHASE6.md` — 2026-08-20.** This is the plan; PHASE6 is what
+> was built, and it diverged. The world is now three places rather than seven,
+> the art is Pipoya and isaiah658 rather than Meshy and Kenney, and the
+> click-through UI described here as future work exists. Read PHASE6 for current
+> state; read this for the reasoning that led to it.
+
+PHASE4.md is still the state of the ECONOMY. VISUALS.md was the art plan and is
+now partly superseded; this was the build order to get from those to a demo.
 
 ---
 
