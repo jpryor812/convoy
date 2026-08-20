@@ -36,6 +36,7 @@ import json
 import random
 from pathlib import Path
 
+from convoy import inspect as I
 from convoy import layout as L
 from convoy import sprites as SP
 from convoy import world_map as M
@@ -186,6 +187,7 @@ def starting_world(places: dict[str, L.Place]) -> dict:
         next_slot[biz.location] = i + 1
         slot = place.slots[i]
         buildings.append({
+            "id": biz.id,
             "x": slot.x, "y": slot.y, "type": biz.type, "owner": "Government",
             "sprite": _slug(biz.type), "scale": L.building_scale(biz.plots),
             "plots": biz.plots, "place": biz.location,
@@ -208,13 +210,17 @@ def starting_world(places: dict[str, L.Place]) -> dict:
         people.append({
             "x": slot.x + rng.uniform(-46, 46),
             "y": slot.y + rng.uniform(34, 78),
+            "id": agent.id,
+            "name": agent.name,
             "person": rng.choice(list(SP.PERSON_FOR_MODEL.values())),
             # Facing the viewer mostly, so faces are visible; a few turned so
             # a standing crowd does not look like a chorus line.
             "facing": rng.choice(("S", "S", "S", "S", "W", "E", "N")),
             "owner": agent.id,
         })
-    return {"buildings": buildings, "people": people, "flags": flags}
+    # Every panel the page can open, assembled once. See `convoy/inspect`.
+    return {"buildings": buildings, "people": people, "flags": flags,
+            "cards": I.cards(world)}
 
 
 def build_payload() -> dict:
@@ -281,11 +287,43 @@ TEMPLATE = r"""<!doctype html>
   #keys{position:fixed;right:12px;top:12px;background:#12160fdd;padding:9px 12px;
         border:1px solid #3a4030;border-radius:5px;z-index:2;text-align:right}
   #keys span{color:#8d9c72}
+  canvas.pointing{cursor:pointer}
+
+  #panel{position:fixed;right:0;top:0;bottom:0;width:340px;z-index:5;
+         background:#171b12f2;border-left:1px solid #46502f;overflow-y:auto;
+         padding:14px 16px 20px;display:none}
+  #panel.open{display:block}
+  #panel h2{margin:0 0 2px;font-size:15px;color:#f2e9c9}
+  #panel .sub{color:#9aab7c;margin-bottom:12px}
+  #panel h3{margin:16px 0 5px;font-size:11px;letter-spacing:.09em;
+            text-transform:uppercase;color:#c9d6a8;
+            border-bottom:1px solid #3a4030;padding-bottom:3px}
+  #panel .row{display:flex;justify-content:space-between;gap:10px;padding:2px 0}
+  #panel .row span:last-child{color:#f2e9c9;text-align:right}
+  #panel .none{color:#6f7d58;font-style:italic}
+  #panel .tag{display:inline-block;background:#2c3720;border:1px solid #46502f;
+              border-radius:3px;padding:1px 6px;margin:2px 3px 2px 0;font-size:11px}
+  #close{position:absolute;right:10px;top:8px;cursor:pointer;color:#9aab7c;
+         font-size:18px;line-height:1;background:none;border:0}
+  #close:hover{color:#f2e9c9}
+  .chat textarea{width:100%;box-sizing:border-box;background:#0f1309;
+                 color:#e8e4d8;border:1px solid #46502f;border-radius:4px;
+                 padding:7px;font:inherit;resize:vertical;min-height:56px}
+  .chat .btns{display:flex;gap:7px;margin-top:7px}
+  .chat button{flex:1;background:#2c3720;color:#e8e4d8;border:1px solid #5d6b3f;
+               border-radius:4px;padding:7px;font:inherit;cursor:pointer}
+  .chat button:hover{background:#3a4a29;border-color:#8fa35e}
+  .chat button:disabled{opacity:.45;cursor:not-allowed}
+  #reply{margin-top:9px;padding:8px;background:#0f1309;border-radius:4px;
+         border:1px solid #3a4030;white-space:pre-wrap;display:none}
+  #reply.show{display:block}
 </style></head><body>
 <canvas id="c"></canvas>
 <div id="hud"></div>
-<div id="keys"><span>drag</span> pan &nbsp; <span>wheel</span> zoom &nbsp;
-  <span>1</span> close &nbsp; <span>2</span> place &nbsp; <span>0</span> whole valley</div>
+<div id="panel"><button id="close" title="close">&times;</button>
+  <div id="panel-body"></div></div>
+<div id="keys"><span>click</span> a building or a person &nbsp; <span>drag</span> pan
+  &nbsp; <span>wheel</span> zoom &nbsp; <span>0</span> whole valley</div>
 <script>
 const DATA = __DATA__, ART = __ART__;
 const c = document.getElementById("c"), g = c.getContext("2d");
@@ -538,6 +576,67 @@ function sprite(key, x, y, scale){
   g.drawImage(im, Math.round(x - w / 2), Math.round(y - h), w, h);
 }
 
+/* THE BADGE. A circled "i" on the near corner of every building, because a map
+   that is clickable and does not say so is a map nobody clicks. It sits at a
+   FIXED SCREEN SIZE rather than scaling with the zoom -- an affordance should be
+   the same size to the hand whatever the camera is doing, and at 0.2x a scaled
+   badge would be two pixels wide.
+
+   Kept out of the sprite so it can pulse and light on hover without anybody
+   redrawing the art. */
+const BADGE_R = 9;
+function badgeAt(b){
+  const im = IMG["biz:" + b.sprite];
+  const w = im && im.width ? im.width * b.scale : 48;
+  const h = im && im.height ? im.height * b.scale : 48;
+  return {x: wx(b) + w / 2 - 2, y: wy(b) - h / 2 + 2};
+}
+
+function drawBadges(){
+  g.save();
+  g.setTransform(1, 0, 0, 1, 0, 0);        /* screen space: fixed size */
+  for (const b of DATA.buildings){
+    const p = badgeAt(b);
+    const x = (p.x + panx) * zoom, y = (p.y + pany) * zoom;
+    if (x < -20 || y < -20 || x > c.width + 20 || y > c.height + 20) continue;
+    const hot = HOVER && HOVER.kind === "building" && HOVER.ref.id === b.id;
+    g.beginPath(); g.arc(x, y, BADGE_R + (hot ? 2 : 0), 0, 7);
+    g.fillStyle = hot ? "#ffd75e" : "#f6f2e2";
+    g.fill();
+    g.lineWidth = 2; g.strokeStyle = "#2b2416"; g.stroke();
+    g.fillStyle = "#2b2416";
+    g.font = `bold ${BADGE_R + 3}px ui-serif, Georgia, serif`;
+    g.textAlign = "center"; g.textBaseline = "middle";
+    g.fillText("i", x, y + 0.5);
+  }
+  g.restore();
+}
+
+/* What is under the pointer, in world pixels. People beat buildings: a figure
+   standing in a doorway is smaller and on top, so it is what the eye means. */
+function hitTest(px, py){
+  for (const p of DATA.people){
+    const im = IMG[`person:${p.person}:${p.facing}`];
+    if (!im || !im.width) continue;
+    const x = wx(p), y = wy(p);
+    if (px >= x - im.width / 2 && px <= x + im.width / 2 &&
+        py >= y - im.height && py <= y)
+      return {kind: "agent", ref: p};
+  }
+  for (const b of DATA.buildings){
+    const bp = badgeAt(b);
+    if (Math.hypot(px - bp.x, py - bp.y) <= (BADGE_R + 3) / zoom)
+      return {kind: "building", ref: b};
+    const im = IMG["biz:" + b.sprite];
+    if (!im || !im.width) continue;
+    const w = im.width * b.scale, h = im.height * b.scale;
+    if (px >= wx(b) - w / 2 && px <= wx(b) + w / 2 &&
+        py >= wy(b) - h / 2 && py <= wy(b) + h / 2)
+      return {kind: "building", ref: b};
+  }
+  return null;
+}
+
 function building(b){
   const im = IMG["biz:" + b.sprite]; if (!im || !im.width) return;
   /* CENTRED, unlike people. A slot IS the shared corner of four parcels, so a
@@ -611,6 +710,8 @@ function draw(){
                                              wx(p), wy(p), 1)});
   standing.sort((a, b) => a.y - b.y).forEach(s => s.f());
 
+  drawBadges();
+
   /* Labels last, and only when zoomed out far enough that they are not clutter. */
   if (zoom < 0.75){
     g.font = `${Math.round(13 / zoom)}px ui-monospace,monospace`;
@@ -634,15 +735,226 @@ function draw(){
     `${Math.round(c.width / zoom / PPM)}m across`;
 }
 
-let dragging = false, lx = 0, ly = 0;
+/* ---------------------------------------------------------------- panels */
+
+const panel = document.getElementById("panel");
+const panelBody = document.getElementById("panel-body");
+let HOVER = null, SELECTED = null;
+
+/* Where a live server is, if there is one. The static page has no back end, so
+   the chat box says so plainly rather than posting into the void and failing
+   silently -- an "Ask" button that does nothing is worse than one that explains
+   it cannot. Point this at a running `serve.py` and the same UI works live. */
+const SERVER = new URLSearchParams(location.search).get("server") || null;
+
+const esc = (t) => String(t).replace(/[&<>"]/g,
+  ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[ch]));
+const row = (k, v) => `<div class="row"><span>${esc(k)}</span><span>${v}</span></div>`;
+const money = (n) => `${Number(n).toLocaleString(undefined,
+  {minimumFractionDigits: 2, maximumFractionDigits: 2})} D`;
+
+function businessPanel(card){
+  let h = `<h2>${esc(card.name)}</h2>`
+        + `<div class="sub">${esc(card.type)} &middot; ${esc(card.place)}</div>`;
+  h += row("Owner", esc(card.owner) + (card.government ? " (state)" : ""));
+  if (card.owner_doing) h += row("Owner is", esc(card.owner_doing));
+  h += row("Business cash", money(card.cash));
+  h += row("Land", card.plots ? `${card.plots} plots` : "main road");
+  if (card.producing) h += row("Making", esc(card.producing)
+      + (card.blocked ? " &mdash; stalled" : ""));
+  if (card.closed) h += row("Status", "closed");
+
+  h += `<h3>On the shelf</h3>`;
+  h += card.stock.length
+     ? card.stock.map(s => row(`${esc(s.item)} x${s.qty}`,
+         s.price === null ? '<span class="none">not for sale</span>' : money(s.price))
+       ).join("")
+     : '<div class="none">nothing in stock</div>';
+
+  h += `<h3>Working here</h3>`;
+  h += card.staff.length
+     ? card.staff.map(p => row(`${esc(p.who)} &middot; ${esc(p.role)}`,
+         `${money(p.wage)}/h<br><span class="none">${esc(p.doing)}</span>`)).join("")
+     : '<div class="none">nobody &mdash; the owner works it alone</div>';
+
+  h += `<h3>Hiring</h3>`;
+  h += card.jobs.length
+     ? card.jobs.map(j => row(
+         `${esc(j.role)}${j.researcher ? " (research)" : ""}`,
+         `${money(j.wage)}/h<br><span class="none">${j.applicants} applied &middot; `
+         + `open ${j.hours_open}h</span>`)).join("")
+     : '<div class="none">no jobs posted</div>';
+
+  if (card.owner_id) h += chatBox(card.owner_id, card.owner, "the owner");
+  return h;
+}
+
+function agentPanel(card){
+  let h = `<h2>${esc(card.name)}</h2>`
+        + `<div class="sub">${esc(card.model)}</div>`;
+  h += row("Doing", esc(card.doing));
+  h += row("At", esc(card.at) + (card.travel_progress !== null
+        ? ` <span class="none">(${Math.round(card.travel_progress * 100)}% there)</span>`
+        : ""));
+  h += row("Cash", money(card.denari));
+  /* Rank beside the number, because the number alone says nothing: 4,000 denari
+     is either winning or last, and which one is the interesting part. */
+  h += row("Net worth", `${money(card.net_worth)}<br>`
+        + `<span class="none">rank ${card.rank} of ${card.of}</span>`);
+
+  h += `<h3>Carrying</h3>`;
+  const carry = Object.entries(card.carrying);
+  h += carry.length
+     ? carry.map(([k, v]) => `<span class="tag">${esc(k)} x${v}</span>`).join("")
+     : '<div class="none">empty-handed</div>';
+
+  h += `<h3>Owns</h3>`;
+  let owns = card.businesses.map(b =>
+      row(esc(b.name), `<span class="none">${esc(b.place)}</span>`)).join("");
+  owns += card.vehicles.map(v => `<span class="tag">${esc(v)}</span>`).join("");
+  if (card.has_home) owns += `<span class="tag">a home</span>`;
+  h += owns || '<div class="none">nothing yet</div>';
+
+  if (card.employed_by.length){
+    h += `<h3>Works for</h3>`;
+    h += card.employed_by.map(e => row(
+      `${esc(e.business)} &middot; ${esc(e.role)}`, `${money(e.wage)}/h`)).join("");
+  }
+
+  h += chatBox(card.id, card.name, "them");
+  return h;
+}
+
+function chatBox(agentId, who, label){
+  return `<h3>Talk to ${esc(who)}</h3>
+    <div class="chat" data-agent="${esc(agentId)}">
+      <textarea placeholder="Ask ${esc(label)} a question, or suggest what to do next."></textarea>
+      <div class="btns">
+        <button data-act="ask">Ask</button>
+        <button data-act="advise">Advise</button>
+      </div>
+      <div id="reply"></div>
+    </div>`;
+}
+
+/* LIVE CARDS WIN OVER BAKED ONES. The page ships a snapshot of hour zero so it
+   works with no server at all; when `?server=` is given it refreshes them from
+   the running simulation, and every panel opened after that is current. Same
+   page, same shapes -- `convoy/inspect` builds both. */
+async function refreshCards(){
+  if (!SERVER) return;
+  try {
+    const res = await fetch(`${SERVER}/cards`);
+    const data = await res.json();
+    if (data.cards){
+      DATA.cards = data.cards;
+      LIVE_HOUR = data.hour;
+    }
+  } catch (err) { /* keep the baked cards; the panel says which it is showing */ }
+}
+let LIVE_HOUR = null;
+
+async function openPanel(hit){
+  SELECTED = hit;
+  panel.classList.add("open");
+  await refreshCards();
+  const card = DATA.cards[hit.ref.id];
+  if (!card){
+    panelBody.innerHTML = `<h2>${esc(hit.ref.name || hit.ref.type || "?")}</h2>`
+      + `<div class="sub">nothing on record for ${esc(hit.ref.id)}</div>`;
+    draw();
+    return;
+  }
+  panelBody.innerHTML =
+    (card.kind === "business" ? businessPanel(card) : agentPanel(card))
+    + `<div class="sub" style="margin-top:14px">`
+    + (LIVE_HOUR === null
+        ? "hour 0 &middot; static snapshot"
+        : `hour ${LIVE_HOUR} &middot; live`)
+    + `</div>`;
+  wireChat();
+  draw();
+}
+
+function closePanel(){
+  SELECTED = null; panel.classList.remove("open"); draw();
+}
+document.getElementById("close").onclick = closePanel;
+
+function wireChat(){
+  const box = panelBody.querySelector(".chat");
+  if (!box) return;
+  const area = box.querySelector("textarea");
+  const reply = box.querySelector("#reply");
+  for (const btn of box.querySelectorAll("button")) btn.onclick = async () => {
+    const text = area.value.trim();
+    if (!text) return;
+    if (!SERVER){
+      reply.textContent =
+        "This is a static snapshot, so there is nobody to answer.\n\n"
+        + "Start the server (python3 serve.py) and open this page with "
+        + "?server=http://localhost:8000 to talk to the agents for real.";
+      reply.classList.add("show");
+      return;
+    }
+    const act = btn.dataset.act;
+    for (const b of box.querySelectorAll("button")) b.disabled = true;
+    reply.textContent = act === "ask" ? "asking..." : "sending..."; reply.classList.add("show");
+    try {
+      const res = await fetch(`${SERVER}/agent/${box.dataset.agent}/${act}`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(act === "ask"
+          ? {question: text, who: "a viewer"}
+          : {text: text, from_who: "a viewer"}),
+      });
+      const data = await res.json();
+      reply.textContent = data.error ? `error: ${data.error}`
+        : (data.text || data.answer || JSON.stringify(data, null, 1));
+      if (!data.error) area.value = "";
+    } catch (err) {
+      reply.textContent = `could not reach ${SERVER}: ${err}`;
+    }
+    for (const b of box.querySelectorAll("button")) b.disabled = false;
+  };
+}
+
+/* --------------------------------------------------------------- pointer */
+
+function worldFromEvent(e){
+  const r = c.getBoundingClientRect();
+  return {x: (e.clientX - r.left) / zoom - panx,
+          y: (e.clientY - r.top) / zoom - pany};
+}
+
+let dragging = false, lx = 0, ly = 0, moved = 0;
 c.addEventListener("mousedown", e => {
-  dragging = true; lx = e.clientX; ly = e.clientY; c.classList.add("drag");
+  dragging = true; moved = 0; lx = e.clientX; ly = e.clientY;
+  c.classList.add("drag");
 });
-addEventListener("mouseup", () => { dragging = false; c.classList.remove("drag"); });
+addEventListener("mouseup", e => {
+  const wasDragging = dragging;
+  dragging = false; c.classList.remove("drag");
+  /* A CLICK IS A MOUSEUP THAT DID NOT TRAVEL. Without the threshold every pan
+     that ended over a building opened its panel, which made the map feel like
+     it was grabbing at you. Four pixels is below what a hand does by accident
+     and well under what a deliberate drag does. */
+  if (!wasDragging || moved > 4) return;
+  const hit = hitTest(worldFromEvent(e).x, worldFromEvent(e).y);
+  hit ? openPanel(hit) : closePanel();
+});
 addEventListener("mousemove", e => {
-  if (!dragging) return;
-  panx += (e.clientX - lx) / zoom; pany += (e.clientY - ly) / zoom;
-  lx = e.clientX; ly = e.clientY; clampPan(); draw();
+  if (dragging){
+    moved += Math.abs(e.clientX - lx) + Math.abs(e.clientY - ly);
+    panx += (e.clientX - lx) / zoom; pany += (e.clientY - ly) / zoom;
+    lx = e.clientX; ly = e.clientY; clampPan(); draw();
+    return;
+  }
+  const w = worldFromEvent(e);
+  const hit = hitTest(w.x, w.y);
+  const changed = (hit && hit.ref.id) !== (HOVER && HOVER.ref.id);
+  HOVER = hit;
+  c.classList.toggle("pointing", !!hit);
+  if (changed) draw();
 });
 c.addEventListener("wheel", e => {
   e.preventDefault();
