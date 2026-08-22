@@ -318,9 +318,14 @@ def test_payload_stays_within_budget():
     # PHASE4 §2 is that failure. The land block replaced the old spur-plot
     # sentence rather than being added beside it, and `expand_site` was deleted
     # in the same change, so the net growth is smaller than the feature.
+    # 5,100 -> 5,300 on 2026-08-21, for the CONVOY SYSTEM: bandits and what
+    # drives the odds, the anonymous price ticker, and who pays for a convoy.
+    # All three are things an agent is refused or robbed for not knowing --
+    # the split paragraph in particular, since a deal it cannot name is a deal
+    # it cannot make. Raised alongside the prefix guard in test_schemas.
     ok(
-        "briefing under 5.1k tokens",
-        len(brief) // 4 < 5100,
+        "briefing under 5.3k tokens",
+        len(brief) // 4 < 5300,
         f"~{len(brief) // 4} tokens",
     )
     ok(
@@ -356,6 +361,24 @@ def test_a_fed_agent_is_told_it_is_fed() -> None:
     lines = O.affordances(w, a)
     ok("hungry agent still told to eat", any("Hungry" in ln and "Eat" in ln for ln in lines))
     ok("and is not also told it is fed", not any("FED" in ln for ln in lines), str(lines))
+
+
+def test_agents_are_asked_to_explain_themselves() -> None:
+    """A record of THINKING is not a record of REASONS.
+
+    Reasoning has been captured since PHASE4 §9, but what it captures is the
+    model's stream of thought, which wanders and often lands somewhere other
+    than the actions emitted on the same turn. On 2026-08-21 an agent bought a
+    600-denari cart while its recorded prose was about courier job ids; asked
+    later why it bought the cart, it correctly answered that it had not said.
+    Nothing in the briefing had ever asked it to.
+    """
+    brief = O.static_briefing()
+    ok("the briefing asks for reasons", "SAY WHY" in brief)
+    ok("and says the record is what gets quoted back",
+       "recorded" in brief and "ask you about it" in brief)
+    ok("and names the decisions worth explaining",
+       all(w in brief for w in ("purchase", "business", "journey")))
 
 
 def main() -> int:

@@ -238,6 +238,17 @@ class Agent:
     # under carriage never enter `inventory`, so they cannot be sold en route.
     hauling: str | None = None
     hauling_units: int = 0
+    # Escorts hired for the NEXT journey, paid up front and disbanded on
+    # arrival. Hiring is per-trip because that is the decision an owner
+    # actually makes -- "is this load worth guarding" is asked of a load, not
+    # of a quarter. See `banditry` for what they are worth on the road.
+    escorts: list[ConvoyMember] = field(default_factory=list)
+    # Set on an AGENT who has taken escort work: the id of whoever it is
+    # guarding. A bound escort travels with its employer and is released and
+    # paid on arrival. It is one field rather than a second activity because an
+    # agent does exactly one thing at a time, and "guarding a convoy" is that
+    # thing while it lasts.
+    escorting: str | None = None
     bounty_total: float = 0.0
     crimes: list[dict[str, Any]] = field(default_factory=list)
     guild: str | None = None
@@ -690,9 +701,16 @@ class Property:
 
 @dataclass
 class ConvoyMember:
-    agent_id: str
+    agent_id: str                # Agent ID, or "NPC" for a hired escort
     role: str                    # Driver-own | Driver-provided | Scout | Bodyguard
     vehicle_id: str | None = None
+    # What they bring to a robbery. `banditry` prices deterrence off these, so
+    # an escort with an iron sword genuinely is worth more than one with a
+    # spear -- and costs more to hire. Defaulted so old checkpoints, which
+    # predate escorts entirely, still decode.
+    weapon: str = "Wooden Spear"
+    armor: tuple[str, ...] = ()
+    wage_paid: float = 0.0       # what this journey cost, for the event log
 
 
 @dataclass
@@ -771,6 +789,69 @@ class Consignment:
     # True when the SELLER posted this to push stock out, rather than the buyer
     # posting it to pull stock in. See `post_delivery_job`.
     seller_posted: bool = False
+    # THE SELLER'S SHARE of the convoy -- both the courier fee and anything
+    # bandits take, split by the same fraction, because "who is responsible for
+    # the convoy" is one question and paying for it while not carrying its risk
+    # is not a deal anybody would offer.
+    #
+    # 0.0 is the old hard-coded behaviour and still the default: goods are the
+    # buyer's the moment they are paid for, so a load that never arrives is
+    # their loss. 1.0 is the seller carrying all of it. The rungs between are
+    # `data.CONVOY_SPLITS`, and which one a deal gets is not imposed by the
+    # engine -- it is proposed and refused only where the market plainly will
+    # not bear it. See `banditry.market_power`.
+    seller_share: float = 0.0
+    # What was loaded. `qty` falls when bandits take some, so without this there
+    # is no way at delivery to know how much of the consignment actually
+    # arrived -- and therefore no way to pay a courier for the part it kept.
+    # Defaults to 0 and is read through `delivered_fraction`, which falls back
+    # to `qty`, so consignments in checkpoints written before this still decode
+    # and still pay a full fee for a full load.
+    qty_posted: int = 0
+
+    @property
+    def buyer_share(self) -> float:
+        return 1.0 - self.seller_share
+
+    def delivered_fraction(self) -> float:
+        """How much of the original load is still aboard, 0-1."""
+        base = self.qty_posted or self.qty
+        return min(1.0, self.qty / base) if base else 1.0
+
+    def split_label(self) -> str:
+        """How the deal reads, seller first: "75/25"."""
+        return f"{self.seller_share * 100:.0f}/{self.buyer_share * 100:.0f}"
+
+
+@dataclass
+class EscortPosting:
+    """An owner advertising a place on their next convoy, open to any agent.
+
+    The escort market's whole point is that a PERSON is cheaper than an NPC
+    (`banditry.ESCORT_NPC_MULTIPLIER`), so an owner who is willing to wait and
+    negotiate pays less than one who wants a guard this instant. That is the
+    same trade the job board already makes for employees, and the same one
+    `post_delivery_job` makes for haulage.
+
+    It names a DESTINATION because an escort is being asked to end up somewhere,
+    which is a real cost to them -- a guard hired from Town to Refinery Row is
+    in Refinery Row afterwards, with whatever that is worth.
+    """
+
+    id: str
+    owner: str                       # agent id
+    role: str                        # a key of data.CONVOY_PAY
+    fee: float
+    origin: str
+    destination: str
+    posted_at: float
+    # A weapon the owner will lend for the trip, if the escort's own is weak.
+    # Bound to the job and returned on arrival, exactly like a lent vehicle --
+    # see `Consignment.lent_vehicle` for the argument that lending needs no
+    # trust system when the thing cannot be kept.
+    lent_weapon: str | None = None
+    status: str = "open"             # open|taken|cancelled|done
+    taken_by: str | None = None
 
 
 @dataclass
@@ -1023,6 +1104,7 @@ class World:
     chat: list[ChatMessage] = field(default_factory=list)
     trade_offers: dict[str, "TradeOffer"] = field(default_factory=dict)
     consignments: dict[str, "Consignment"] = field(default_factory=dict)
+    escort_postings: dict[str, "EscortPosting"] = field(default_factory=dict)
     job_postings: dict[str, "JobPosting"] = field(default_factory=dict)
     # Items and Denari dropped on death, lootable by anyone at that location.
     ground_loot: dict[str, dict] = field(default_factory=dict)

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import banditry as B
 from . import data as D
 from . import economy as E
 from . import world_map as M
@@ -98,23 +99,79 @@ def _static_map() -> str:
         lines.append(f"  {loc.name} ({loc.kind}, {loc.elevation}m, {guard}) - {loc.blurb}")
     lines.append("")
     lines.append("Road segments, north to south (times at Medium speed):")
-    # The concealment/vantage/exposure figures are DELIBERATELY omitted. They
-    # are precise inputs to an ambush model that does not exist yet -- there is
-    # no combat or theft code in the engine -- so quoting them to agents spent
-    # ~120 cached tokens inviting them to plan around a risk that cannot occur.
-    # The blurbs keep the character of each stretch. Restore the numbers in the
-    # same change that lands combat.
+    # The raw concealment/vantage/exposure triple is still NOT quoted, even now
+    # that banditry exists. The reason changed: agents get a computed CONVOY
+    # RISK percentage for the actual journey they are considering, which is the
+    # number to act on. Three raw floats invite an agent to do that arithmetic
+    # itself and get it wrong. One headline `danger` per segment is enough to
+    # rank the roads before a load exists to price.
     for seg in M.SEGMENTS:
         flee = "" if seg.can_flee_offroad() else " No escape off-road."
         lines.append(
             f"  {seg.name} ({seg.a} <-> {seg.b}): {seg.seconds:.0f}s, "
-            f"{seg.terrain}.{flee} {seg.blurb}"
+            f"{seg.terrain}, danger {seg.danger:.2f}.{flee} {seg.blurb}"
         )
     lines.append("")
+    # COUNTED, NOT WRITTEN DOWN. This said "Sixteen spur roads" long after the
+    # map was cut to four -- the briefing telling every agent, on every call, a
+    # fact about the world that had not been true for two recuts. PHASE4 §2 is
+    # usually the observation withholding something; this is the same failure
+    # with the sign flipped.
     lines.append(
-        f"Sixteen spur roads dead-end off the main road, {M.SPUR_SECONDS:.0f}s deep each. "
-        f"Mines, farms and homes live on spurs and nowhere else. Travelling "
-        f"spur-to-spur means climbing back to the main road and down again."
+        f"{len(M.SPURS)} spur roads dead-end off the main road, "
+        f"{M.SPUR_SECONDS:.0f}s deep each. Mines, farms and homes live on spurs "
+        f"and nowhere else. Travelling spur-to-spur means climbing back to the "
+        f"main road and down again."
+    )
+    lines.append("")
+    # ASKING THEM TO EXPLAIN, which nothing ever did. Reasoning has been captured
+    # since PHASE4 §9, but what is captured is the model's THINKING -- a stream
+    # of thought that wanders, and often lands somewhere other than the actions
+    # it emitted on the same turn. Measured on the 2026-08-21 run: A0056 bought a
+    # 600-denari cart at h23.27 while its recorded prose was about which courier
+    # job id to take, so asked later why it bought the cart it could only answer,
+    # correctly, that it had not said. A record of thinking is not a record of
+    # reasons, and the interrogator can only quote what is there.
+    lines.append(
+        "SAY WHY. Everything you think before you act is recorded, and people "
+        "will ask you about it later by name and hour. State briefly why you "
+        "take EACH action -- above all a purchase, a business, a job, or a "
+        "journey you could have refused. A decision you did not explain is one "
+        "you can only answer for with 'I did not note why'."
+    )
+    lines.append("")
+    lines.append(
+        f"MARKET PRICES. Your observation carries what goods have ACTUALLY sold "
+        f"for over the last {E.TICKER_WINDOW_HOURS:.0f} hours -- a "
+        f"volume-weighted average against the book price, anonymous. Use it to "
+        f"price your own goods and judge an offer in front of you."
+    )
+    lines.append("")
+    lines.append(
+        f"BANDITS. Cargo on the open road can be robbed. Nobody is hurt, but if "
+        f"they catch you they take between HALF the load and ALL of it. "
+        f"ON FOOT IS THE MOST DANGEROUS WAY TO CARRY ANYTHING: slowest, so "
+        f"exposed longest, and too slow to escape. Splitting a load into many "
+        f"small walks is many rolls, not safety. "
+        f"Everything you carry counts, a hauled consignment included. Three things "
+        f"drive the odds: "
+        f"how much the load is worth, how well guarded it is, and how far it "
+        f"goes -- a cheap load draws little attention, but value is noticed "
+        f"however small. hire_escort buys Bodyguards (who make bandits "
+        f"reconsider) and Scouts (who make you harder to find); better kit "
+        f"deters more. AN NPC COSTS HALF AGAIN WHAT AN AGENT DOES: "
+        f"post_escort_job is cheaper if you can wait, and taking escort work is "
+        f"paid passage to wherever the convoy goes. No convoy is ever "
+        f"completely safe. WHO PAYS FOR A CONVOY IS NEGOTIABLE between two "
+        f"agents: a deal names a seller/buyer split of "
+        + "/".join(f"{r*100:.0f}" for r in D.CONVOY_SPLITS[:1])
+        + f"/0, 75/25, 60/40, 50/50 and so on, covering BOTH the courier fee "
+        f"and anything bandits take. Whoever has somewhere else to trade can "
+        f"push more of it onto the other. A GOVERNMENT business never carries "
+        f"any share at all -- sell to the state and the whole convoy is yours "
+        f"to pay for, which is the reason to found a refinery or a store of "
+        f"your own and offer somebody a better split. When you buy from or "
+        f"sell to another business, the split is part of the deal."
     )
     lines.append("")
     # LAND, stated once, in the cached prefix. The rules below decide who can
@@ -340,15 +397,28 @@ def _static_rules() -> str:
     )
     lines.append("")
     lines.append(
+        # WHAT YOU PAY, not the book value. This quoted `base_price` while the
+        # PRICES table above quoted `npc_sell_price`, so the briefing carried two
+        # vehicle tables that disagreed by the 1.5x Stables markup -- a Donkey
+        # Cart at 400 here and 600 there. Agents anchored on THIS line, because
+        # it is the one with the capacities they were shopping for, and budgeted
+        # against a price that does not exist.
+        #
+        # Caught by an agent, not by a test: at h11.25 of the 2026-08-20 smoke
+        # A0050 said "there's a discrepancy between my hauling options: one table
+        # mentions 400, but I'm looking at a buy NPC for 600." PHASE4 §2 -- and
+        # this one the observation really was guilty of.
         f"HAULING. On foot you carry {D.ON_FOOT_CAPACITY} units. Vehicles carry far more "
         f"and move faster, and capacity is usually what limits earnings rather than "
-        f"production: "
+        f"production. Prices are what a Stable CHARGES you: "
         + "; ".join(
-            f"{v.name} {_money(v.base_price)}d, {v.cargo_capacity} units, {v.speed_label}"
+            f"{v.name} {_money(E.npc_sell_price(v.name))}d, {v.cargo_capacity} units, "
+            f"{v.speed_label}"
             for v in D.VEHICLES.values()
             if v.name != "On Foot"
         )
-        + "."
+        + ". A consignment moves WHOLE, so a load bigger than your capacity "
+        "cannot be collected at all."
     )
     lines.append("")
     lines.append(
@@ -366,9 +436,16 @@ def _static_rules() -> str:
         f"roads and police. Current rates are in your observation -- policy can move them."
     )
     lines.append("")
+    # No "without insurance" caveat any more -- the whole line was cut on
+    # 2026-08-20 and there is no cover to buy. A briefing that offers an escape
+    # route the world does not have is PHASE4 §2 in its purest form: the agent
+    # is told something false at the moment it decides.
     lines.append(
-        "DEATH. Whatever you were carrying drops where you fell and anyone may take "
-        "it. Without insurance, everything you were not carrying is wiped."
+        "DEATH. Starvation is the only way to die. Whatever you were carrying "
+        "drops where you fell and anyone may take it, and everything you were "
+        "NOT carrying -- businesses, carts, your home -- is wiped. There is no "
+        "insurance against it. Sell what you cannot defend before it gets that "
+        "far; a business sold is worth something and a business wiped is not."
     )
     return "\n".join(lines)
 
@@ -380,11 +457,14 @@ def static_briefing() -> str:
     agents and all 120 hours, which is what makes it cacheable.
     """
     header = (
-        "You are a person living in Convoy, a Bronze Age valley economy. Your one "
-        "goal is to maximise your own Net Worth (denari + businesses + vehicles + "
-        "property + inventory) by the end. You compete and cooperate with other "
-        "real agents. Nothing below ever changes; your current situation arrives "
-        "separately with each decision.\n\n"
+        "You are a person living in Convoy, a Bronze Age valley economy. Your goal "
+        "is to maximise your own Net Worth (denari + businesses + vehicles + "
+        "property + inventory) by the end, WITHOUT DYING. Starving kills you and "
+        "wipes everything you own, so a dead agent scores nothing however rich it "
+        "was an hour earlier -- staying alive is not a side condition, it is the "
+        "first term. You compete and cooperate with other real agents. Nothing "
+        "below ever changes; your current situation arrives separately with each "
+        "decision.\n\n"
         # Four smoke runs produced no business at all, by agents who could afford
         # one and were told so. Spending 200 denari on a tavern LOOKS like losing
         # 200 of net worth unless you know how a business is valued -- so say it.
@@ -1231,11 +1311,194 @@ def observe(
          if c.courier == agent.id and c.status == "claimed"),
         None,
     )
+    # WHAT IS LYING ON THE GROUND HERE.
+    #
+    # `loot_ground` has been an action every agent holds since Phase 1 and
+    # NOTHING has ever told them there was anything to pick up -- the pile
+    # existed in `world.ground_loot` and appeared in no observation, so the tool
+    # could only ever be called by an agent guessing. Goods dropped by a death,
+    # or by the state withdrawing, simply sat there for the rest of the run.
+    # PHASE4 §2: the observation withholding something the code already knew.
+    pile = world.ground_loot.get(agent.location)
+    if pile and (pile.get("items") or pile.get("denari", 0) > 0):
+        lying = {i: q for i, q in (pile.get("items") or {}).items() if q > 0}
+        obs["on_the_ground_here"] = {
+            "items": lying,
+            "denari": round(pile.get("denari", 0.0), 2),
+            "worth": round(E.inventory_value(lying), 2),
+            "note": "Unclaimed. loot_ground() takes what you can carry.",
+        }
+
+    # WHAT NOBODY IS MAKING, AND WHERE THERE IS ROOM TO MAKE IT.
+    #
+    # THE AFFORDANCE LINES ARE LOCATION-LOCAL. They answer "what can I do
+    # HERE", and never "what does the valley need". On 2026-08-21 the state
+    # withdrew and seven agents starved: the richest was standing in Town with
+    # 1,380 denari, STARVING, reading "you can afford to found here but there
+    # are only 0 unsold plots" -- while Refinery Row had sixteen free plots and
+    # the world contained no refinery at all. It tried to BUY food 224 times and
+    # never once tried to make any.
+    #
+    # Nothing here is a hint about what to do. It is two facts the code already
+    # held and never said: nobody produces this, and there is ground free over
+    # there. PHASE4 §2 at the scale of a whole economy.
+    # CAPABLE IS NOT THE SAME AS PRODUCING. `market_power` counts businesses
+    # that COULD make a thing, and by that measure the valley had a refinery
+    # while seven agents starved -- it was open, empty, unstaffed and set to
+    # produce nothing. What an agent needs to know is whether anyone is actually
+    # making the thing, and if not, whether the plant exists and is merely idle.
+    # Those are different problems with different answers: found one, or go and
+    # switch that one on.
+    gaps: list[str] = []
+    for item in ("Purified Water", "Grain", "Meal"):
+        makers = [
+            b for b in world.businesses.values()
+            if not b.closed and item in b.spec.outputs
+        ]
+        producing = [b for b in makers if b.active_production == item]
+        in_stock = [b for b in makers if b.inventory.get(item, 0) > 0]
+        if producing or in_stock:
+            continue
+        maker_type = next(
+            (t for t, spec in D.BUSINESS_TYPES.items() if item in spec.outputs), None)
+        if maker_type is None:
+            continue
+        if makers:
+            idle = makers[0]
+            who = "yours" if idle.owner == agent.id else f"{idle.name}"
+            gaps.append(
+                f"NOBODY IS MAKING {item}, though a {maker_type} stands idle at "
+                f"{idle.location} ({who}). Switching it on needs feedstock, a "
+                f"worker and set_production."
+            )
+        else:
+            cost = D.BUSINESS_TYPES[maker_type].startup_cost
+            room = [pl for pl in D.ALL_PLACES
+                    if M.plots_at(pl) - sum(
+                        1 for q in world.plots.values()
+                        if q.location == pl and q.owner) >= D.SITE_BASE_PLOTS]
+            gaps.append(
+                f"NOBODY MAKES {item} AND NO {maker_type.upper()} EXISTS. "
+                f"Founding one costs {cost:.0f}"
+                + (f"; free ground at {', '.join(room[:3])}." if room
+                   else "; no free ground -- buy from a holder.")
+                + (" You can afford it." if agent.denari >= cost else "")
+            )
+    if gaps:
+        obs["nobody_makes"] = gaps
+
+    # WHAT THINGS ACTUALLY SELL FOR. Every price an agent has had until now was
+    # either a book price from `data.py` or one counter's asking price in front
+    # of it, so "is 5.2 a good price for ore?" had no answer anywhere in the
+    # world -- an agent could be underselling its whole output for eighty hours
+    # and nothing would tell it.
+    #
+    # NARROWED TO WHAT THIS AGENT TRADES, plus the busiest few. A full 62-item
+    # board is per-call tokens on every decision forever, and most of it is
+    # goods this agent will never touch.
+    stake = set(agent.inventory)
+    for bid in agent.owned_businesses:
+        biz = world.businesses.get(bid)
+        if biz is None:
+            continue
+        stake.update(biz.spec.outputs)
+        stake.update(biz.inventory)
+    quotes = E.ticker(world)
+    mine = {i: q for i, q in quotes.items() if i in stake}
+    busiest = sorted(quotes.values(), key=lambda q: -q.volume)[:4]
+    for q in busiest:
+        mine.setdefault(q.item, q)
+    if mine:
+        obs["market_prices"] = E.ticker_lines(mine, limit=8)
+
+    # ESCORT WORK GOING BEGGING, and the convoy you are already on.
+    #
+    # A job board nobody can see is not a market -- PHASE4 §2's second entry was
+    # nine of thirteen job applications rejected because agents were never told
+    # which roles a business hires. An escort posting announced only in world
+    # chat would scroll away in an hour and be gone.
+    open_escort = [
+        {
+            "id": p.id, "role": p.role, "pays": round(p.fee, 2),
+            "from": p.origin, "to": p.destination,
+            "hired_by": world.agents[p.owner].name if p.owner in world.agents else p.owner,
+            "weapon_provided": p.lent_weapon,
+            # Driver-own means putting your OWN cart on the road, so an agent
+            # without one here cannot take it and should not spend a decision
+            # finding that out. Derived per-agent, like `you_can_carry_it`.
+            "you_can_take_it": (
+                agent.location == p.origin and not agent.escorting
+                and (p.role != "Driver-own" or any(
+                    v in world.vehicles and world.vehicles[v].location == agent.location
+                    for v in agent.owned_vehicles))
+            ),
+        }
+        for p in world.escort_postings.values()
+        if p.status == "open" and p.owner != agent.id
+    ]
+    if open_escort:
+        open_escort.sort(key=lambda j: (not j["you_can_take_it"], -j["pays"]))
+        obs["escort_jobs"] = open_escort[:6]
+
+    if agent.escorting:
+        boss = world.agents.get(agent.escorting)
+        obs["you"]["escorting"] = (
+            f"guarding {boss.name if boss else agent.escorting} -- you travel when "
+            f"they do and are paid on arrival"
+        )
+    if agent.escorts:
+        obs["you"]["your_convoy"] = [
+            {"who": (world.agents[m.agent_id].name
+                     if m.agent_id in world.agents else "an NPC"),
+             "role": m.role, "carrying": m.weapon, "costs": round(m.wage_paid, 2)}
+            for m in agent.escorts
+        ]
+
+    # WHAT THE ROAD WILL COST YOU, at the decision rather than after it.
+    #
+    # This whole system exists so that agents buy better carts and hire guards.
+    # Nobody buys either on the strength of a probability they were never shown,
+    # and "the agents ignore the bandits" would be PHASE4 §2 for the fifteenth
+    # time. So the number is computed for the journeys actually available and
+    # put in front of them BEFORE they set off.
+    #
+    # Only when there is something to lose: an empty-handed agent gets nothing
+    # here, because a risk line about no cargo is per-call tokens spent on a
+    # decision that cannot be made.
+    cargo_value, what = B.cargo_at_risk(world, agent)
+    if cargo_value > 0 and not agent.in_transit:
+        party = B.party_for(world, agent, cargo_value)
+        risks = {
+            dest: B.route_risk(agent.location, dest, party).probability
+            for dest in D.ALL_PLACES
+            if dest != agent.location
+        }
+        risky = {d: f"{r:.0%}" for d, r in sorted(risks.items()) if r > 0}
+        block: dict[str, Any] = {
+            "carrying": what,
+            "worth": round(cargo_value, 2),
+            "guards_hired": len(agent.escorts),
+        }
+        if risky:
+            block["chance_of_being_robbed"] = risky
+            block["note"] = (
+                "If they catch you they take between half the load and ALL of "
+                "it, and there is no insurance. A faster vehicle and hired "
+                "guards both cut this; walking is the worst of both. Per unit "
+                "delivered, one guarded cart beats many small trips."
+            )
+        obs["you"]["road_risk"] = block
+
     if job is not None:
         loaded = agent.hauling == job.id
         obs["you"]["your_haulage_job"] = {
             "id": job.id, "item": job.item, "qty": job.qty,
             "pays": round(job.courier_fee, 2),
+            # How the two businesses split the convoy. The courier carries
+            # someone else's property either way, but the split is what they
+            # agreed, and it is what a courier needs to judge who will care if
+            # the load goes missing.
+            "convoy_split": job.split_label(),
             "next": (
                 f"deliver at {job.destination}" if loaded
                 else f"collect at {job.origin}, then deliver at {job.destination}"

@@ -24,6 +24,7 @@ from .state import (
     Convoy,
     ConvoyMember,
     Employment,
+    EscortPosting,
     Government,
     Guild,
     JobPosting,
@@ -46,7 +47,8 @@ _CLASSES = {
     c.__name__: c
     for c in (
         Activity, Agent, Bounty, Business, ChatMessage, Consignment, Convoy,
-        ConvoyMember, Employment, Government, Guild, JobPosting, Market, Plot, Property,
+        ConvoyMember, Employment, EscortPosting, Government, Guild, JobPosting,
+        Market, Plot, Property,
         Proposal, Reasoning, Recommendation, ResearchState, Snapshot, StolenStack,
         TradeOffer, Transaction, VehicleInstance, World,
     )
@@ -94,11 +96,33 @@ def _encode(obj: Any) -> Any:
     return obj
 
 
+# Fields seen in a checkpoint that the dataclass no longer has. Collected rather
+# than raised, and reported once by `load`.
+_DROPPED: dict[str, set[str]] = {}
+
+
 def _decode(obj: Any) -> Any:
     if isinstance(obj, dict):
         if "__type__" in obj:
             cls = _CLASSES[obj["__type__"]]
             kwargs = {k: _decode(v) for k, v in obj.items() if k != "__type__"}
+            # A FIELD THAT NO LONGER EXISTS MUST NOT DESTROY THE RUN.
+            #
+            # `Consignment.responsibility` became `seller_share` on 2026-08-21
+            # and every checkpoint written before that stopped loading with a
+            # bare TypeError -- a finished 16-hour run made unreadable by a
+            # rename. Checkpoints outlive the schema that wrote them, and losing
+            # one is far worse than losing a field from it.
+            #
+            # Dropped keys are RECORDED, not swallowed: `load` reports them, so
+            # a resumed world that quietly lost state says so rather than
+            # looking intact. New fields need no handling -- they take their
+            # dataclass default, which is why every added field carries one.
+            known = {f.name for f in fields(cls)}
+            unknown = set(kwargs) - known
+            if unknown:
+                _DROPPED.setdefault(cls.__name__, set()).update(unknown)
+                kwargs = {k: v for k, v in kwargs.items() if k in known}
             return cls(**kwargs)
         if "__dict__" in obj:
             return {_decode(k): _decode(v) for k, v in obj["__dict__"]}
@@ -116,5 +140,16 @@ def save(world: World, path: Path | str) -> None:
     os.replace(tmp, path)
 
 
+def dropped_fields() -> dict[str, set[str]]:
+    """What the last `load` had to discard. Empty when the schema matched."""
+    return {k: set(v) for k, v in _DROPPED.items()}
+
+
 def load(path: Path | str) -> World:
-    return _decode(json.loads(Path(path).read_text(encoding="utf-8")))
+    """Restore a world, tolerating a schema that has moved on since it was written."""
+    _DROPPED.clear()
+    world = _decode(json.loads(Path(path).read_text(encoding="utf-8")))
+    if _DROPPED:
+        detail = "; ".join(f"{c}: {', '.join(sorted(f))}" for c, f in sorted(_DROPPED.items()))
+        print(f"checkpoint {Path(path).name}: dropped fields the code no longer has -- {detail}")
+    return world

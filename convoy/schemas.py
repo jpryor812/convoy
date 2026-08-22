@@ -61,6 +61,21 @@ DESCRIPTIONS: dict[str, str] = {
         "road and down again."
     ),
     "mount": "Mount a vehicle you own, to carry far more and travel faster.",
+    "hire_escort": (
+        "Hire NPC guards for your next journey, paid now, gone on arrival. "
+        "Bodyguards deter; Scouts hide you; Drivers handle the cart. Better kit "
+        "deters more. An NPC costs HALF AGAIN what an agent does -- "
+        "post_escort_job is cheaper if you can wait."
+    ),
+    "post_escort_job": (
+        "Offer an AGENT a place on your next convoy, announced in world chat. "
+        "Cheaper than an NPC, but you wait for a taker. Paid on arrival. "
+        "lend_weapon arms them from your inventory and comes back."
+    ),
+    "accept_escort_job": (
+        "Take escort work. You travel with them, are paid on arrival, and end up "
+        "where they were going. Driver-own pays most: bring your own vehicle."
+    ),
     "dismount": "Get off your vehicle and continue on foot.",
     "wait": (
         "Do nothing for a while, and end this turn. Use when waiting on "
@@ -233,15 +248,23 @@ DESCRIPTIONS: dict[str, str] = {
     ),
     "loot_ground": "Pick up whatever a dead agent dropped here.",
     # -- risk ---------------------------------------------------------------
-    "buy_insurance": (
-        "Buy insurance. Without it, everything you were not carrying is wiped "
-        "when you die. 'Life', 'Asset' or 'Cargo'."
-    ),
 }
 
 
 # Static value sets. Runtime IDs are excluded on purpose -- see the module note.
 def _enum_for(action: str, param: str) -> list[str] | None:
+    # Escorts are hired into the Convoy tab's roles, not the wage roles a
+    # business hires into. Checked BEFORE the generic `role` branch below,
+    # which would otherwise offer a courier the choice of hiring a Blacksmith
+    # to guard its cart.
+    if action in ("hire_escort", "post_escort_job"):
+        if param == "role":
+            return list(D.CONVOY_PAY)
+        if param in ("weapon", "lend_weapon"):
+            return list(D.WEAPONS)
+        if param == "armor":
+            return list(A.ARMOR_SETS)
+
     if param in ("item", "output"):
         # "On Foot" is in ALL_ITEMS as the null vehicle, and is not a thing
         # anyone can hold, stock, haul or sell. Offering it as a valid `item`
@@ -277,6 +300,17 @@ _TYPE_MAP = {
 
 
 def _param_schema(action: str, param: inspect.Parameter) -> dict[str, Any]:
+    # The convoy split is a LADDER, not a free number -- see data.CONVOY_SPLITS.
+    # Given as the seller's share, with -1 meaning "whatever is customary", which
+    # is what an agent should send unless it is deliberately bargaining.
+    if param.name == "seller_share":
+        return {
+            "type": "number",
+            "description": (
+                "Seller's share of convoy cost AND loss: 1, .75, .6, .5, .4, "
+                ".25, 0. Omit for customary. The state never shares."
+            ),
+        }
     annotation = param.annotation
     # "str | None" and similar arrive as strings under `from __future__ import
     # annotations`, so match on text rather than on the type object.

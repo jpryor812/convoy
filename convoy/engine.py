@@ -14,10 +14,12 @@ for an OpenRouter call behind the same interface.
 
 from __future__ import annotations
 
+import random
 import time
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
+from . import banditry as B
 from . import data as D
 from . import economy as E
 from .events import EventLog, Significance
@@ -36,6 +38,20 @@ class Policy(Protocol):
     def decide(self, world: World, agent: Agent, reason: str) -> None: ...
 
 
+def _share_of(total: int, fraction: float) -> int:
+    """How many units a robbery takes out of `total`.
+
+    Always at least one -- "you were robbed and lost nothing" is a worse story
+    than either outcome it sits between. There is no longer a unit held back at
+    the top: `LOOT_FRACTION_MAX` is 1.0 and a total loss is meant to be
+    reachable, so clamping one survivor would quietly make the worst case
+    unreachable and the insurance that covers it pointless.
+    """
+    if total <= 0:
+        return 0
+    return max(1, min(round(total * fraction), total))
+
+
 @dataclass
 class EngineConfig:
     duration_hours: float = D.SIM_DURATION_HOURS
@@ -43,6 +59,20 @@ class EngineConfig:
     checkpoint_every_hours: float = 1.0
     reeval_minutes: float = D.REEVALUATION_INTERVAL_MIN
     diary_hours: float = D.DIARY_INTERVAL_HOURS
+    # BANDITRY IS THE FIRST RANDOMNESS IN THIS SIMULATION. Everything before it
+    # was deterministic, which is worth not giving up by accident -- so the seed
+    # is explicit and a run records it. A resumed run re-seeds: the checkpoint
+    # holds plain dataclasses and a `random.Random` is not one, so storing the
+    # generator would break `checkpoint.save`. Replaying a run reproduces its
+    # events from the log, not by re-rolling.
+    banditry: bool = True
+    banditry_seed: int = 20260820
+    # THE STATE WITHDRAWS at this simulated hour, or never if None. Scheduled
+    # inside the engine rather than done by stopping and editing a checkpoint,
+    # so it lands on the exact hour, needs no pause, and cannot smuggle in a
+    # changed prompt halfway through -- which is what made the first attempt two
+    # experiments instead of one.
+    state_exits_at: float | None = None
 
 
 class Engine:
@@ -59,6 +89,12 @@ class Engine:
         self.policy = policy
         self.config = config or EngineConfig()
         self.on_checkpoint = on_checkpoint
+        self._rng = random.Random(self.config.banditry_seed)
+        # A resumed world may already be past the withdrawal hour; the state is
+        # gone if there is no open government business left to close.
+        self._state_gone = not any(
+            b.is_government and not b.closed for b in world.businesses.values()
+        )
         # Relative to where the WORLD is, not to zero. Identical for a fresh
         # world, and the difference between working and not for a resumed one: a
         # world reloaded at hour 84 has already passed an absolute 1.0, so the
@@ -149,6 +185,14 @@ class Engine:
         w.sim_time += dt
         hours = dt / 3600.0
 
+        # Fires once, on the first tick at or past the hour. Before anything
+        # else in the tick, so nobody is paid a wage by an employer that has
+        # already shut.
+        exit_at = self.config.state_exits_at
+        if exit_at is not None and not self._state_gone and w.sim_hour >= exit_at:
+            self._state_gone = True
+            self._withdraw_the_state()
+
         self._advance_travel(dt)
         self._finish_developments()
         self._sustenance(hours)
@@ -165,6 +209,237 @@ class Engine:
         self._diaries()
 
     # -- continuous processes ---------------------------------------------
+
+    def _withdraw_the_state(self) -> None:
+        """Close every government business and spill its stores onto the ground.
+
+        The same closure the engine performs on bankruptcy -- staff released,
+        roster cleared, cash zeroed -- plus the stock, which would otherwise be
+        entombed: a closed business's inventory is unreachable, so it is dropped
+        where any agent can `loot_ground` it.
+
+        Announced at HIGH significance because it is the largest thing that can
+        happen to this valley and every agent's plans depend on it.
+        """
+        w = self.world
+        closed = fired = 0
+        for biz in w.businesses.values():
+            if not biz.is_government or biz.closed:
+                continue
+            for emp in list(biz.roster):
+                worker = w.agents.get(emp.agent_id)
+                if worker and worker.current_job and worker.current_job[0] == biz.id:
+                    worker.current_job = None
+                    if worker.activity.kind == "work":
+                        worker.activity = Activity("idle", w.sim_time)
+                    fired += 1
+            biz.roster.clear()
+            stock = {i: q for i, q in biz.inventory.items() if q > 0}
+            if stock:
+                w.drop_loot(biz.location, stock, 0.0)
+            biz.inventory.clear()
+            biz.cash = 0.0
+            biz.closed = True
+            closed += 1
+
+        # THE GROUND GOES BACK ON THE MARKET. Closing a business does not
+        # release its plots, so the state's holdings stayed locked under an
+        # owner that no longer existed: on 2026-08-21, twenty of Town's forty
+        # plots. A starving agent with 1,380 denari was told "every one of 40
+        # plots is owned" and had nowhere to build a tavern, while half the
+        # square belonged to shuttered government stores.
+        #
+        # Released as RAW land, not developed. The buildings went with the
+        # state; what remains is ground, at the ordinary price. Handing over
+        # finished floor space would be a windfall, and this is meant to reopen
+        # a market rather than hand somebody a free building.
+        freed = 0
+        for plot in w.plots.values():
+            biz = w.businesses.get(plot.business) if plot.business else None
+            if plot.owner == "Government" or (biz is not None and biz.is_government):
+                plot.owner = None
+                plot.business = None
+                plot.developed = False
+                plot.for_sale_at = None
+                freed += 1
+
+        self.log.emit(
+            w.sim_time, "state_withdrew", location=None,
+            businesses_closed=closed, workers_released=fired,
+            plots_released=freed,
+            significance=Significance.HIGH,
+        )
+
+    def _resolve_banditry(self, agent: Agent, origin: str, destination: str) -> None:
+        """Roll for the road just travelled, and take the loss if it goes badly.
+
+        Nothing here decides WHETHER there was risk -- `banditry.segment_risk`
+        owns that, including the two rules that override it (nobody is robbed on
+        foot, and nobody is ever perfectly safe). This only applies the outcome,
+        so there is exactly one place in the codebase that knows the odds.
+        """
+        w = self.world
+        if not self.config.banditry:
+            return
+        cargo_value, what = B.cargo_at_risk(w, agent)
+        if cargo_value <= 0:
+            return
+
+        party = B.party_for(w, agent, cargo_value)
+        risk = B.route_risk(origin, destination, party)
+        if risk.probability <= 0.0 or self._rng.random() >= risk.probability:
+            return
+        fraction = self._rng.uniform(B.LOOT_FRACTION_MIN, B.LOOT_FRACTION_MAX)
+
+        # Everything on the cart, not one kind of thing on it. A courier
+        # hauling for somebody else while carrying its own stock loses a share
+        # of both -- see `banditry.cargo_at_risk`.
+        lost_value = 0.0
+        # `_rob_consignment` still reports WHO bore the loss even though nothing
+        # pays it out any more: the bearer is what a dashboard needs to say
+        # whose shipment this was, and it is the hook a claim would use if
+        # insurance is ever switched back on.
+        bearer = None
+        if agent.hauling and agent.hauling in w.consignments:
+            value, bearer = self._rob_consignment(agent, fraction)
+            lost_value += value
+        lost_value += self._rob_inventory(agent, fraction)
+        if lost_value <= 0:
+            return
+
+        self.log.emit(
+            w.sim_time, "robbed", actor=agent.id, location=destination,
+            origin=origin, destination=destination,
+            segment=max(risk.per_segment, key=lambda s: s[1])[0] if risk.per_segment else "",
+            risk=round(risk.probability, 3), fraction=round(fraction, 3),
+            value_lost=round(lost_value, 2), escorts=len(agent.escorts),
+            vehicle=party.vehicle, cargo=what, borne_by=bearer,
+        )
+
+    def _convoy_destination(self, agent: Agent) -> str:
+        """Where this agent's convoy was headed; where it stands if it was not."""
+        return agent.in_transit[1] if agent.in_transit else agent.location
+
+    def _settle_escorts(
+        self, agent: Agent, destination: str, from_estate: bool = False,
+    ) -> None:
+        """Pay off the convoy and disband it. Hired for one journey, and it is over.
+
+        An agent escort is paid HERE and not at hiring, which is the whole
+        difference between it and an NPC: the NPC takes its premium up front and
+        the person carries the risk of the journey with you. If the employer
+        cannot pay on arrival, the escort takes what there is -- an unpaid guard
+        is a story, an escort trapped forever in a convoy is a bug.
+        """
+        w = self.world
+        for member in agent.escorts:
+            escort = w.agents.get(member.agent_id)
+            if escort is None:
+                continue                      # an NPC: nothing to release or pay
+            paid = min(member.wage_paid, agent.denari)
+            agent.denari -= paid
+            # The treasury covers what a dead employer's estate cannot. See the
+            # note in `_kill`: the escort did the work either way.
+            if from_estate and paid < member.wage_paid:
+                covered = member.wage_paid - paid
+                w.government.treasury -= covered
+                paid += covered
+            escort.denari += paid
+            escort.location = destination
+            escort.in_transit = None
+            escort.escorting = None
+            escort.activity = Activity("idle", w.sim_time)
+            if member.vehicle_id and member.vehicle_id in w.vehicles:
+                w.vehicles[member.vehicle_id].location = destination
+            self.log.emit(
+                w.sim_time, "escort_paid", actor=agent.id, subject=escort.id,
+                location=destination, role=member.role, amount=round(paid, 2),
+                shortfall=round(member.wage_paid - paid, 2),
+            )
+        # Lent weapons go home with the job, like a lent vehicle.
+        for post in w.escort_postings.values():
+            if post.owner == agent.id and post.status == "taken":
+                post.status = "done"
+                if post.lent_weapon:
+                    agent.inventory[post.lent_weapon] = (
+                        agent.inventory.get(post.lent_weapon, 0) + 1
+                    )
+        agent.escorts.clear()
+
+    def _rob_inventory(self, agent: Agent, fraction: float) -> float:
+        """Take a share of what the agent owns, counted across the whole load.
+
+        A SHARE OF THE LOAD, NOT A SHARE OF EACH STACK. Rounding per item took
+        a whole one-unit stack whatever the roll said -- a lone Iron Sword was a
+        total loss on the gentlest possible robbery, while the briefing promised
+        "you lose part of the load, not all of it". The observation asserting
+        something the code then contradicts is the failure this project keeps
+        finding (PHASE4 §2), so the guarantee is now structural: with more than
+        one unit aboard, `_share_of` never takes the last one.
+        """
+        total = sum(q for q in agent.inventory.values() if q > 0)
+        if total <= 0:
+            return 0.0
+        taking = _share_of(total, fraction)
+        lost_value = 0.0
+        # Largest stacks first, so the split is proportional rather than
+        # whatever order a dict happens to be in.
+        order = sorted(agent.inventory.items(), key=lambda kv: -kv[1])
+        for i, (item, qty) in enumerate(order):
+            if taking <= 0:
+                break
+            remaining_stacks = sum(q for _n, q in order[i:])
+            take = min(qty, taking if i == len(order) - 1
+                       else round(taking * qty / max(1, remaining_stacks)))
+            take = max(0, min(take, qty, taking))
+            if not take:
+                continue
+            agent.inventory[item] = qty - take
+            if agent.inventory[item] <= 0:
+                del agent.inventory[item]
+            taking -= take
+            lost_value += D.base_price(item) * take
+        return lost_value
+
+    def _rob_consignment(self, agent: Agent, fraction: float) -> float:
+        """Take a share of a load being hauled for somebody else.
+
+        The goods belong to the buyer, who has already paid for them -- so
+        unless the seller took responsibility for the convoy, this is simply the
+        buyer's loss, which is what `Consignment` has always said. When the
+        SELLER is responsible, they refund what did not arrive: that is the
+        whole substance of the bargain, and it has to move money or it is not a
+        bargain at all.
+        """
+        w = self.world
+        con = w.consignments[agent.hauling]
+        taken = _share_of(con.qty, fraction)
+        con.qty -= taken
+        agent.hauling_units = max(0, agent.hauling_units - taken)
+        unit = con.goods_price / max(1, con.qty + taken)
+        refund = unit * taken
+
+        # THE LOSS SPLITS THE SAME WAY THE COST DOES. The goods are the buyer's
+        # -- they paid at order time -- so the seller compensates them for
+        # whatever share of the convoy the seller agreed to carry.
+        seller = w.businesses.get(con.seller_business)
+        buyer = w.businesses.get(con.buyer_business)
+        owed = refund * con.seller_share
+        if seller and buyer and owed > 0 and not seller.is_government:
+            paid = min(owed, seller.cash)
+            seller.cash -= paid
+            buyer.cash += paid
+            self.log.emit(
+                w.sim_time, "convoy_loss_covered", actor=con.seller_business,
+                subject=con.buyer_business, location=agent.location,
+                amount=round(paid, 2), consignment=con.id,
+                split=con.split_label(), shortfall=round(owed - paid, 2),
+            )
+        # Whoever carries the larger share is the one the loss really falls on.
+        losing = (con.seller_business if con.seller_share >= 0.5
+                  else con.buyer_business)
+        owner = getattr(w.businesses.get(losing), "owner", None)
+        return D.base_price(con.item) * taken, owner
 
     def _advance_travel(self, dt: float) -> None:
         for agent in self.world.agents.values():
@@ -254,6 +529,17 @@ class Engine:
                     property=wiped["property"], value=round(wiped["value"], 2),
                 )
 
+        # A DEAD EMPLOYER MUST NOT STRAND ITS CONVOY (designer decision,
+        # 2026-08-21). Escorts leave with their employer and are released on ITS
+        # arrival -- and a corpse never arrives, so without this they sit in
+        # transit with `activity == "convoy"` forever, unpaid and unable to act.
+        #
+        # The rule: the convoy completes. Escorts finish the journey, and are
+        # paid out of the estate first and the treasury after, because a guard
+        # who did the job is owed regardless of what happened to whoever hired
+        # it. The state is the backstop of last resort here for the same reason
+        # it is the buyer of last resort everywhere else.
+        self._settle_escorts(agent, self._convoy_destination(agent), from_estate=True)
         agent.alive = False
         agent.health = 0.0
         agent.respawn_at = w.sim_time + D.RESPAWN_SECONDS
@@ -947,12 +1233,18 @@ class Engine:
                 agent.in_transit = None
 
             if agent.activity.kind == "travel" and w.sim_time >= agent.activity.ends_at:
-                _o, dest, _p = agent.in_transit or (agent.location, agent.location, 1.0)
+                origin, dest, _p = agent.in_transit or (agent.location, agent.location, 1.0)
+                # Resolved BEFORE the location changes, because the risk is a
+                # property of the road just travelled, and before `_ask`, so the
+                # observation the agent wakes to already shows the empty cart
+                # rather than telling it about the robbery an hour later.
+                self._resolve_banditry(agent, origin, dest)
                 agent.location = dest
                 agent.in_transit = None
                 if agent.mounted_vehicle:
                     w.vehicles[agent.mounted_vehicle].location = dest
                 agent.activity = Activity("idle", w.sim_time)
+                self._settle_escorts(agent, dest)
                 self._ask(agent, "arrived")
                 continue
 

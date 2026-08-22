@@ -335,6 +335,12 @@ def main() -> int:
         "--add-hours", type=float, default=12.0,
         help="with --resume: how many further simulated hours to run",
     )
+    ap.add_argument(
+        "--state-exits-at", type=float, default=None, metavar="HOUR",
+        help="the government closes every business it owns at this simulated "
+             "hour and its stores spill onto the ground. Tests whether the "
+             "economy can stand without a buyer of last resort.",
+    )
     ap.add_argument("--dry-run", action="store_true", help="build prompts, call nothing")
     ap.add_argument("--max-actions", type=int, default=llm.MAX_ACTIONS_PER_DECISION)
     ap.add_argument(
@@ -441,6 +447,7 @@ def main() -> int:
             # first live session died to a connection reset at 1.5 sim-hours
             # with nothing recoverable.
             checkpoint_every_hours=1.0 if not args.dry_run else 1e9,
+            state_exits_at=args.state_exits_at,
         ),
         on_checkpoint=None if args.dry_run else _checkpoint_hook(
             world, log, run_dir, args.day_hours, advisor

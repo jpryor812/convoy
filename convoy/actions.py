@@ -18,13 +18,16 @@ from . import data as D
 from . import economy as E
 from . import world_map
 from .events import EventLog, Significance
+from . import banditry as B
 from .state import (
     Activity,
     Agent,
     Business,
     Consignment,
     ChatMessage,
+    ConvoyMember,
     Employment,
+    EscortPosting,
     Guild,
     JobPosting,
     Plot,
@@ -60,6 +63,20 @@ def travel_to(world: World, log: EventLog, agent: Agent, destination: str) -> Re
     agent.activity = Activity(
         "travel", world.sim_time + seconds, {"origin": origin, "destination": destination}
     )
+    # AGENT ESCORTS LEAVE WITH YOU. A guard that stayed behind while the convoy
+    # it was hired to protect walked off would still be counted in the risk
+    # calculation, which is the worst of both -- paid for, priced in, and not
+    # there. `Activity("convoy")` is the kind the state model has carried since
+    # Phase 1 and nothing had ever set.
+    for member in agent.escorts:
+        escort = world.agents.get(member.agent_id)
+        if escort is None or not escort.alive:
+            continue
+        escort.in_transit = (origin, destination, 0.0)
+        escort.activity = Activity(
+            "convoy", world.sim_time + seconds,
+            {"origin": origin, "destination": destination, "employer": agent.id},
+        )
     log.emit(
         world.sim_time, "travel", actor=agent.id, location=origin,
         destination=destination, seconds=round(seconds, 1),
@@ -88,6 +105,225 @@ def dismount(world: World, log: EventLog, agent: Agent) -> Result:
     veh.location = agent.location
     agent.mounted_vehicle = None
     return True, "dismounted"
+
+
+ARMOR_SETS: dict[str, tuple[str, ...]] = {
+    "none": (),
+    "leather": ("Leather Cap", "Leather Vest", "Leather Leggings"),
+    "bronze": ("Bronze Helm", "Bronze Cuirass", "Bronze Greaves"),
+    "iron": ("Iron Helm", "Iron Cuirass", "Iron Greaves"),
+}
+
+
+def hire_escort(
+    world: World, log: EventLog, agent: Agent, role: str,
+    weapon: str = "Wooden Spear", armor: str = "none", count: int = 1,
+) -> Result:
+    """Hire NPC guards for your NEXT journey. Paid now, gone on arrival.
+
+    Per-journey rather than salaried because that is the decision an owner
+    actually makes: "is THIS load worth guarding" is asked of a load. A standing
+    retinue would also be a payroll an agent forgets it has, and the valley has
+    lost enough businesses to exactly that (PHASE4 §5).
+
+    They are paid up front and there is no refund, so hiring guards and then not
+    travelling is simply money spent -- which is the correct incentive for
+    deciding before you buy rather than after.
+    """
+    if role not in D.CONVOY_PAY:
+        return False, f"role must be one of {', '.join(D.CONVOY_PAY)}"
+    if agent.in_transit:
+        return False, "already on the road -- hire before you set off"
+    if weapon not in D.WEAPONS:
+        return False, f"unknown weapon {weapon!r}"
+    if armor not in ARMOR_SETS:
+        return False, f"armour must be one of {', '.join(ARMOR_SETS)}"
+    if count < 1:
+        return False, "hire at least one"
+    if len(agent.escorts) + count > B.MAX_ESCORTS:
+        return False, (
+            f"you can take {B.MAX_ESCORTS} escorts at most and already have "
+            f"{len(agent.escorts)}"
+        )
+
+    kit = ARMOR_SETS[armor]
+    cargo_value, what = B.cargo_at_risk(world, agent)
+    each = B.hire_price(role, weapon, kit, cargo_value, npc=True)
+    total = each * count
+    if agent.denari < total:
+        return False, (
+            f"{count}x {role} with {weapon} costs {total:.2f}; you have "
+            f"{agent.denari:.2f}. A cheaper weapon or fewer guards costs less, "
+            f"and an AGENT hired through post_escort_job costs about "
+            f"{B.hire_price(role, weapon, kit, cargo_value):.2f} each."
+        )
+
+    agent.denari -= total
+    for _ in range(count):
+        agent.escorts.append(
+            ConvoyMember("NPC", role, None, weapon, tuple(kit), round(each, 2))
+        )
+    log.emit(
+        world.sim_time, "escort_hired", actor=agent.id, location=agent.location,
+        role=role, weapon=weapon, armor=armor, count=count,
+        cost=round(total, 2), cargo_value=round(cargo_value, 2),
+    )
+
+    # The number they are buying this FOR, quoted back at the moment of purchase.
+    # An escort is bought to move a probability, and an agent that cannot see the
+    # probability move has no way to know whether it bought enough -- PHASE4 §2,
+    # which is the failure mode this whole system is most likely to reproduce.
+    party = B.party_for(world, agent, cargo_value)
+    bare = B.Party(party.escorts[:1], party.vehicle, cargo_value)
+    agent_price = B.hire_price(role, weapon, kit, cargo_value)
+    return True, (
+        f"hired {count}x NPC {role} ({weapon}, {armor} armour) for {total:.2f}. "
+        f"Guarding {what}. They leave when you arrive. An agent would have cost "
+        f"about {agent_price * count:.2f} -- post_escort_job if you can wait."
+        + _risk_comparison(world, agent, bare, party)
+    )
+
+
+def post_escort_job(
+    world: World, log: EventLog, agent: Agent, role: str, fee: float,
+    destination: str, lend_weapon: str = "",
+) -> Result:
+    """Advertise a place on your next convoy for another AGENT to take.
+
+    An NPC turns up instantly and costs half again as much
+    (`banditry.ESCORT_NPC_MULTIPLIER`). A person is cheaper and has to be waited
+    for and persuaded, which is the same trade the job board makes for employees
+    and `post_delivery_job` makes for haulage.
+
+    LENDING A WEAPON works like lending a vehicle: bound to the job, returned on
+    arrival, impossible to keep -- so it needs no trust system. It exists because
+    an agent's own kit is usually the free Slingshot it started with, and a guard
+    is only worth what it is carrying.
+    """
+    if role not in D.CONVOY_PAY:
+        return False, f"role must be one of {', '.join(D.CONVOY_PAY)}"
+    if destination not in D.ALL_PLACES or destination == agent.location:
+        return False, "name somewhere else to travel to"
+    if agent.in_transit:
+        return False, "already on the road"
+    if fee <= 0:
+        return False, "offer something"
+    if agent.denari < fee:
+        return False, f"you have {agent.denari:.2f} and are offering {fee:.2f}"
+    if len(agent.escorts) >= B.MAX_ESCORTS:
+        return False, f"you already have {B.MAX_ESCORTS} escorts"
+    if lend_weapon and lend_weapon not in D.WEAPONS:
+        return False, f"unknown weapon {lend_weapon!r}"
+    if lend_weapon and agent.inventory.get(lend_weapon, 0) < 1:
+        return False, f"you have no {lend_weapon} to lend"
+
+    cargo_value, _what = B.cargo_at_risk(world, agent)
+    suggested = B.suggested_fee(role, cargo_value, brings_vehicle=role == "Driver-own")
+    post = EscortPosting(
+        id=world.new_id("E"), owner=agent.id, role=role, fee=float(fee),
+        origin=agent.location, destination=destination,
+        posted_at=world.sim_time, lent_weapon=lend_weapon or None,
+    )
+    world.escort_postings[post.id] = post
+    if lend_weapon:
+        agent.inventory[lend_weapon] -= 1
+        if agent.inventory[lend_weapon] <= 0:
+            del agent.inventory[lend_weapon]
+
+    _post(world, log, agent, "world",
+          f"ESCORT WANTED: {role} from {agent.location} to {destination}, "
+          f"pays {fee:.2f}"
+          + (f", {lend_weapon} provided" if lend_weapon else "")
+          + f". accept_escort_job(\"{post.id}\") to take it.")
+    log.emit(
+        world.sim_time, "escort_job_posted", actor=agent.id, subject=post.id,
+        location=agent.location, role=role, fee=round(float(fee), 2),
+        destination=destination, lent_weapon=lend_weapon or None,
+    )
+    note = ""
+    if fee < suggested * 0.75:
+        note = (f" That is well under the going rate of about {suggested:.2f}; "
+                f"nobody may take it.")
+    elif fee > B.hire_price(role, "Wooden Spear", (), cargo_value, npc=True):
+        note = " That is more than an NPC would cost you outright."
+    return True, f"posted {post.id}: {role} to {destination} for {fee:.2f}.{note}"
+
+
+def accept_escort_job(world: World, log: EventLog, agent: Agent, job_id: str) -> Result:
+    """Take escort work. You travel with them and are paid when you arrive."""
+    post = world.escort_postings.get(job_id)
+    if post is None:
+        return False, "no such job"
+    if post.status != "open":
+        return False, "already taken"
+    if post.owner == agent.id:
+        return False, "that is your own job"
+    if agent.location != post.origin:
+        return False, f"the convoy leaves from {post.origin}, you are at {agent.location}"
+    if agent.escorting:
+        return False, "you are already escorting somebody"
+    if agent.in_transit:
+        return False, "you are on the road"
+    owner = world.agents.get(post.owner)
+    if owner is None or not owner.alive:
+        post.status = "cancelled"
+        return False, "whoever posted it is gone"
+    if owner.denari < post.fee:
+        return False, "they cannot pay it any more"
+
+    vehicle_id = None
+    if post.role == "Driver-own":
+        # The role that pays most is the one where you put your own cart on the
+        # road. It has to be a real cart or the premium is for nothing.
+        owned = [v for v in agent.owned_vehicles
+                 if v in world.vehicles
+                 and world.vehicles[v].location == agent.location]
+        if not owned:
+            return False, (
+                "Driver-own means bringing your own vehicle, and you have none "
+                "here. Take Driver-provided instead, which pays less."
+            )
+        vehicle_id = max(owned, key=lambda v: D.VEHICLES[world.vehicles[v].type].speed_mult)
+
+    weapon = post.lent_weapon or agent.equipped_weapon
+    own_armor = tuple(a for a in agent.equipped_armor.values() if a)
+    owner.escorts.append(
+        ConvoyMember(agent.id, post.role, vehicle_id, weapon, own_armor, round(post.fee, 2))
+    )
+    agent.escorting = owner.id
+    post.status, post.taken_by = "taken", agent.id
+    log.emit(
+        world.sim_time, "escort_job_taken", actor=agent.id, subject=post.id,
+        location=agent.location, employer=owner.id, role=post.role,
+        fee=round(post.fee, 2),
+    )
+    return True, (
+        f"taking {post.role} for {owner.name} to {post.destination}, {post.fee:.2f} "
+        f"on arrival. You travel when they do"
+        + (f", carrying their {post.lent_weapon}." if post.lent_weapon
+           else f", carrying your own {weapon}.")
+        + " You cannot act until you get there."
+    )
+
+
+def _risk_comparison(world: World, agent: Agent, bare: "B.Party", party: "B.Party") -> str:
+    """How much the guards actually bought, on the worst road out of here.
+
+    Named against a REAL destination rather than an abstract average, because
+    "12% safer in general" is not something anyone can act on.
+    """
+    reachable = [p for p in D.ALL_PLACES if p != agent.location]
+    worst, best_delta = None, 0.0
+    for dest in reachable:
+        before = B.route_risk(agent.location, dest, bare).probability
+        after = B.route_risk(agent.location, dest, party).probability
+        if before - after >= best_delta:
+            worst, best_delta = dest, before - after
+    if worst is None or best_delta <= 0.0:
+        return ""
+    before = B.route_risk(agent.location, worst, bare).probability
+    after = B.route_risk(agent.location, worst, party).probability
+    return f" Risk to {worst}: {before:.0%} -> {after:.0%}."
 
 
 def wait(world: World, log: EventLog, agent: Agent, seconds: float) -> Result:
@@ -1873,32 +2109,17 @@ def store_at_home(
 # INSURANCE
 # ---------------------------------------------------------------------------
 
-def buy_insurance(
-    world: World, log: EventLog, agent: Agent, product: str, coverage: float
-) -> Result:
-    if product not in ("Life", "Asset", "Cargo"):
-        return False, "unknown product"
-    broker = world.government_business("Insurance Brokerage")
-    if broker is None:
-        return False, "no brokerage available"
-    if not broker.is_government:
-        reserve_needed = E.required_reserve(broker.outstanding_insured_value + coverage)
-        if broker.cash < reserve_needed:
-            return False, "brokerage reserve too low to issue"
-
-    premium = E.insurance_premium(coverage)
-    if agent.denari < premium:
-        return False, "cannot afford the premium"
-    agent.denari -= premium
-    if not broker.is_government:
-        broker.cash += premium
-    broker.outstanding_insured_value += coverage
-    agent.insurance[product] = agent.insurance.get(product, 0.0) + coverage
-    log.emit(
-        world.sim_time, "insurance_issued", actor=agent.id, subject=broker.id,
-        product=product, coverage=coverage, premium=round(premium, 2),
-    )
-    return True, f"insured {product} for {coverage:.0f}"
+# NO buy_insurance (designer decision, 2026-08-20). The whole line is cut for
+# this mode, and the reason is arithmetic rather than taste: a profitable
+# underwriter must charge above expected loss, an agent maximising net worth
+# declines anything above expected loss, so there is no price at which both
+# sides want to trade. Insurance needs risk AVERSION and these agents have none.
+#
+# The pieces left behind are deliberate and inert: `Agent.insurance` still
+# exists and is always empty, `economy.insurance_premium` and friends still
+# compute, and `_kill` still reads Life and Asset cover it will never find. That
+# is the switch to flip if a run ever shows agents reasoning about ruin rather
+# than about expected value. See PHASE7 §11.
 
 
 # ---------------------------------------------------------------------------
@@ -1920,9 +2141,62 @@ def buy_insurance(
 # escrows the courier's fee, so anyone who finishes the job is certain to be
 # paid and nobody has to trust a stranger at the far end of a dangerous road.
 
+def _nearest_split(share: float) -> float:
+    """Snap to the nearest rung of `CONVOY_SPLITS`."""
+    return min(D.CONVOY_SPLITS, key=lambda r: abs(r - share))
+
+
+def _settle_split(
+    world: World, item: str, asking: str, wanted: float | None,
+    seller_biz: Business | None = None, buyer_biz: Business | None = None,
+) -> tuple[float | None, str]:
+    """How this convoy's cost and risk divide, and what to tell the agent.
+
+    `asking` is the side posting; `wanted` is the seller's share they are trying
+    to impose, or None to take whatever is customary. Returns (share, message),
+    with share None when the demand is refused.
+
+    THE STATE NEVER CARRIES ANY OF IT. A government business has total
+    bargaining power -- see `data.GOVERNMENT_BEARS_NOTHING`. That is checked
+    before market structure, because no amount of scarcity makes the treasury
+    negotiate.
+    """
+    if D.GOVERNMENT_BEARS_NOTHING:
+        if buyer_biz is not None and buyer_biz.is_government:
+            return 1.0, ("The state buys at its own terms: selling to a "
+                         "government business, you cover the whole convoy. An "
+                         "agent-owned buyer might split it with you.")
+        if seller_biz is not None and seller_biz.is_government:
+            return 0.0, ("The state sells at its own terms: buying from a "
+                         "government business, you cover the whole convoy. An "
+                         "agent-owned seller might split it with you.")
+
+    power = B.market_power(world, item)
+    usual = B.customary_split(power)
+    if wanted is None:
+        return usual, f"{power.explain()} Customary split {usual * 100:.0f}/{(1 - usual) * 100:.0f} (seller/buyer)."
+    if wanted not in D.CONVOY_SPLITS:
+        rungs = ", ".join(f"{r * 100:.0f}/{(1 - r) * 100:.0f}" for r in D.CONVOY_SPLITS)
+        return None, f"a split must be one of {rungs} (seller/buyer)."
+
+    # Pushing cost onto the other side is only credible from the strong side of
+    # the market. Taking MORE of it than customary is always allowed -- offering
+    # to carry the convoy is how a seller with no other customer wins the sale.
+    greedier = wanted < usual if asking == "seller" else wanted > usual
+    if greedier and power.stronger != asking:
+        return None, (
+            f"you are not in a position to insist on "
+            f"{wanted * 100:.0f}/{(1 - wanted) * 100:.0f}. {power.explain()} "
+            f"Customary is {usual * 100:.0f}/{(1 - usual) * 100:.0f}, and you "
+            f"may always offer to carry more than that."
+        )
+    return wanted, power.explain()
+
+
 def order_from_business(
     world: World, log: EventLog, agent: Agent, my_business_id: str,
     seller_business_id: str, item: str, qty: int, courier_fee: float,
+    seller_share: float = -1.0,
 ) -> Result:
     """Buy goods from another business for one of yours, and post the haulage.
 
@@ -1976,10 +2250,17 @@ def order_from_business(
         )
         return True, f"bought {qty}x {item} for {total:.2f}, delivered on the spot"
 
+    share, structure = _settle_split(
+        world, item, "buyer", None if seller_share < 0 else seller_share,
+        seller_biz=seller, buyer_biz=buyer,
+    )
+    if share is None:
+        return False, structure
     con = Consignment(
         id=world.new_id("C"), seller_business=seller.id, buyer_business=buyer.id,
         item=item, qty=qty, goods_price=goods, courier_fee=courier_fee,
         origin=seller.location, destination=buyer.location, created_at=world.sim_time,
+        seller_share=share, qty_posted=qty,
     )
     world.consignments[con.id] = con
     log.emit(
@@ -1989,7 +2270,10 @@ def order_from_business(
     )
     return True, (
         f"bought {qty}x {item} for {total:.2f}. Consignment {con.id} waits at "
-        f"{con.origin}; {courier_fee:.2f} offered to whoever hauls it to {con.destination}"
+        f"{con.origin}; {courier_fee:.2f} offered to whoever hauls it to "
+        f"{con.destination}. Convoy split {con.split_label()} seller/buyer -- "
+        f"you carry {con.buyer_share * 100:.0f}% of the fee and of anything "
+        f"bandits take. {structure}"
     )
 
 
@@ -2014,6 +2298,7 @@ def _return_lent_vehicle(world: World, con, courier: Agent | None = None) -> Non
 def post_delivery_job(
     world: World, log: EventLog, agent: Agent, business_id: str, item: str,
     qty: int, to_business_id: str, fee: float, lend_vehicle: str = "",
+    seller_share: float = -1.0,
 ) -> Result:
     """Pay someone to take YOUR stock somewhere. The seller's side of haulage.
 
@@ -2084,12 +2369,23 @@ def post_delivery_job(
     # Escrow the fee and take the goods out of the yard immediately.
     biz.cash -= fee
     biz.remove_item(item, qty)
+    # Your own yard has no counterparty to argue with; a state site has one that
+    # never negotiates. Both land on the seller carrying all of it.
+    if dest.owner == agent.id:
+        share, structure = 1.0, ""
+    else:
+        share, structure = _settle_split(
+            world, item, "seller", None if seller_share < 0 else seller_share,
+            seller_biz=biz, buyer_biz=dest,
+        )
+        if share is None:
+            return False, structure
     con = Consignment(
         id=world.new_id("C"), seller_business=biz.id, buyer_business=dest.id,
         item=item, qty=qty, goods_price=0.0, courier_fee=float(fee),
         origin=biz.location, destination=dest.location,
         created_at=world.sim_time, seller_posted=True,
-        lent_vehicle=lend_vehicle or None,
+        lent_vehicle=lend_vehicle or None, seller_share=share, qty_posted=qty,
     )
     world.consignments[con.id] = con
 
@@ -2196,6 +2492,43 @@ def collect_consignment(world: World, log: EventLog, agent: Agent, consignment_i
     return True, f"loaded {con.qty}x {con.item}; deliver to {con.destination}"
 
 
+def _settle_convoy_cost(world: World, log: EventLog, con: Consignment) -> None:
+    """Reimburse the poster for the other side's share of the courier fee.
+
+    The POSTER escrows the whole fee when the job goes up, because a courier
+    must be certain of being paid and cannot be made to chase two businesses.
+    The split is settled here instead, on delivery: whoever did not post pays
+    their share across to whoever did.
+
+    A shortfall is recorded rather than refused. A business that agreed 50/50
+    and cannot find its half by arrival has broken a bargain, which is a thing
+    that should be visible in the record -- not a delivery that fails.
+    """
+    seller = world.businesses.get(con.seller_business)
+    buyer = world.businesses.get(con.buyer_business)
+    if seller is None or buyer is None or con.courier_fee <= 0:
+        return
+    if con.seller_posted:
+        payer, payee, owed = buyer, seller, con.buyer_share * con.courier_fee
+    else:
+        payer, payee, owed = seller, buyer, con.seller_share * con.courier_fee
+    if owed <= 0 or payer is payee:
+        return
+    # The state never carries any of it -- see data.GOVERNMENT_BEARS_NOTHING.
+    # A share should never have been assigned to it, but paying out of the
+    # treasury on a bad one would be worse than declining here.
+    if payer.is_government:
+        return
+    paid = min(owed, payer.cash)
+    payer.cash -= paid
+    payee.cash += paid
+    log.emit(
+        world.sim_time, "convoy_cost_shared", actor=payer.id, subject=payee.id,
+        location=con.destination, consignment=con.id, split=con.split_label(),
+        amount=round(paid, 2), shortfall=round(owed - paid, 2),
+    )
+
+
 def deliver_consignment(world: World, log: EventLog, agent: Agent, consignment_id: str) -> Result:
     """Hand over at the destination and take the fee."""
     con = world.consignments.get(consignment_id)
@@ -2225,17 +2558,43 @@ def deliver_consignment(world: World, log: EventLog, agent: Agent, consignment_i
                 location=con.destination, item=con.item, qty=con.qty,
                 paid=round(paid, 2),
             )
+    _settle_convoy_cost(world, log, con)
     _return_lent_vehicle(world, con, agent)
     con.status = "delivered"
     agent.hauling = None
     agent.hauling_units = 0
-    agent.denari += con.courier_fee        # escrowed at order time; always paid
+    # PAID FOR WHAT ARRIVES, not for setting off (designer decision,
+    # 2026-08-21). The courier chooses the vehicle and whether to hire guards,
+    # but the LOSS falls on the two businesses -- so a courier paid in full
+    # regardless has no stake at all in the load surviving, and would never buy
+    # a cart or hire an escort for safety's sake. The 2026-08-21 run is the
+    # evidence: twenty of 26 jobs walked five units at a time, and removing foot
+    # immunity alone would not have changed one of them.
+    #
+    # Pro rata rather than all-or-nothing: losing the fee entirely for a load
+    # half taken is a punishment out of proportion to a roll the courier cannot
+    # control, and would empty the courier market instead of arming it.
+    earned = con.courier_fee * con.delivered_fraction()
+    shortfall = con.courier_fee - earned
+    agent.denari += earned
+    if shortfall > 0:
+        # Unearned escrow goes back to whoever put it up.
+        poster = world.businesses.get(
+            con.seller_business if con.seller_posted else con.buyer_business
+        )
+        if poster is not None:
+            poster.cash += shortfall
     log.emit(
         world.sim_time, "consignment_delivered", actor=agent.id, subject=con.id,
-        item=con.item, qty=con.qty, fee=round(con.courier_fee, 2),
+        item=con.item, qty=con.qty, posted=con.qty_posted,
+        fee=round(earned, 2), forfeited=round(shortfall, 2),
         location=con.destination,
     )
-    return True, f"delivered {con.qty}x {con.item}, earned {con.courier_fee:.2f}"
+    lost = "" if shortfall <= 0 else (
+        f" {con.qty_posted - con.qty} units never arrived, so {shortfall:.2f} "
+        f"of the fee went back to whoever posted it."
+    )
+    return True, f"delivered {con.qty}x {con.item}, earned {earned:.2f}.{lost}"
 
 
 def cancel_consignment(world: World, log: EventLog, agent: Agent, consignment_id: str) -> Result:

@@ -28,6 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
+from . import data as D
 from .events import EventLog, Significance
 from .state import ADVICE_TTL_HOURS, Agent, Recommendation, Snapshot, World
 
@@ -267,9 +268,13 @@ def smoke_schedule() -> list[ScriptedAdvice]:
         ScriptedAdvice(
             at_hour=2.5, select=_anyone, max_agents=2, expires_after_hours=4.0,
             text=(
-                "You start with 200 denari. A Mining Operation costs 175 and has no "
-                "input costs at all, so every unit you dig is pure margin. Consider "
-                "founding one and working it yourself."
+                # Read off `data` rather than written down: this said "200
+                # denari" for a day after starting capital moved to 300, which
+                # is advice quoting a world that no longer exists.
+                f"You start with {D.STARTING_DENARI:.0f} denari. A Mining Operation "
+                f"costs {D.BUSINESS_TYPES['Mining Operation'].startup_cost:.0f} and "
+                "has no input costs at all, so every unit you dig is pure margin. "
+                "Consider founding one and working it yourself."
             ),
         ),
     ]

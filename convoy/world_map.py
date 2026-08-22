@@ -90,12 +90,13 @@ LOCATIONS_SPEC: list[Location] = [
     ),
     Location(
         "Town", "hub", 30, True,
-        # The tavern is at South Protected Zone, not here -- see GOVERNMENT_SITES.
-        # This line used to claim it was in Town, and agents believed it: every
-        # eat_best_available call in the 2026-08-14 harness runs failed with
-        # "no tavern here" because the briefing sent them to the wrong place.
-        "The market. Every store, the stables and the town square where the dead "
-        "reappear. Protected ground -- deals are struck, not taken.",
+        # The tavern IS here now (2026-08-20). This line has been wrong in both
+        # directions: it once claimed a tavern Town did not have, and every
+        # eat_best_available call in the 2026-08-14 runs failed with "no tavern
+        # here" because the briefing sent agents to the wrong place. Read
+        # GOVERNMENT_SITES rather than trusting either version of this sentence.
+        "The market. Every store, the tavern, the stables and the town square "
+        "where the dead reappear. Protected ground -- deals are struck, not taken.",
     ),
 ]
 
@@ -324,15 +325,18 @@ GOVERNMENT_SITES: dict[str, str] = {
     "Mining/Farming Equipment Store": "Town",
     "Weaponsmith / Armory": "Town",
     "Vehicle Dealer / Stable": "Town",
-    # The road house. It has now outlived two homes -- South Protected Zone and
-    # The Crossing -- and lands where an innkeeper would actually stand: the only
-    # stop between the smelters and the market, at the head of every spur where
-    # people live.
-    "Tavern / Inn": "The Hills",
+    # The road house, now in Town where an inn belongs -- beside the market, in
+    # the one place everybody already comes to sell. It has outlived three homes
+    # (South Protected Zone, The Crossing, The Hills) and takes the plot the
+    # Insurance Brokerage used to stand on.
+    "Tavern / Inn": "Town",
     # Guards belong where the road is worst, not where it is safest -- and with
     # the garrison gone, the worst ground is The Hills.
     "Private Security Contractor": "The Hills",
-    "Insurance Brokerage": "Town",
+    # NO INSURANCE BROKERAGE (designer decision, 2026-08-20). Cut with the whole
+    # insurance line: a profitable underwriter must charge above expected loss
+    # and a net-worth-maximising agent declines above expected loss, so there is
+    # no price at which both sides trade. See PHASE7 §11.
 }
 
 ALL_PLACES: list[str] = LOCATIONS + [s.name for s in SPURS]

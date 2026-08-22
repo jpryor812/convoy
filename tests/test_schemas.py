@@ -334,9 +334,21 @@ def test_prefix_cost_is_within_budget():
     # here because dropping it invites invented item names, and more refusals is
     # the failure mode this project has spent thirteen entries of PHASE4 §2 on.
     # Spend it deliberately, with a run to measure the refusal rate after.
+    # 14,000 -> 14,500 on 2026-08-21, for the CONVOY SYSTEM: `hire_escort`,
+    # `post_escort_job`, `accept_escort_job`, the `seller_share` split parameter
+    # on both haulage actions, and the briefing blocks for bandits, market
+    # prices and who pays for a convoy. Raised deliberately and with the
+    # designer's agreement, per the note above.
+    #
+    # WHAT MAKES IT SAFE TO RAISE, and it is evidence rather than hope: a live
+    # call at this size returned in 2.2s on 2026-08-21, and the 20-agent run of
+    # that date made ~280 calls at ~14k with a single read timeout and no
+    # rejection. The account had $9.77 remaining. The OpenRouter ceiling scales
+    # with the balance, so this headroom SHRINKS as credit is spent -- top up
+    # before a long run rather than trusting this number.
     tools_tok = len(json.dumps(S.tool_schemas())) // 4
     prefix_tok = len(O.static_briefing()) // 4 + tools_tok
-    ok("cached prefix under 14k tokens", prefix_tok < 14000, f"~{prefix_tok} tokens")
+    ok("cached prefix under 14.5k tokens", prefix_tok < 14500, f"~{prefix_tok} tokens")
     ok("prefix is large enough to cache", prefix_tok > 1024, f"~{prefix_tok} tokens")
 
 
