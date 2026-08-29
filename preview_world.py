@@ -519,6 +519,12 @@ def replay(run: Path, places: dict[str, L.Place]) -> dict:
                     "did": detail.get("did", ""),
                     "why": detail.get("text", ""),
                     "gist": _gist(detail.get("text", ""), detail.get("did", "")),
+                    # NET WORTH AT THAT MOMENT. Every decision carries the
+                    # agent's own assets, so the map can rank agents at the
+                    # SLIDER's hour rather than at the checkpoint. Without it
+                    # the leader ring showed whoever finished first, however
+                    # far back you scrubbed -- a spoiler pinned to hour zero.
+                    "worth": (detail.get("assets") or {}).get("net_worth"),
                 })
 
         if etype == "business_founded" and e.get("subject"):
@@ -1091,7 +1097,9 @@ function seatFor(id, pos, biz){
    the summary is written by the only party that knew what it was thinking. */
 const BUBBLE_HOURS = 0.45;
 function thoughtAt(id, hour){
-  const list = DATA.decisions[id];
+  // Same as ranksAt: snapshot mode has no DATA.decisions at all, since nobody
+  // has decided anything at hour zero.
+  const list = DATA.decisions && DATA.decisions[id];
   if (!list) return null;
   let best = null;
   for (const d of list){
@@ -1103,15 +1111,59 @@ function thoughtAt(id, hour){
 
 /* Green for whoever is winning, yellow for whoever is losing, blue for whoever
    you chose to follow. Three colours is the limit -- a map where everyone is
-   highlighted has highlighted nobody. */
+   highlighted has highlighted nobody.
+
+   RANKED AT THE SLIDER'S HOUR, not at the checkpoint. Two bugs made the first
+   version worse than useless:
+
+   The leaderboard on `BOARDS` is the END of the run, so scrubbing back to hour
+   10 still ringed whoever finished first -- a spoiler pinned to the start, and
+   simply wrong about who was ahead at the time.
+
+   And it ranked the dead. The poorest agent of the 2026-08-21 run starved at
+   hour 70.8, and a corpse is not drawn, so the yellow ring had nobody to sit
+   under and never appeared at all. Poorest now means poorest agent STILL
+   STANDING -- which is the one you can actually watch. */
 const RANK_TOP = "#9dd17a", RANK_BOTTOM = "#e8d06a", RANK_TRACKED = "#6fa8dc";
+
+/* An agent's own last reported net worth at or before this hour. Every decision
+   carries it, so this is what the agent itself knew it was worth. */
+function worthAt(id, hour){
+  const list = DATA.decisions && DATA.decisions[id];
+  if (!list) return null;
+  let seen = null;
+  for (const d of list){
+    if (d.h > hour) break;
+    if (d.worth !== null && d.worth !== undefined) seen = d.worth;
+  }
+  return seen;
+}
+
+let _rankHour = null, _rankCache = {top: null, bottom: null};
+function ranksAt(hour){
+  // SNAPSHOT MODE HAS NO AGENTS LIST. `DATA.agents` only exists on a replay,
+  // and at hour zero nobody has decided anything, so nobody has a net worth to
+  // rank -- there is no leader to ring.
+  if (!REPLAY || !Array.isArray(DATA.agents)) return {top: null, bottom: null};
+  if (_rankHour === hour) return _rankCache;
+  let top = null, bottom = null, hi = -Infinity, lo = Infinity;
+  for (const a of DATA.agents){
+    if (!livingAt(a, hour)) continue;      // a corpse cannot wear a ring
+    const w = worthAt(a.id, hour);
+    if (w === null) continue;
+    if (w > hi){ hi = w; top = a.id; }
+    if (w < lo){ lo = w; bottom = a.id; }
+  }
+  _rankHour = hour;
+  _rankCache = {top, bottom};
+  return _rankCache;
+}
+
 function rankColour(id){
   if (id === FOLLOW) return RANK_TRACKED;
-  const lb = (BOARDS.leaderboard || []);
-  if (!lb.length) return null;
-  if (lb[0] && lb[0].id === id) return RANK_TOP;
-  const last = lb[lb.length - 1];
-  if (last && last.id === id) return RANK_BOTTOM;
+  const r = ranksAt(HOUR);
+  if (r.top === id) return RANK_TOP;
+  if (r.bottom === id) return RANK_BOTTOM;
   return null;
 }
 
@@ -1661,12 +1713,19 @@ function draw(){
       const hop = p.working ? hopOffset(p.id) : 0;
       const ring = rankColour(p.id);
       if (ring){
-        // Filled AND stroked: a hairline ellipse on grass at low zoom is
-        // invisible, which is the only zoom where you need it to pick someone
-        // out of twenty.
-        g.beginPath(); g.ellipse(p.sx, p.sy + 1, 12, 5.5, 0, 0, Math.PI * 2);
-        g.fillStyle = ring; g.globalAlpha = 0.30; g.fill(); g.globalAlpha = 1;
-        g.strokeStyle = ring; g.lineWidth = 2 / zoom; g.stroke();
+        // A DARK RIM UNDER A BRIGHT ONE. The leader's green is a near match for
+        // the grass it usually stands on, so a plain green ellipse on a green
+        // field is close to invisible -- the one place it most needs to be
+        // seen. The dark rim underneath separates the ring from whatever ground
+        // it lands on, grass, sand or stone alike, and the fill is opaque
+        // enough to read at a glance without hiding the feet.
+        g.save();
+        g.beginPath(); g.ellipse(p.sx, p.sy + 1, 15, 7, 0, 0, Math.PI * 2);
+        g.fillStyle = ring; g.globalAlpha = 0.55; g.fill();
+        g.globalAlpha = 1;
+        g.strokeStyle = "#10140d"; g.lineWidth = 4.5 / zoom; g.stroke();
+        g.strokeStyle = ring;      g.lineWidth = 2.5 / zoom; g.stroke();
+        g.restore();
       }
       if (p.vehicle && p.hauling){
         const key = `vehicle:${vslug(p.vehicle)}`;

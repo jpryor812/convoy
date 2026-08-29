@@ -2584,11 +2584,23 @@ def deliver_consignment(world: World, log: EventLog, agent: Agent, consignment_i
         )
         if poster is not None:
             poster.cash += shortfall
+    # WHAT IT ARRIVED ON. `robbed` has always logged the vehicle and escort
+    # count, because `banditry` needs them to price the risk in the first
+    # place; `consignment_delivered` never did, which made every successful
+    # delivery vehicle-blind in the log. Read the same way `party_for` does, so
+    # a chart built from this log cannot show every Donkey Cart trip as a
+    # robbery and every other trip as vehicle-less -- it can only show what
+    # actually carried each load, on both outcomes alike.
+    vehicle_type = (
+        world.vehicles[agent.mounted_vehicle].type
+        if agent.mounted_vehicle and agent.mounted_vehicle in world.vehicles
+        else "On Foot"
+    )
     log.emit(
         world.sim_time, "consignment_delivered", actor=agent.id, subject=con.id,
         item=con.item, qty=con.qty, posted=con.qty_posted,
         fee=round(earned, 2), forfeited=round(shortfall, 2),
-        location=con.destination,
+        location=con.destination, vehicle=vehicle_type, escorts=len(agent.escorts),
     )
     lost = "" if shortfall <= 0 else (
         f" {con.qty_posted - con.qty} units never arrived, so {shortfall:.2f} "

@@ -1,3 +1,9 @@
+> **EXTENDED BY `PHASE8.md` — 2026-08-22.** The convoy system met a real
+> economy: the state was withdrawn mid-run twice, and the second attempt worked.
+> PHASE8 covers the four observation bugs that decided it, the scheduled
+> withdrawal mechanism, the watchable viewer, and the operational lessons
+> (sleep, key limits, one checkpoint). Nothing here is superseded.
+
 # PHASE 7 — bandits on the road
 
 2026-08-20. The convoy system: cargo can be robbed, guards can be hired, and

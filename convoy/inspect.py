@@ -331,6 +331,9 @@ def convoy_schedule(world: World, events: list | None = None) -> dict[str, Any]:
                          if d.get("item") in D.ALL_ITEMS else None,
                 "units": d.get("qty"), "item": d.get("item"),
                 "fee": d.get("fee"),
+                # Added 2026-08-22. Older logs won't have it -- None reads as
+                # "not recorded", never as "walked it", which is a real value.
+                "vehicle": d.get("vehicle"), "escorts": d.get("escorts"),
             })
     history.sort(key=lambda r: -r["hour"])
 

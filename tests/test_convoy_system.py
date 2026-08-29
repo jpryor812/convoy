@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from convoy import actions as A
 from convoy import banditry as B
 from convoy import data as D
+from convoy import inspect as I
 from convoy import observe as O
 from convoy.engine import Engine, EngineConfig
 from convoy.events import EventLog
@@ -764,6 +765,69 @@ def test_a_courier_is_paid_for_what_arrives() -> None:
                    created_at=0.0).delivered_fraction() == 1.0)
 
 
+def test_a_delivery_records_the_vehicle_it_arrived_on() -> None:
+    """`robbed` always logged the vehicle; a successful delivery never did.
+
+    Justin spotted it from the hour-58 snapshot: every robbed row named a
+    Donkey Cart and every delivered row named nothing, which reads as "carts
+    get robbed" when it is really "deliveries are vehicle-blind in the log".
+    `banditry` needs the vehicle to price risk, so `robbed` always had it for
+    free; `consignment_delivered` never asked the same question of itself.
+    """
+    from convoy.state import Consignment, VehicleInstance
+
+    # AT THE DESTINATION, not the origin -- delivery requires standing where
+    # the load is going.
+    w, log, agent = _world(at=LONG[1])
+    seller = next(b for b in w.businesses.values() if "Mining" in b.type)
+    buyer = next(b for b in w.businesses.values() if "Refinery" in b.type)
+    seller.owner = agent.id
+    con = Consignment(
+        id="C0001", seller_business=seller.id, buyer_business=buyer.id,
+        item="Copper Ore", qty=20, goods_price=0.0, courier_fee=10.0,
+        origin=LONG[0], destination=LONG[1], created_at=0.0,
+        seller_posted=True, qty_posted=20, courier=agent.id,
+    )
+    w.consignments[con.id] = con
+    agent.hauling = con.id
+    agent.hauling_units = 20
+    vid = _give_cart(w, log, agent, "Donkey Cart")
+
+    ok("the delivery goes through",
+       A.deliver_consignment(w, log, agent, con.id)[0])
+    ev = next(e for e in log.events if e.type == "consignment_delivered")
+    ok("the vehicle is on the delivered event, not just the robbed one",
+       ev.detail.get("vehicle") == "Donkey Cart", str(ev.detail))
+    ok("and how many escorts rode along", ev.detail.get("escorts") == 0,
+       str(ev.detail))
+
+    # A walked delivery says so explicitly, rather than a bare "" a chart
+    # would silently treat the same as "not recorded".
+    w2, log2, agent2 = _world(at=LONG[1])
+    seller2 = next(b for b in w2.businesses.values() if "Mining" in b.type)
+    buyer2 = next(b for b in w2.businesses.values() if "Refinery" in b.type)
+    seller2.owner = agent2.id
+    con2 = Consignment(
+        id="C0002", seller_business=seller2.id, buyer_business=buyer2.id,
+        item="Copper Ore", qty=5, goods_price=0.0, courier_fee=8.0,
+        origin=LONG[0], destination=LONG[1], created_at=0.0,
+        seller_posted=True, qty_posted=5, courier=agent2.id,
+    )
+    w2.consignments[con2.id] = con2
+    agent2.hauling = con2.id
+    agent2.hauling_units = 5
+    ok("the walked delivery goes through too",
+       A.deliver_consignment(w2, log2, agent2, con2.id)[0])
+    ev2 = next(e for e in log2.events if e.type == "consignment_delivered")
+    ok("a walked delivery names ON FOOT rather than nothing",
+       ev2.detail.get("vehicle") == "On Foot", str(ev2.detail))
+
+    schedule = I.convoy_schedule(w, log.events)
+    row = next(r for r in schedule["history"] if r["outcome"] == "delivered")
+    ok("and the convoy board carries it through to the display layer",
+       row.get("vehicle") == "Donkey Cart", str(row))
+
+
 def test_a_dead_employer_does_not_strand_its_convoy() -> None:
     """The convoy completes and the guard gets paid, estate first, state after.
 
@@ -911,6 +975,7 @@ def main() -> int:
         test_driver_own_must_actually_bring_a_cart,
         test_escort_work_is_visible_to_somebody_who_could_take_it,
         test_a_courier_is_paid_for_what_arrives,
+        test_a_delivery_records_the_vehicle_it_arrived_on,
         test_the_state_can_withdraw_on_schedule,
         test_a_dead_employer_does_not_strand_its_convoy,
         test_a_robbery_never_takes_the_cart,
