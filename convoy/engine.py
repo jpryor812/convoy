@@ -92,7 +92,7 @@ class Engine:
         self._rng = random.Random(self.config.banditry_seed)
         # A resumed world may already be past the withdrawal hour; the state is
         # gone if there is no open government business left to close.
-        self._state_gone = not any(
+        self._state_gone = world.state_withdrawn_at is not None or not any(
             b.is_government and not b.closed for b in world.businesses.values()
         )
         # Relative to where the WORLD is, not to zero. Identical for a fresh
@@ -211,21 +211,31 @@ class Engine:
     # -- continuous processes ---------------------------------------------
 
     def _withdraw_the_state(self) -> None:
-        """Close every government business and spill its stores onto the ground.
+        """Delete every government business and spill its stores onto the ground.
 
-        The same closure the engine performs on bankruptcy -- staff released,
-        roster cleared, cash zeroed -- plus the stock, which would otherwise be
-        entombed: a closed business's inventory is unreachable, so it is dropped
-        where any agent can `loot_ground` it.
+        DELETED, not merely closed. A closed business is still an object in
+        `world.businesses`, and on 2026-08-30 that turned out to be the smaller
+        half of the problem: the observation stopped listing them, but the
+        cached prompt prefix went on promising a state tavern and a buyer of
+        last resort for the remaining thirty-six hours. An agent walked to the
+        government tavern at h43.7 -- nearly eight hours after it shut -- because
+        the briefing said Town "guarantees access" to one. Removing the object
+        makes the absence checkable from one place, `state_withdrawn_at`, which
+        the briefing, the tool schemas and the refusals all now read.
 
-        Announced at HIGH significance because it is the largest thing that can
-        happen to this valley and every agent's plans depend on it.
+        Stock would otherwise be entombed -- a vanished business's inventory is
+        unreachable -- so it is dropped where any agent can `loot_ground` it.
+
+        Announced at HIGH significance, and once per building, because the
+        replay draws a building from its founding hour to its closing hour and
+        the state's branches were never founded: without a close event apiece,
+        nine government buildings stayed on the map for the whole run and the
+        withdrawal was invisible in the footage.
         """
         w = self.world
         closed = fired = 0
-        for biz in w.businesses.values():
-            if not biz.is_government or biz.closed:
-                continue
+        doomed = [b for b in w.businesses.values() if b.is_government and not b.closed]
+        for biz in doomed:
             for emp in list(biz.roster):
                 worker = w.agents.get(emp.agent_id)
                 if worker and worker.current_job and worker.current_job[0] == biz.id:
@@ -241,6 +251,31 @@ class Engine:
             biz.cash = 0.0
             biz.closed = True
             closed += 1
+            # Per building, carrying what the renderer needs to reconstruct it:
+            # after deletion these are absent from the checkpoint, so the event
+            # log is the only remaining record that they ever stood.
+            self.log.emit(
+                w.sim_time, "business_closed", subject=biz.id, location=biz.location,
+                business_type=biz.type, name=biz.name, reason="state_withdrew",
+                significance=Significance.MEDIUM,
+            )
+
+        gone = {b.id for b in doomed}
+        for bid in gone:
+            del w.businesses[bid]
+
+        # Nothing should still point at a building that is not there. Deliveries
+        # already guard for it (`deliver_consignment` looks businesses up with
+        # .get and tolerates None), but a job advert does not -- it would be
+        # listed to every jobseeker in Town for a shop that no longer exists.
+        for jid, posting in list(w.job_postings.items()):
+            if posting.business_id in gone:
+                del w.job_postings[jid]
+        for agent in w.agents.values():
+            if agent.current_job and agent.current_job[0] in gone:
+                agent.current_job = None
+                if agent.activity.kind == "work":
+                    agent.activity = Activity("idle", w.sim_time)
 
         # THE GROUND GOES BACK ON THE MARKET. Closing a business does not
         # release its plots, so the state's holdings stayed locked under an
@@ -263,10 +298,12 @@ class Engine:
                 plot.for_sale_at = None
                 freed += 1
 
+        w.state_withdrawn_at = w.sim_hour
         self.log.emit(
             w.sim_time, "state_withdrew", location=None,
             businesses_closed=closed, workers_released=fired,
             plots_released=freed,
+            note="the government has left the valley for good; it will not reopen",
             significance=Significance.HIGH,
         )
 

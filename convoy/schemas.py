@@ -363,11 +363,41 @@ def _actions() -> dict[str, Callable]:
 ACTIONS: dict[str, Callable] = _actions()
 
 
-def tool_schemas() -> list[dict[str, Any]]:
+# A tool DESCRIPTION is read at the moment that tool is chosen, which makes it
+# the most load-bearing text in the prompt and the worst place to leave a stale
+# promise. Two of them named the government: `apply_for_job` said "Government
+# businesses always hire" and `post_delivery_job` offered to move stock "to a
+# government business" -- so the two actions most likely to be misdirected after
+# a withdrawal each carried a pointer to it, at the point of use. Measured in
+# the 2026-08-21 run: an agent reasoning "I will resume my existing Government
+# [shift]" half an hour after its employer was demolished.
+DESCRIPTIONS_AFTER_WITHDRAWAL: dict[str, str] = {
+    "apply_for_job": (
+        "Apply for a job at a business here. There is no government employer "
+        "any more -- every job is at a business one of the others owns, and "
+        "there may be none going. Omit the role to get whatever that place "
+        "hires. Set as_researcher=true to generate Research Points instead of "
+        "goods."
+    ),
+    "post_delivery_job": (
+        "Pay a courier to move YOUR stock to a business you own or one another "
+        "player owns and has agreed to buy from you. Nothing buys at a fixed "
+        "price any more, so agree the sale first. Goods leave the yard at once, "
+        "so a full site produces again. Announced in chat as a price and a "
+        "route -- couriers are not told what is in the load. A courier usually "
+        "wants about a tenth of what it is worth, more through dangerous "
+        "country. Lend a vehicle so a courier without one can take it."
+    ),
+}
+
+
+def tool_schemas(state_gone: bool = False) -> list[dict[str, Any]]:
     """OpenAI-style tool definitions for every callable action.
 
     Part of the cached prefix, so this must not vary between calls or between
-    agents -- hence sorted names and no world state anywhere in here.
+    agents -- hence sorted names and no world state anywhere in here. The one
+    permitted variation is `state_gone`, which flips once when the government
+    withdraws: two stable prefixes across a run, not one per call.
     """
     tools: list[dict[str, Any]] = []
     for name, fn in ACTIONS.items():
@@ -384,7 +414,10 @@ def tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": name,
-                "description": DESCRIPTIONS.get(name, f"Perform {name.replace('_', ' ')}."),
+                "description": (
+                    (DESCRIPTIONS_AFTER_WITHDRAWAL.get(name) if state_gone else None)
+                    or DESCRIPTIONS.get(name, f"Perform {name.replace('_', ' ')}.")
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": properties,

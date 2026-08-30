@@ -442,6 +442,7 @@ def replay(run: Path, places: dict[str, L.Place]) -> dict:
     tracks: dict[str, list] = defaultdict(list)
     decisions: dict[str, list] = defaultdict(list)
     founded: dict[str, dict] = {}
+    razed: dict[str, dict] = {}   # government buildings, demolished and gone from the checkpoint
     foreign: set[str] = set()
 
     for e in events:
@@ -536,6 +537,20 @@ def replay(run: Path, places: dict[str, L.Place]) -> dict:
         elif etype in ("business_closed", "business_bankrupt") and e.get("subject"):
             if e["subject"] in founded:
                 founded[e["subject"]]["to"] = round(hour, 2)
+            elif detail.get("reason") == "state_withdrew":
+                # A GOVERNMENT BUILDING IS NOT IN THE CHECKPOINT ONCE IT IS
+                # DEMOLISHED, and it was never founded either, so neither of the
+                # renderer's two sources knows it existed. The close event is the
+                # only surviving record -- it carries type, place and name for
+                # exactly this. Without it the nine state branches either stayed
+                # on the map for the whole run (before deletion) or vanished from
+                # hour zero (after it); both are wrong, and the second is worse,
+                # because the withdrawal is the thing you are watching for.
+                razed[e["subject"]] = {
+                    "id": e["subject"], "type": detail.get("business_type", "?"),
+                    "place": loc, "owner": None, "from": 0.0,
+                    "to": round(hour, 2), "name": detail.get("name", ""),
+                }
 
     for track in tracks.values():
         track.sort(key=lambda row: row[0])
@@ -558,6 +573,9 @@ def replay(run: Path, places: dict[str, L.Place]) -> dict:
         for b in (world.businesses.values() if world else [])
         if b.owner == "Government"
     ]
+    # Plus any the state took with it when it left. Ordered by id so the slot
+    # each one occupies does not depend on dict iteration order.
+    government += [razed[k] for k in sorted(razed)]
     for spec in government + sorted(founded.values(), key=lambda b: b["from"]):
         place = places.get(spec["place"])
         if place is None:

@@ -26,6 +26,7 @@ Requires OPENROUTER_API_KEY in the environment (except with --dry-run).
 from __future__ import annotations
 
 import argparse
+import re
 import json
 import os
 import time
@@ -182,6 +183,17 @@ def _checkpoint_hook(
             except Exception as exc:                   # noqa: BLE001
                 print(f"  [advisor failed: {type(exc).__name__}: {exc}]", flush=True)
         checkpoint.save(w, run_dir / "checkpoint.json")
+        # A SECOND COPY, STAMPED WITH THE HOUR. There is one checkpoint file and
+        # it is overwritten hourly, so the 2026-08-21 run -- which lost its API
+        # key at h58.55 and then coasted thirteen hours with 1,500 failed calls
+        # and nobody steering -- saved that dead world over the last good one.
+        # There was no hour to go back to. These are ~1MB each and a full run
+        # produces seventy-odd; that is a trivial price for being able to resume
+        # from before an outage instead of after it.
+        try:
+            checkpoint.save(w, run_dir / "hourly" / f"h{int(w.sim_hour):04d}.json")
+        except Exception as exc:                       # noqa: BLE001
+            print(f"  [hourly checkpoint failed: {type(exc).__name__}: {exc}]", flush=True)
         try:
             chronicler(w)
         except Exception as exc:                       # noqa: BLE001
@@ -276,6 +288,49 @@ def harness_report(log: EventLog, policy: CappedPolicy) -> int:
             print("\nwhy the world said no:")
             for reason, n in reasons.most_common():
                 print(f"    {n:>4}  {reason}")
+
+    # Question 5 -- DID THEY NOTICE THE GOVERNMENT LEAVE? The whole point of
+    # deleting the buildings and flipping the prompt prefix is that agents stop
+    # planning around a state that is not there. That is a measurable claim, so
+    # it gets measured rather than eyeballed: the 2026-08-21 run is the baseline
+    # to beat -- 203 of 2,204 post-withdrawal reasoning entries still mentioned
+    # the government, 75 of them expecting it to reopen, and one agent walked to
+    # the demolished state tavern at h43.7 because the briefing promised it.
+    withdrawal = next(
+        (e for e in log.events if e.type == "state_withdrew"), None
+    )
+    if withdrawal is not None:
+        after = withdrawal.sim_time
+        thinking = [
+            e for e in log.events
+            if e.type == "llm_reasoning" and e.sim_time >= after
+        ]
+        def _hits(patterns: str) -> list:
+            rx = re.compile(patterns, re.I)
+            return [
+                e for e in thinking
+                if rx.search(" ".join(str(v) for v in e.detail.values()))
+            ]
+        mentions = _hits(r"government|state-owned|the state\b")
+        waiting = _hits(r"reopen|state returns|until the state|when the state|comes back")
+        gov_calls = [
+            e for e in log.events
+            if e.type == "action_call" and e.sim_time >= after
+            and re.search(r"government|state", str(e.detail.get("detail_text", "")), re.I)
+        ]
+        n = len(thinking) or 1
+        print(
+            f"\nafter the withdrawal (h{withdrawal.sim_hour:.0f}), in "
+            f"{len(thinking)} recorded thoughts:"
+        )
+        print(f"    {len(mentions):>4}  ({len(mentions)/n:.1%}) still mention the government")
+        print(f"    {len(waiting):>4}  expect it to reopen or come back")
+        print(f"    {len(gov_calls):>4}  actions refused for reaching at something governmental")
+        if waiting:
+            print("    a sample of the ones still waiting:")
+            for e in waiting[:3]:
+                text = " ".join(str(v) for v in e.detail.values())
+                print(f"      h{e.sim_hour:6.2f} {e.actor}: {text[:160]}")
 
     if problems:
         print("\nPROBLEMS")

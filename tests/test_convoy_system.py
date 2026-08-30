@@ -21,6 +21,7 @@ No place is named. Routes are read off `world_map`.
 
 from __future__ import annotations
 
+import json
 import sys
 from itertools import combinations
 from pathlib import Path
@@ -915,6 +916,125 @@ def test_the_state_can_withdraw_on_schedule() -> None:
        all(not b.closed for b in quiet_w.businesses.values() if b.is_government))
 
 
+def test_the_state_leaves_nothing_behind_to_reach_for() -> None:
+    """After a withdrawal, nothing in the prompt may still describe a government.
+
+    The 2026-08-21 run closed the state's businesses and then spent thirty-five
+    hours telling every agent, in the cached prefix, that government shops
+    "always buy what you bring", that the state's Tavern was at Town, and -- in
+    the description of `apply_for_job` itself -- that "Government businesses
+    always hire". An agent walked to the demolished tavern at h43.7 on the
+    strength of it, and 75 recorded thoughts were waiting for the state to
+    reopen. Every one of those surfaces is pinned here: they were all true when
+    written, and only wrong in combination with an event that happens once,
+    halfway through a run nobody re-reads.
+    """
+    from convoy import schemas as S
+    from convoy.state import JobPosting
+
+    w, log, agent = _world()
+    gov_ids = {b.id for b in w.businesses.values() if b.is_government}
+    tavern = next(b for b in w.businesses.values()
+                  if b.is_government and b.type == "Tavern / Inn")
+    w.job_postings["J9001"] = JobPosting(
+        id="J9001", business_id=tavern.id, owner="Government",
+        role="Store Clerk", wage=20.0,
+        posted_at=w.sim_time, expires_at=w.sim_time + 86400.0,
+    )
+
+    Engine(w, log, Idle(), EngineConfig(
+        duration_hours=0.2, speed=1e9, checkpoint_every_hours=1e9,
+        banditry=False, state_exits_at=0.05,
+    )).step_until(w.sim_time + 1800.0)
+
+    ok("the buildings are gone, not merely shut",
+       not any(b in w.businesses for b in gov_ids),
+       f"{sum(1 for b in gov_ids if b in w.businesses)} still standing")
+    ok("the world records when it happened", w.state_withdrawn_at is not None)
+    ok("its job adverts went with it", "J9001" not in w.job_postings)
+
+    # The replay draws a building from its founding hour to its closing hour,
+    # and these were never founded. Without one close event apiece they cannot
+    # be drawn for hours 0-36 and removed after, because deletion takes them out
+    # of the checkpoint the renderer reads.
+    razed = [e for e in log.events
+             if e.type == "business_closed"
+             and e.detail.get("reason") == "state_withdrew"]
+    ok("each demolition is logged individually", len(razed) == len(gov_ids),
+       f"{len(razed)} events for {len(gov_ids)} buildings")
+    ok("carrying what the map needs to draw them",
+       all(e.detail.get("business_type") and e.location for e in razed))
+
+    # -- the prompt surfaces ------------------------------------------------
+    before, after = O.static_briefing(), O.static_briefing(state_gone=True)
+    ok("the briefing stops promising a buyer of last resort",
+       "always buy what you bring" in before
+       and "always buy what you bring" not in after)
+    ok("and stops naming a state tavern",
+       "state's Tavern" in before and "state's Tavern" not in after)
+    ok("and says the government is not coming back",
+       "IT IS NOT COMING BACK" in after)
+
+    tools_before = json.dumps(S.tool_schemas())
+    tools_after = json.dumps(S.tool_schemas(state_gone=True))
+    ok("the job tool stops advertising a government employer",
+       "Government businesses always hire" in tools_before
+       and "Government businesses always hire" not in tools_after)
+    ok("the freight tool stops offering a government destination",
+       "to a government business" in tools_before
+       and "to a government business" not in tools_after)
+    ok("and no tool goes missing in the swap",
+       len(S.tool_schemas()) == len(S.tool_schemas(state_gone=True)))
+
+    # A STANDING LINE, NOT AN HOUR OF NEWS. World news expires after
+    # WORLD_NEWS_WINDOW_HOURS, so an agent whose next decision fell an hour and
+    # a minute after the withdrawal was never told it had happened at all.
+    text = O.render(O.observe(w, log, agent, "test", record_delivery=False))
+    ok("every observation afterwards leads with it",
+       "THE GOVERNMENT IS GONE" in text.splitlines()[1], text.splitlines()[1][:60])
+
+    # And the refusal an agent hits at the worst possible moment -- out of food.
+    _okay, msg = A.eat_best_available(w, log, agent)
+    ok("a starving agent is not sent to a demolished tavern",
+       "state's Tavern is at" not in msg and "government is gone" in msg, msg[:90])
+
+
+def test_the_road_quotes_what_a_guard_would_cost() -> None:
+    """A risk percentage with no price beside it did not buy a single guard.
+
+    Agents have been shown per-route robbery odds since PHASE7. In the
+    2026-08-21 run they hired EIGHT escorts against FORTY robberies while the
+    Grain corridor delivered 74% of what it carried -- and responded instead by
+    shrinking loads from 25 units to 1. That is a rational answer to a risk you
+    cannot price. The price existed the whole time, in `suggested_fee`, and the
+    two numbers had never been in the same place.
+    """
+    quote = B.guard_quote(
+        LONG[0], LONG[1],
+        B.Party(escorts=(B.Escort("me"),), vehicle="Donkey Cart", cargo_value=300.0),
+    )
+    ok("a guard lowers the risk", quote.guarded < quote.unguarded,
+       f"{quote.unguarded:.0%} -> {quote.guarded:.0%}")
+    ok("it has a price", quote.price > 0, f"{quote.price:.2f}")
+    ok("on a valuable load it pays for itself", quote.worth_it,
+       f"costs {quote.price:.0f}, saves {quote.expected_saving:.0f}")
+
+    # And on a load worth almost nothing it must NOT recommend one, or the line
+    # becomes an instruction rather than a number and every agent buys a guard.
+    cheap = B.guard_quote(
+        LONG[0], LONG[1],
+        B.Party(escorts=(B.Escort("me"),), vehicle="Donkey Cart", cargo_value=4.0),
+    )
+    ok("a trivial load is not worth guarding", not cheap.worth_it,
+       f"costs {cheap.price:.0f}, saves {cheap.expected_saving:.0f}")
+
+    # It has to reach the agent, not merely exist.
+    w, log, agent = _world({"Copper Ore": 100}, at=LONG[0])
+    _give_cart(w, log, agent)
+    text = O.render(O.observe(w, log, agent, "test", record_delivery=False))
+    ok("and the agent is shown it before setting off", "hiring_a_guard" in text)
+
+
 def test_the_same_seed_gives_the_same_road() -> None:
     """Banditry is the first randomness in this sim. It has to stay replayable."""
     # SEED 1 IS ONE THAT ROBS. Pinning determinism on a seed where nothing
@@ -977,6 +1097,8 @@ def main() -> int:
         test_a_courier_is_paid_for_what_arrives,
         test_a_delivery_records_the_vehicle_it_arrived_on,
         test_the_state_can_withdraw_on_schedule,
+        test_the_state_leaves_nothing_behind_to_reach_for,
+        test_the_road_quotes_what_a_guard_would_cost,
         test_a_dead_employer_does_not_strand_its_convoy,
         test_a_robbery_never_takes_the_cart,
         test_a_lent_vehicle_comes_home_even_from_a_robbery,

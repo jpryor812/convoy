@@ -199,7 +199,7 @@ def _static_map() -> str:
     return "\n".join(lines)
 
 
-def _static_economy() -> str:
+def _static_economy(state_gone: bool = False) -> str:
     lines = ["", "PRICES", ""]
     lines.append(
         "NPC stores buy and sell at fixed rates that never move. Other players "
@@ -291,21 +291,41 @@ def _static_economy() -> str:
     )
 
     lines.append("")
-    lines.append(
-        f"BUSINESSES. No experience is needed for anything: any role, and "
-        f"founding any business, is open from hour one. Omit the role when you "
-        f"apply to get whatever that place hires. Government businesses sit at "
-        f"the sites below, always buy what you bring and sell at the prices "
-        f"above -- but hire at most {D.GOVERNMENT_MAX_EMPLOYEES} each: a "
-        f"backstop, not a career. One YOU found may hire as many as you can pay. "
-        f"Other players' businesses are not listed; find those by trading there."
-    )
-    lines.append(f"  {'type':<32}{'government site':<22}hires")
-    for name, spec in sorted(D.BUSINESS_TYPES.items()):
-        place = M.GOVERNMENT_SITES.get(name, "-")
-        roles = ", ".join(spec.production_roles) if spec.production_roles else "nobody"
-        tail = " + Researcher" if spec.can_research else ""
-        lines.append(f"  {name:<32}{place:<22}{roles}{tail}")
+    if state_gone:
+        # THE PRICES ABOVE ARE NOW HISTORY, AND SAYING SO IS THE POINT. The old
+        # version of this paragraph promised that government businesses "always
+        # buy what you bring and sell at the prices above" -- and went on saying
+        # it for the whole run after they were demolished.
+        lines.append(
+            "BUSINESSES. No experience is needed for anything: any role, and "
+            "founding any business, is open at any hour. THERE ARE NO "
+            "GOVERNMENT BUSINESSES. Nothing will buy what you bring at a fixed "
+            "price and nothing will sell to you at one; the prices above are "
+            "only what things used to fetch. Every business in the valley is "
+            "owned by one of you, or does not exist yet. Businesses are not "
+            "listed here -- find them by going and looking, or by asking in chat."
+        )
+        lines.append(f"  {'type':<32}{'hires'}")
+        for name, spec in sorted(D.BUSINESS_TYPES.items()):
+            roles = ", ".join(spec.production_roles) if spec.production_roles else "nobody"
+            tail = " + Researcher" if spec.can_research else ""
+            lines.append(f"  {name:<32}{roles}{tail}")
+    else:
+        lines.append(
+            f"BUSINESSES. No experience is needed for anything: any role, and "
+            f"founding any business, is open from hour one. Omit the role when you "
+            f"apply to get whatever that place hires. Government businesses sit at "
+            f"the sites below, always buy what you bring and sell at the prices "
+            f"above -- but hire at most {D.GOVERNMENT_MAX_EMPLOYEES} each: a "
+            f"backstop, not a career. One YOU found may hire as many as you can pay. "
+            f"Other players' businesses are not listed; find those by trading there."
+        )
+        lines.append(f"  {'type':<32}{'government site':<22}hires")
+        for name, spec in sorted(D.BUSINESS_TYPES.items()):
+            place = M.GOVERNMENT_SITES.get(name, "-")
+            roles = ", ".join(spec.production_roles) if spec.production_roles else "nobody"
+            tail = " + Researcher" if spec.can_research else ""
+            lines.append(f"  {name:<32}{place:<22}{roles}{tail}")
 
     # Roles pay very differently -- Refinery Worker is 2.1x Store Clerk -- and
     # agents were choosing blind. In the 2026-08-14 runs everyone took the
@@ -315,6 +335,10 @@ def _static_economy() -> str:
     # of a strategy, so the table belongs in front of them.
     lines.append("")
     lines.append(
+        "WAGES per hour. There is no state employer any more, so the state "
+        "column below is only what work used to pay. A player employer may set "
+        "any wage at or above the floor; nobody has to match the old rate."
+        if state_gone else
         "WAGES per hour. The state pays a narrow band. A player employer may set "
         "any wage at or above the floor, so outbidding the state for staff is "
         "open to you:"
@@ -337,13 +361,20 @@ def _static_economy() -> str:
     return "\n".join(lines)
 
 
-def _static_rules() -> str:
+def _static_rules(state_gone: bool = False) -> str:
     lines = ["", "HOW THINGS WORK", ""]
     lines.append(
-        f"SUSTENANCE. Food is sold at TAVERNS only -- you cannot cook. The "
-        f"state's Tavern ({M.GOVERNMENT_SITES['Tavern / Inn']}) charges "
-        f"{E.npc_sell_price('Meal'):.2f} for a Meal: Normal for "
-        f"{D.MEALS['Meal'].window_hours:.0f}h. A player Tavern may charge as "
+        f"SUSTENANCE. Food is sold at TAVERNS only -- you cannot cook. "
+        + (
+            "THERE IS NO STATE TAVERN. The only food in the valley is in a "
+            "tavern somebody here owns and has stocked; if none of you keeps "
+            "one supplied, everybody starves. "
+            if state_gone else
+            f"The state's Tavern ({M.GOVERNMENT_SITES['Tavern / Inn']}) charges "
+            f"{E.npc_sell_price('Meal'):.2f} for a Meal: Normal for "
+            f"{D.MEALS['Meal'].window_hours:.0f}h. "
+        )
+        + f"A player Tavern may charge as "
         f"little as {E.player_price_floor('Meal'):.2f} and can research Quality "
         f"for meals that last longer, heal, or speed your work. "
         f"After the window you go Hungry ({D.HUNGRY_SPEED_PENALTY:.0%} slower) for "
@@ -450,11 +481,19 @@ def _static_rules() -> str:
     return "\n".join(lines)
 
 
-def static_briefing() -> str:
+def static_briefing(state_gone: bool = False) -> str:
     """Everything that never changes, for the cached system prompt.
 
     Pure function: no world, no agent, no clock. Byte-identical across all 75
-    agents and all 120 hours, which is what makes it cacheable.
+    agents and every hour on ONE side of the withdrawal, which is what makes it
+    cacheable -- there are exactly two of these in a run, not one per call.
+
+    `state_gone` is the single exception to "never changes", and it is here
+    rather than in the per-decision observation on purpose. The old briefing
+    described the government in five places; a correction bolted onto the hourly
+    observation would have to out-argue all five, and the model would be left
+    picking between two things the prompt asserted. Cheaper and honest to stop
+    saying the false one.
     """
     header = (
         "You are a person living in Convoy, a Bronze Age valley economy. Your goal "
@@ -474,7 +513,23 @@ def static_briefing() -> str:
         "the denari you spent, and every sale after that adds to it. A wage is "
         "safe and small; the money is in owning the thing that pays the wage."
     )
-    return "\n".join([header, "", _static_map(), _static_economy(), _static_rules()])
+    if state_gone:
+        header += (
+            "\n\nTHE GOVERNMENT IS GONE. It closed every business it owned, "
+            "released every worker, abandoned its land and left the valley. "
+            "IT IS NOT COMING BACK. It will not reopen, it will not buy your "
+            "goods at a fixed price, it will not sell you food, and it will not "
+            "hire you. There is no point waiting for it or planning around it. "
+            "Everything from here is between you and the other people here: if a "
+            "thing is going to be made, sold, carried or eaten, one of you has "
+            "to do it."
+        )
+    return "\n".join([
+        header, "",
+        _static_map(),
+        _static_economy(state_gone),
+        _static_rules(state_gone),
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -1112,6 +1167,23 @@ def observe(
 
     gov = world.government
 
+    # A STANDING LINE, NOT A NEWS ITEM. World news lives for
+    # WORLD_NEWS_WINDOW_HOURS (one hour), so in the 2026-08-21 run every agent
+    # whose next decision fell after h37.01 was never told the government had
+    # gone at all -- one cryptic key=value row, then silence, against a briefing
+    # that went on describing the state for another thirty-five hours. This says
+    # it at the top of every observation for the rest of the run.
+    if world.state_withdrawn_at is not None:
+        obs_state_gone = (
+            f"The government left the valley at hour "
+            f"{world.state_withdrawn_at:.0f} and IS NOT COMING BACK. Its "
+            f"businesses are demolished, its land is back on the market, and "
+            f"nothing buys or sells at a fixed price any more. Nobody is going "
+            f"to reopen anything for you."
+        )
+    else:
+        obs_state_gone = None
+
     you: dict[str, Any] = {
         "id": agent.id,
         "name": agent.name,
@@ -1201,6 +1273,7 @@ def observe(
     obs: dict[str, Any] = {
         "woken_because": reason,
         "hour": round(world.sim_hour, 2),
+        "state_gone": obs_state_gone,
         "you": you,
         "here": here,
         "you_can": affordances(world, agent),
@@ -1487,6 +1560,28 @@ def observe(
                 "guards both cut this; walking is the worst of both. Per unit "
                 "delivered, one guarded cart beats many small trips."
             )
+            # WHAT THE FIX COSTS, beside what it saves. The percentages above
+            # have been shown since PHASE7 and bought almost nothing: eight
+            # escorts against forty robberies in the 2026-08-21 run. A guard on
+            # the Grain corridor costs ~10 denari and saves an expected ~35, and
+            # no agent was ever in a position to notice, because the price lived
+            # in `banditry.suggested_fee` and the risk lived here.
+            worst = max(risks.items(), key=lambda kv: kv[1])[0]
+            if not agent.escorts:
+                quote = B.guard_quote(agent.location, worst, party)
+                block["hiring_a_guard"] = {
+                    "for_the_trip_to": worst,
+                    "risk_now": f"{quote.unguarded:.0%}",
+                    "risk_with_one_guard": f"{quote.guarded:.0%}",
+                    "guard_costs": round(quote.price, 2),
+                    "expected_cargo_saved": round(quote.expected_saving, 2),
+                    "verdict": (
+                        "a guard pays for itself on this load"
+                        if quote.worth_it else
+                        "this load is too cheap to be worth guarding"
+                    ),
+                    "how": "post_escort_job, or ask in chat who will ride with you",
+                }
         obs["you"]["road_risk"] = block
 
     if job is not None:
@@ -1568,6 +1663,10 @@ def render(obs: dict[str, Any]) -> str:
         f"HOUR {obs['hour']}. You were woken because: {obs['woken_because']}.",
         "",
     ]
+    # Above ADVICE, above YOU, above everything. The withdrawal changes what
+    # every other line in the observation means.
+    if obs.get("state_gone"):
+        lines.insert(1, "THE GOVERNMENT IS GONE. " + obs["state_gone"])
     # Advice is named on line one and rendered before anything else. The
     # observation runs past 20,000 characters; a block placed after the price
     # tables is present in the prompt and absent from the decision, which is the

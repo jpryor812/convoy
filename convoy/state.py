@@ -1108,6 +1108,12 @@ class World:
     job_postings: dict[str, "JobPosting"] = field(default_factory=dict)
     # Items and Denari dropped on death, lootable by anyone at that location.
     ground_loot: dict[str, dict] = field(default_factory=dict)
+    # The hour the government left, or None while it is still here. Read by the
+    # observation layer and by the prompt prefix: after a withdrawal the whole
+    # briefing has to stop describing a state that no longer exists, and this is
+    # the single fact everything else keys off. Checkpointable, so a resumed
+    # world does not forget that the state is gone.
+    state_withdrawn_at: float | None = None
     next_property_tax_at: float = D.PROPERTY_TAX_PERIOD_HOURS * 3600.0
     next_road_tax_at: float = D.ROAD_TAX_PERIOD_HOURS * 3600.0
     _seq: int = 0

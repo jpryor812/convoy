@@ -28,6 +28,14 @@ YOU
       Refinery Row: 19%
       Town: 39%
     note: If they catch you they take between half the load and ALL of it, and there is no insurance. A faster vehicle and hired guards both cut this; walking is the worst of both. Per unit delivered, one guarded cart beats many small trips.
+    hiring_a_guard:
+      for_the_trip_to: Town
+      risk_now: 39%
+      risk_with_one_guard: 28%
+      guard_costs: 9.73
+      expected_cargo_saved: 12.44
+      verdict: a guard pays for itself on this load
+      how: post_escort_job, or ask in chat who will ride with you
 
 WHERE YOU ARE
   agents:

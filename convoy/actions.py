@@ -1661,6 +1661,17 @@ def eat_best_available(world: World, log: EventLog, agent: Agent) -> Result:
     ok, msg = buy_meal(world, log, agent)
     if ok:
         return ok, msg
+    # WHERE THE REFUSAL POINTS HAS TO STILL EXIST. This sent starving agents to
+    # the state's Tavern by a map constant, so after a withdrawal it named a
+    # building that had been demolished hours earlier -- the most expensive
+    # possible moment to be wrong, since the agent reading it is out of food.
+    if world.state_withdrawn_at is not None:
+        return False, (
+            f"{msg}. Food is served at Taverns only -- travel to one to eat. "
+            f"The government is gone and its Tavern with it: the only meals in "
+            f"the valley are in a tavern one of the other players owns and has "
+            f"stocked. If nobody is making Meal, somebody has to start."
+        )
     return False, (
         f"{msg}. Food is served at Taverns only -- travel to one to eat. "
         f"The state's Tavern is at {world_map.GOVERNMENT_SITES['Tavern / Inn']}."

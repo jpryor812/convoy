@@ -461,6 +461,59 @@ def suggested_fee(role: str, cargo_value: float, brings_vehicle: bool = False) -
     return hire_price(role, "Wooden Spear", (), cargo_value, npc=False)
 
 
+@dataclass(frozen=True)
+class GuardQuote:
+    """What one more body on the road would cost, and what it would save.
+
+    THE RISK NUMBER WAS ALREADY THERE AND NOBODY BOUGHT ANYTHING. The
+    2026-08-21 run showed agents every route's robbery probability the moment
+    they picked up cargo -- and they hired eight escorts against forty
+    robberies, while the Grain corridor delivered 74% of what it carried. They
+    responded by shrinking loads from 25 units to 1, which is a rational answer
+    to a risk you cannot price and the wrong one when you can.
+
+    A probability is not a decision. A probability next to what the fix costs
+    and what it is expected to save is. Nothing here recommends anything: the
+    two numbers are stated and the agent may still decide the guard is not worth
+    it, which for a cheap load it very often is not.
+    """
+    unguarded: float
+    guarded: float
+    price: float
+    expected_saving: float
+
+    @property
+    def worth_it(self) -> bool:
+        return self.expected_saving > self.price
+
+    def explain(self) -> str:
+        return (
+            f"One hired guard would cut this journey's risk from "
+            f"{self.unguarded:.0%} to {self.guarded:.0%} and cost about "
+            f"{self.price:.0f} denari. Going unguarded is expected to cost you "
+            f"about {self.expected_saving:.0f} denari more in stolen cargo, so a "
+            f"guard "
+            + ("PAYS FOR ITSELF here." if self.worth_it else
+               "is not worth it for a load this cheap.")
+        )
+
+
+def guard_quote(
+    origin: str, destination: str, party: Party, role: str = "Bodyguard",
+) -> GuardQuote:
+    """Price one extra escort against the risk it removes, for one journey."""
+    bare = route_risk(origin, destination, party).probability
+    reinforced = Party(
+        escorts=party.escorts + (Escort("a hired guard", role, "Wooden Spear", ()),),
+        vehicle=party.vehicle,
+        cargo_value=party.cargo_value,
+    )
+    guarded = route_risk(origin, destination, reinforced).probability
+    price = suggested_fee(role, party.cargo_value)
+    saving = (bare - guarded) * party.cargo_value * EXPECTED_LOSS_FRACTION
+    return GuardQuote(bare, guarded, price, max(saving, 0.0))
+
+
 def cargo_at_risk(world: "World", agent: "Agent") -> tuple[float, str]:
     """What this agent stands to lose on the road, and what to call it.
 
