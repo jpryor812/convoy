@@ -61,6 +61,21 @@ DESCRIPTIONS: dict[str, str] = {
         "road and down again."
     ),
     "mount": "Mount a vehicle you own, to carry far more and travel faster.",
+    "hire_escort": (
+        "Hire NPC guards for your next journey, paid now, gone on arrival. "
+        "Bodyguards deter; Scouts hide you; Drivers handle the cart. Better kit "
+        "deters more. An NPC costs HALF AGAIN what an agent does -- "
+        "post_escort_job is cheaper if you can wait."
+    ),
+    "post_escort_job": (
+        "Offer an AGENT a place on your next convoy, announced in world chat. "
+        "Cheaper than an NPC, but you wait for a taker. Paid on arrival. "
+        "lend_weapon arms them from your inventory and comes back."
+    ),
+    "accept_escort_job": (
+        "Take escort work. You travel with them, are paid on arrival, and end up "
+        "where they were going. Driver-own pays most: bring your own vehicle."
+    ),
     "dismount": "Get off your vehicle and continue on foot.",
     "wait": (
         "Do nothing for a while, and end this turn. Use when waiting on "
@@ -233,15 +248,23 @@ DESCRIPTIONS: dict[str, str] = {
     ),
     "loot_ground": "Pick up whatever a dead agent dropped here.",
     # -- risk ---------------------------------------------------------------
-    "buy_insurance": (
-        "Buy insurance. Without it, everything you were not carrying is wiped "
-        "when you die. 'Life', 'Asset' or 'Cargo'."
-    ),
 }
 
 
 # Static value sets. Runtime IDs are excluded on purpose -- see the module note.
 def _enum_for(action: str, param: str) -> list[str] | None:
+    # Escorts are hired into the Convoy tab's roles, not the wage roles a
+    # business hires into. Checked BEFORE the generic `role` branch below,
+    # which would otherwise offer a courier the choice of hiring a Blacksmith
+    # to guard its cart.
+    if action in ("hire_escort", "post_escort_job"):
+        if param == "role":
+            return list(D.CONVOY_PAY)
+        if param in ("weapon", "lend_weapon"):
+            return list(D.WEAPONS)
+        if param == "armor":
+            return list(A.ARMOR_SETS)
+
     if param in ("item", "output"):
         # "On Foot" is in ALL_ITEMS as the null vehicle, and is not a thing
         # anyone can hold, stock, haul or sell. Offering it as a valid `item`
@@ -277,6 +300,17 @@ _TYPE_MAP = {
 
 
 def _param_schema(action: str, param: inspect.Parameter) -> dict[str, Any]:
+    # The convoy split is a LADDER, not a free number -- see data.CONVOY_SPLITS.
+    # Given as the seller's share, with -1 meaning "whatever is customary", which
+    # is what an agent should send unless it is deliberately bargaining.
+    if param.name == "seller_share":
+        return {
+            "type": "number",
+            "description": (
+                "Seller's share of convoy cost AND loss: 1, .75, .6, .5, .4, "
+                ".25, 0. Omit for customary. The state never shares."
+            ),
+        }
     annotation = param.annotation
     # "str | None" and similar arrive as strings under `from __future__ import
     # annotations`, so match on text rather than on the type object.
@@ -329,11 +363,41 @@ def _actions() -> dict[str, Callable]:
 ACTIONS: dict[str, Callable] = _actions()
 
 
-def tool_schemas() -> list[dict[str, Any]]:
+# A tool DESCRIPTION is read at the moment that tool is chosen, which makes it
+# the most load-bearing text in the prompt and the worst place to leave a stale
+# promise. Two of them named the government: `apply_for_job` said "Government
+# businesses always hire" and `post_delivery_job` offered to move stock "to a
+# government business" -- so the two actions most likely to be misdirected after
+# a withdrawal each carried a pointer to it, at the point of use. Measured in
+# the 2026-08-21 run: an agent reasoning "I will resume my existing Government
+# [shift]" half an hour after its employer was demolished.
+DESCRIPTIONS_AFTER_WITHDRAWAL: dict[str, str] = {
+    "apply_for_job": (
+        "Apply for a job at a business here. There is no government employer "
+        "any more -- every job is at a business one of the others owns, and "
+        "there may be none going. Omit the role to get whatever that place "
+        "hires. Set as_researcher=true to generate Research Points instead of "
+        "goods."
+    ),
+    "post_delivery_job": (
+        "Pay a courier to move YOUR stock to a business you own or one another "
+        "player owns and has agreed to buy from you. Nothing buys at a fixed "
+        "price any more, so agree the sale first. Goods leave the yard at once, "
+        "so a full site produces again. Announced in chat as a price and a "
+        "route -- couriers are not told what is in the load. A courier usually "
+        "wants about a tenth of what it is worth, more through dangerous "
+        "country. Lend a vehicle so a courier without one can take it."
+    ),
+}
+
+
+def tool_schemas(state_gone: bool = False) -> list[dict[str, Any]]:
     """OpenAI-style tool definitions for every callable action.
 
     Part of the cached prefix, so this must not vary between calls or between
-    agents -- hence sorted names and no world state anywhere in here.
+    agents -- hence sorted names and no world state anywhere in here. The one
+    permitted variation is `state_gone`, which flips once when the government
+    withdraws: two stable prefixes across a run, not one per call.
     """
     tools: list[dict[str, Any]] = []
     for name, fn in ACTIONS.items():
@@ -350,7 +414,10 @@ def tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": name,
-                "description": DESCRIPTIONS.get(name, f"Perform {name.replace('_', ' ')}."),
+                "description": (
+                    (DESCRIPTIONS_AFTER_WITHDRAWAL.get(name) if state_gone else None)
+                    or DESCRIPTIONS.get(name, f"Perform {name.replace('_', ' ')}.")
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": properties,

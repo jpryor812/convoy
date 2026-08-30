@@ -6,6 +6,8 @@ the worked examples the workbook provides.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from . import data as D
 
 
@@ -383,6 +385,267 @@ def carry_capacity(vehicle_type: str | None) -> int:
     if vehicle_type is None:
         return D.ON_FOOT_CAPACITY
     return D.VEHICLES[vehicle_type].cargo_capacity
+
+
+# ---------------------------------------------------------------------------
+# The commodity ticker -- what things actually sold for
+# ---------------------------------------------------------------------------
+#
+# `Market.transactions` has recorded every sale in the valley since Phase 1 --
+# five call sites, each writing item, quantity, unit price, both parties and the
+# hour. Exactly one function has ever read it, `revenue_since`, and only to
+# answer "what did THIS seller take in". Nobody has ever asked it what anything
+# is worth.
+#
+# ANONYMOUS BY CONSTRUCTION. A `Quote` carries no counterparty, because a public
+# price feed that names who bought and who sold is not a price feed, it is a
+# surveillance tool: it would let an agent see exactly who is short of what and
+# price against them personally. What sold, for how much, how often -- and
+# nothing about whom.
+
+TICKER_WINDOW_HOURS = 12.0
+
+
+@dataclass(frozen=True)
+class Quote:
+    """What one good has been changing hands for lately."""
+
+    item: str
+    last: float
+    vwap: float          # volume-weighted; a 200-unit sale should not count as one
+    volume: int
+    trades: int
+    high: float
+    low: float
+    base: float          # the book price, for reference
+    last_hour: float
+
+    @property
+    def premium(self) -> float:
+        """How far the market sits above or below the book price, as a ratio."""
+        return (self.vwap / self.base - 1.0) if self.base else 0.0
+
+
+def ticker(
+    world, window_hours: float = TICKER_WINDOW_HOURS, items: list[str] | None = None,
+) -> dict[str, Quote]:
+    """Recent trade, by item, most recently traded first.
+
+    Walks BACKWARDS and stops at the cutoff, like `revenue_since` and for the
+    same reason: transactions are append-ordered and this is read often, so a
+    full scan would grow with the length of the run rather than with the size of
+    the window.
+    """
+    cutoff = world.sim_time - max(0.0, window_hours) * 3600.0
+    wanted = set(items) if items else None
+    acc: dict[str, dict] = {}
+    for t in reversed(world.market.transactions):
+        if t.sim_time < cutoff:
+            break
+        if wanted is not None and t.item not in wanted:
+            continue
+        if t.qty <= 0:
+            continue
+        a = acc.setdefault(t.item, {
+            "last": t.unit_price, "last_hour": t.sim_time / 3600.0,
+            "value": 0.0, "volume": 0, "trades": 0,
+            "high": t.unit_price, "low": t.unit_price,
+        })
+        a["value"] += t.unit_price * t.qty
+        a["volume"] += t.qty
+        a["trades"] += 1
+        a["high"] = max(a["high"], t.unit_price)
+        a["low"] = min(a["low"], t.unit_price)
+
+    out: dict[str, Quote] = {}
+    for item, a in acc.items():
+        try:
+            base = D.base_price(item)
+        except KeyError:                       # an item the tables no longer define
+            base = 0.0
+        out[item] = Quote(
+            item=item, last=round(a["last"], 2),
+            vwap=round(a["value"] / a["volume"], 2),
+            volume=a["volume"], trades=a["trades"],
+            high=round(a["high"], 2), low=round(a["low"], 2),
+            base=base, last_hour=round(a["last_hour"], 2),
+        )
+    return out
+
+
+def ticker_lines(quotes: dict[str, Quote], limit: int = 8) -> list[str]:
+    """The busiest goods, as one line each. Shared by the observation and the UI."""
+    busiest = sorted(quotes.values(), key=lambda q: -q.volume)[:limit]
+    return [
+        f"{q.item}: {q.vwap:g} avg ({q.volume} sold in {q.trades}), "
+        f"book {q.base:g}, {q.premium:+.0%}"
+        for q in busiest
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Net Worth -- THE ranking metric (World State Schema tab)
+# ---------------------------------------------------------------------------
+
+def inventory_value(inventory: dict[str, int]) -> float:
+    return sum(D.base_price(item) * qty for item, qty in inventory.items() if qty)
+
+
+def net_worth(
+    denari: float,
+    inventory: dict[str, int],
+    business_values: list[float],
+    vehicle_types: list[str],
+    property_value: float = 0.0,
+) -> float:
+    """Denari + businesses + vehicles (base price)
+    + property (purchase + upgrades) + inventory (base price).
+
+    Businesses arrive already valued, because their worth depends on trade over
+    the last 24 hours and this function is deliberately world-free. See
+    `Business.valuation`.
+    """
+    return (
+        denari
+        + sum(business_values)
+        + sum(D.VEHICLES[v].base_price for v in vehicle_types)
+        + property_value
+        + inventory_value(inventory)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Travel (World tab location graph)
+# ---------------------------------------------------------------------------
+
+def travel_seconds(origin: str, destination: str, vehicle_type: str | None) -> float:
+    """Time from one place to another, terrain and spurs included.
+
+    Slow ground (the Climb's switchbacks) and spur detours are handled by
+    world_map; this only applies the vehicle's speed on top.
+    """
+    from . import world_map as M
+
+    speed = D.VEHICLES[vehicle_type].speed_mult if vehicle_type else D.VEHICLES["On Foot"].speed_mult
+    return M.travel_seconds(origin, destination, speed)
+
+
+# ---------------------------------------------------------------------------
+# Convoy pay (Convoy tab)
+# ---------------------------------------------------------------------------
+
+def convoy_pay(role: str, vehicle_cargo_value: float, convoy_cargo_value: float) -> float:
+    terms = D.CONVOY_PAY[role]
+    basis = vehicle_cargo_value if terms["basis"] == "vehicle" else convoy_cargo_value
+    return terms["flat"] + basis * terms["commission"]
+
+
+# ---------------------------------------------------------------------------
+# Insurance (Government & Insurance tab)
+# ---------------------------------------------------------------------------
+
+def insurance_premium(insured_value: float, rate: float = D.NPC_INSURANCE_PREMIUM_PCT) -> float:
+    return insured_value * rate
+
+
+def insurance_payout(insured_value: float) -> float:
+    return insured_value * D.INSURANCE_PAYOUT_PCT
+
+
+# ---------------------------------------------------------------------------
+# The commodity ticker -- what things actually sold for
+# ---------------------------------------------------------------------------
+#
+# `Market.transactions` has recorded every sale in the valley since Phase 1 --
+# five call sites, each writing item, quantity, unit price, both parties and the
+# hour. Exactly one function has ever read it, `revenue_since`, and only to
+# answer "what did THIS seller take in". Nobody has ever asked it what anything
+# is worth.
+#
+# ANONYMOUS BY CONSTRUCTION. A `Quote` carries no counterparty, because a public
+# price feed that names who bought and who sold is not a price feed, it is a
+# surveillance tool: it would let an agent see exactly who is short of what and
+# price against them personally. What sold, for how much, how often -- and
+# nothing about whom.
+
+TICKER_WINDOW_HOURS = 12.0
+
+
+@dataclass(frozen=True)
+class Quote:
+    """What one good has been changing hands for lately."""
+
+    item: str
+    last: float
+    vwap: float          # volume-weighted; a 200-unit sale should not count as one
+    volume: int
+    trades: int
+    high: float
+    low: float
+    base: float          # the book price, for reference
+    last_hour: float
+
+    @property
+    def premium(self) -> float:
+        """How far the market sits above or below the book price, as a ratio."""
+        return (self.vwap / self.base - 1.0) if self.base else 0.0
+
+
+def ticker(
+    world, window_hours: float = TICKER_WINDOW_HOURS, items: list[str] | None = None,
+) -> dict[str, Quote]:
+    """Recent trade, by item, most recently traded first.
+
+    Walks BACKWARDS and stops at the cutoff, like `revenue_since` and for the
+    same reason: transactions are append-ordered and this is read often, so a
+    full scan would grow with the length of the run rather than with the size of
+    the window.
+    """
+    cutoff = world.sim_time - max(0.0, window_hours) * 3600.0
+    wanted = set(items) if items else None
+    acc: dict[str, dict] = {}
+    for t in reversed(world.market.transactions):
+        if t.sim_time < cutoff:
+            break
+        if wanted is not None and t.item not in wanted:
+            continue
+        if t.qty <= 0:
+            continue
+        a = acc.setdefault(t.item, {
+            "last": t.unit_price, "last_hour": t.sim_time / 3600.0,
+            "value": 0.0, "volume": 0, "trades": 0,
+            "high": t.unit_price, "low": t.unit_price,
+        })
+        a["value"] += t.unit_price * t.qty
+        a["volume"] += t.qty
+        a["trades"] += 1
+        a["high"] = max(a["high"], t.unit_price)
+        a["low"] = min(a["low"], t.unit_price)
+
+    out: dict[str, Quote] = {}
+    for item, a in acc.items():
+        try:
+            base = D.base_price(item)
+        except KeyError:                       # an item the tables no longer define
+            base = 0.0
+        out[item] = Quote(
+            item=item, last=round(a["last"], 2),
+            vwap=round(a["value"] / a["volume"], 2),
+            volume=a["volume"], trades=a["trades"],
+            high=round(a["high"], 2), low=round(a["low"], 2),
+            base=base, last_hour=round(a["last_hour"], 2),
+        )
+    return out
+
+
+def ticker_lines(quotes: dict[str, Quote], limit: int = 8) -> list[str]:
+    """The busiest goods, as one line each. Shared by the observation and the UI."""
+    busiest = sorted(quotes.values(), key=lambda q: -q.volume)[:limit]
+    return [
+        f"{q.item}: {q.vwap:g} avg ({q.volume} sold in {q.trades}), "
+        f"book {q.base:g}, {q.premium:+.0%}"
+        for q in busiest
+    ]
 
 
 # ---------------------------------------------------------------------------

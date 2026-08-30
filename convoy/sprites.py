@@ -225,7 +225,6 @@ STRUCTURE_FOR_BUSINESS = {
     "Home Improvement Store": _pipoya("home-store"),    # wide-doored hall
     "Mining/Farming Equipment Store": _pipoya("equipment-store"),   # market tent
     "Private Security Contractor": _pipoya("security"),  # round watchtower
-    "Insurance Brokerage": _pipoya("brokerage"),         # civic hall
 }
 
 # Ground clutter, also Pipoya, so a tree beside a farmhouse is from the same hand
@@ -354,7 +353,7 @@ def ui_glyph(name: str) -> Path:
 # ---------------------------------------------------------------------------
 # ACTIONS AND EVENTS
 # ---------------------------------------------------------------------------
-# 53 actions, ten families. A timeline needs "that was a trade, that was a hire"
+# 54 actions, ten families. A timeline needs "that was a trade, that was a hire"
 # at a glance; 53 bespoke glyphs would be noise and most would be
 # indistinguishable at 16px anyway.
 
@@ -381,6 +380,7 @@ ACTION_FAMILY = {
     "hire": (
         "apply_for_job", "apply_to_job", "post_job", "close_job", "hire_applicant",
         "hire_npc_employee", "quit_job", "set_wage",
+        "hire_escort", "post_escort_job", "accept_escort_job",
     ),
     "build": (
         "start_business", "upgrade_garage", "upgrade_storage",
@@ -407,7 +407,11 @@ GLYPH_FOR_EVENT = {
     "agent_died": "death", "starved_to_death": "death", "assets_wiped": "warning",
     "sustenance_hungry": "food", "sustenance_starving": "warning", "ate": "food",
     "hired": "hire", "fired": "hire", "quit_job": "hire", "job_started": "hire",
-    "job_posted": "hire", "job_applied": "hire",
+    "job_posted": "hire", "job_applied": "hire", "escort_hired": "hire",
+    "escort_job_posted": "hire", "escort_job_taken": "hire", "escort_paid": "coin",
+    # A robbery reads as a warning on a timeline: it is the one thing that
+    # happens TO an agent rather than something it chose.
+    "robbed": "warning", "convoy_loss_covered": "coin",
     "chat": "chat", "trade": "coin", "trade_accepted": "coin",
     "production": "work", "wages_paid": "coin", "travel": "travel",
     "vehicle_purchased": "travel", "property_purchased": "build",

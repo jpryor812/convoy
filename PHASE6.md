@@ -1,3 +1,8 @@
+> **EXTENDED BY `PHASE7.md` — 2026-08-20.** The convoy/banditry system landed
+> after this was written: cargo on the road can now be robbed, guards can be
+> hired, and the two sides of a trade settle who carries the risk. Nothing here
+> is superseded; §7's note that theft was unbuilt no longer holds.
+
 # PHASE 6 — the world made visible, and clickable
 
 2026-08-20. Six commits on `demo-map`, branched from `full-valley-map`.

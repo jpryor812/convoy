@@ -91,7 +91,13 @@ class LLMPolicy:
     max_completion_tokens: int = MAX_COMPLETION_TOKENS
     requests_per_minute: float = REQUESTS_PER_MINUTE   # 0 disables pacing
     usage: dict[str, Usage] = field(default_factory=dict)
+    # TWO prefixes, not one: before the government leaves and after. Each is
+    # byte-stable for every agent and every hour on its side of the withdrawal,
+    # so a run pays for exactly one cache re-warm at the moment the state exits
+    # instead of losing caching altogether. The 2026-08-21 run was 92% cached
+    # prompt tokens and cost $5.48; rebuilding per call would have made it $50.
     _prefix: tuple[str, list[dict[str, Any]]] | None = None
+    _prefix_after_withdrawal: tuple[str, list[dict[str, Any]]] | None = None
     _last_call_at: float = 0.0
     # The sim clock, stashed for `_fail`. See its docstring.
     _sim_time: float = 0.0
@@ -109,11 +115,27 @@ class LLMPolicy:
         # byte drift, which is exactly what breaks caching.
         self._prefix = (O.static_briefing(), S.tool_schemas())
 
+    def _prefix_for(self, world: World) -> tuple[str, list[dict[str, Any]]]:
+        """The briefing and tools this world should be described by right now.
+
+        Built lazily so a run that never withdraws the state never pays for the
+        second one, and cached so the bytes are identical on every call after
+        the first -- the prefix cache matches on bytes, and a rebuilt-per-call
+        briefing would be correct and ruinous.
+        """
+        if world.state_withdrawn_at is None:
+            return self._prefix                     # type: ignore[return-value]
+        if self._prefix_after_withdrawal is None:
+            self._prefix_after_withdrawal = (
+                O.static_briefing(state_gone=True), S.tool_schemas(state_gone=True)
+            )
+        return self._prefix_after_withdrawal
+
     # -- the Policy protocol ----------------------------------------------
 
     def decide(self, world: World, agent: Agent, reason: str) -> None:
         self._sim_time = world.sim_time
-        briefing, tools = self._prefix        # type: ignore[misc]
+        briefing, tools = self._prefix_for(world)
         obs = O.observe(world, self.log, agent, reason, record_delivery=not self.dry_run)
 
         # Which recommendations were in the prompt this agent is about to answer.

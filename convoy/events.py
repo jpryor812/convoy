@@ -27,6 +27,12 @@ SIGNIFICANCE: dict[str, Significance] = {
     "sim_start": Significance.HIGH,
     "sim_end": Significance.HIGH,
     "business_founded": Significance.HIGH,
+    # A robbery is a story beat -- it is the one thing that happens TO an agent
+    # on the road rather than because it chose something, and it is what the
+    # whole convoy system exists to make legible.
+    "robbed": Significance.HIGH,
+    "convoy_loss_covered": Significance.MEDIUM,
+    "escort_hired": Significance.MEDIUM,
     "business_bankrupt": Significance.HIGH,
     "business_closed": Significance.HIGH,
     "bankruptcy_warning": Significance.MEDIUM,

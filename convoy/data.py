@@ -26,7 +26,18 @@ from dataclasses import dataclass, field
 # ---------------------------------------------------------------------------
 
 CURRENCY_NAME = "Denari"
-STARTING_DENARI = 200.0
+# 200 -> 300 on 2026-08-20. At 200 NOTHING in the world was affordable on the
+# first day: the cheapest vehicle is a Camel, and the Stables sell at a 1.5x
+# markup, so it costs 225 rather than its 150 base price. Every agent therefore
+# began with a guaranteed ~26-hour wage grind before it could move more than
+# the 5 units a person carries on foot, and the whole convoy economy -- carts,
+# escorts, bandits, haulage -- could not begin until then. Measured in the
+# 2026-08-20 smoke: four agents, six hours, two world-chat posts advertising
+# for carts nobody could buy, and 302 `site_full` events behind them.
+#
+# 300 clears the Camel (225) with something left to eat on, and leaves the
+# Donkey Cart (600) as a thing to work towards rather than a wall.
+STARTING_DENARI = 300.0
 
 NPC_BUY_PCT_RAW = 0.40          # Trading Post pays this % of base when buying from players
 # 1.60 -> 1.40 (designer decision, 2026-08-16). The chain's own rules compound:
@@ -642,7 +653,6 @@ BUSINESS_TYPES: dict[str, BusinessType] = {
             tuple(MEALS),
         ),
         BusinessType("Private Security Contractor", 500, None, True, False, ()),
-        BusinessType("Insurance Brokerage", 750, 0, False, False, ()),
     ]
 }
 
@@ -809,6 +819,24 @@ CONVOY_PAY = {
     "Bodyguard": {"flat": 8.0, "commission": 0.0035, "basis": "convoy"},
 }
 
+# HOW A CONVOY'S COST AND RISK ARE SPLIT, as the SELLER's share. A deal names
+# one of these and both sides carry that fraction of the courier fee and of
+# anything bandits take.
+#
+# A ladder rather than any number, because a negotiation with a continuum has no
+# focal points -- "62.5/37.5" is not a deal anybody shakes hands on, and every
+# extra choice is another decision an agent has to price.
+CONVOY_SPLITS: tuple[float, ...] = (1.00, 0.75, 0.60, 0.50, 0.40, 0.25, 0.00)
+
+# THE STATE NEVER CARRIES ANY OF IT (designer decision, 2026-08-21). A
+# government business has total bargaining power: sell to one and you cover the
+# whole convoy, buy from one and likewise. That is not the state being greedy,
+# it is the incentive that makes an agent-owned counterparty worth founding --
+# a player refinery offering 75/25 is strictly better to ship to than a state
+# one offering nothing, which is the first reason in this economy to compete
+# with the government rather than merely alongside it.
+GOVERNMENT_BEARS_NOTHING = True
+
 CONVOY_MAX_VEHICLES = 10
 CONVOY_RECRUIT_WINDOW_MIN = 15.0
 CONVOY_MAX_EXTENSIONS = 3
@@ -951,7 +979,7 @@ EXTRACTION_BUSINESS_TYPES = ("Mining Operation", "Farm")
 STORE_BUSINESS_TYPES = (
     "Home Improvement Store", "Mining/Farming Equipment Store",
     "Weaponsmith / Armory", "Vehicle Dealer / Stable", "Tavern / Inn",
-    "Private Security Contractor", "Insurance Brokerage",
+    "Private Security Contractor",
 )
 
 

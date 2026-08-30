@@ -177,6 +177,87 @@ def test_it_matches_the_live_feed():
        "Refinery Row" in I.doing_phrase(hand))
 
 
+def test_the_boards_assemble() -> None:
+    """The spectator boards. One assembler, two consumers -- see `inspect`."""
+    from convoy.state import Transaction
+
+    world = setup()[0]
+    for hour, item, qty, price in (
+        (1, "Copper Ore", 50, 5.2), (2, "Copper Ore", 100, 4.9),
+        (2, "Bronze", 10, 44.0),
+    ):
+        world.market.record(Transaction(hour * HOUR, item, qty, price, "B1", "B2"))
+    world.sim_time = 3 * HOUR
+
+    boards = I.boards(world, [])
+    ok("every board is there",
+       set(boards) == {"leaderboard", "commodities", "convoys", "advice"},
+       str(sorted(boards)))
+
+    lb = boards["leaderboard"]
+    ok("every agent is on the leaderboard", len(lb) == len(world.agents))
+    ok("richest first",
+       [r["net_worth"] for r in lb] == sorted((r["net_worth"] for r in lb), reverse=True))
+    for row in lb:
+        parts = sum(row["assets"].values())
+        ok(f"{row['name']}'s breakdown adds up to its rank",
+           abs(parts - row["net_worth"]) < 0.02,
+           f"{parts:.2f} vs {row['net_worth']:.2f}")
+
+    prices = boards["commodities"]
+    ok("the ticker reports what sold", {r["item"] for r in prices} == {"Copper Ore", "Bronze"},
+       str([r["item"] for r in prices]))
+    ore = next(r for r in prices if r["item"] == "Copper Ore")
+    ok("volume-weighted, not a plain mean", ore["vwap"] < 5.05, f"vwap {ore['vwap']}")
+    ok("busiest first", prices[0]["volume"] >= prices[-1]["volume"])
+    ok("NOBODY is named in a public price feed",
+       not ({"seller", "buyer"} & set(ore)), str(sorted(ore)))
+
+    convoys = boards["convoys"]
+    ok("the convoy board has both halves",
+       set(convoys) == {"live", "history", "totals"}, str(sorted(convoys)))
+
+
+def test_the_advice_report_separates_ignored_from_unheard() -> None:
+    """The teaching artefact. Two failures that look identical from outside.
+
+    "It ignored me" and "it never heard me" are different facts about the world,
+    and only `times_seen` -- written by `observe` when text enters a prompt --
+    tells them apart. Six recommendations once expired unseen (PHASE4 §2).
+    """
+    from convoy.state import Recommendation, Snapshot
+
+    world = setup()[0]
+    heard, deaf = list(world.agents.values())[:2]
+
+    before = Snapshot(hour=1.0, net_worth={a.id: 100.0 for a in world.agents.values()})
+    heard.inbox.append(Recommendation(
+        id="R1", from_who="a student", text="buy a cart", given_at_hour=1.0,
+        times_seen=3, first_seen_hour=1.2, before=before))
+    deaf.inbox.append(Recommendation(
+        id="R2", from_who="a student", text="found a mine", given_at_hour=1.0,
+        times_seen=0, before=before))
+
+    rows = {r["id"]: r for r in I.advice_report(world, [])}
+    ok("both pieces of advice are reported", len(rows) == 2)
+    ok("one was heard", rows["R1"]["heard"] is True)
+    ok("and the other never reached a prompt", rows["R2"]["heard"] is False)
+    ok("the unheard one says so rather than showing zero effect",
+       rows["R2"]["times_seen"] == 0)
+
+    r = rows["R1"]
+    ok("it scores against the FIELD, not just itself",
+       r["field_gained"] is not None and r["beat_field"] is not None,
+       f"gained {r['gained']} field {r['field_gained']}")
+    ok("beating the field is gain minus what everyone else managed",
+       abs(r["beat_field"] - (r["gained"] - r["field_gained"])) < 0.01)
+    ok("rank then and now are both reported",
+       r["rank_then"] is not None and r["rank_now"] is not None)
+
+    ok("a world nobody advised reports nothing",
+       I.advice_report(setup()[0], []) == [])
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in tests:
