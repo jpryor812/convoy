@@ -71,8 +71,10 @@ def test_every_item_and_action_is_covered_by_name() -> None:
         ok(f"glyph for {name}", name in SP.GLYPH_FOR_ACTION)
     for btype in D.BUSINESS_TYPES:
         ok(f"structure for {btype}", btype in SP.STRUCTURE_FOR_BUSINESS)
-    for loc in M.LOCATIONS_SPEC:
-        ok(f"decor for {loc.name}", loc.name in SP.DECOR_FOR_LOCATION)
+    # EVERY city's locations, not just the home one -- a second valley whose
+    # market had no decor would render as bare grass and nothing would say so.
+    for loc in M.EVERY_LOCATION_SPEC:
+        ok(f"decor for {loc.name}", bool(SP.decor_for(loc.name)))
 
 
 # ---------------------------------------------------------------------------

@@ -119,9 +119,40 @@ TERRAIN = ROOT / "art" / "generated" / "terrain"
 # places whose NAME makes a claim about their ground, so they are the only ones
 # that get anything but grass -- the hills and the climb are rock, the crossing
 # is a river.
-GROUND_FOR_PLACE = {
-    "The Hills": "rock",
+GROUND_FOR_PLACE_BY_ROLE = {
+    M.ROLE_HILLS: "rock",
 }
+
+
+def ground_for(place: str) -> str:
+    """By ROLE, so both cities' hills are rock and neither is hard-coded."""
+    return GROUND_FOR_PLACE_BY_ROLE.get(M.ROLE_OF.get(place, ""), "grass")
+
+
+def cities_of(run: Path | None) -> list[str]:
+    """Which cities a run contains, off its checkpoint.
+
+    The renderer has to know BEFORE it lays any ground out -- `layout.build`
+    takes the city list and a one-city page must not draw an empty second
+    valley. Falls back to the home city, which is what every run recorded
+    before 2026-09-03 was.
+    """
+    if run is None:
+        return [M.HOME_CITY]
+    cp = run / "checkpoint.json"
+    if not cp.exists():
+        return [M.HOME_CITY]
+    try:
+        raw = json.loads(cp.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [M.HOME_CITY]
+    # Through `decode`, because the checkpoint wraps every list in a
+    # {"__seq__": [...]} envelope -- read raw, `cities` is a dict and the
+    # membership test silently keeps nothing, which draws a two-city run as one
+    # valley with half its places missing.
+    found = decode(raw.get("cities"))
+    keep = [c for c in (found or []) if c in M.CITIES]
+    return keep or [M.HOME_CITY]
 
 
 def collect_assets() -> dict[str, str]:
@@ -194,7 +225,9 @@ SITE_TYPES = ["Farm", "Mining Operation", "Refinery", "Tavern / Inn"]
 # A PLAUSIBLE VALLEY
 # ---------------------------------------------------------------------------
 
-def starting_world(places: dict[str, L.Place]) -> dict:
+def starting_world(
+    places: dict[str, L.Place], cities: list[str] | None = None
+) -> dict:
     """The world at hour zero, built by the simulation rather than invented.
 
     THIS USED TO MAKE THINGS UP. It filled every place to a share of its slots
@@ -213,8 +246,17 @@ def starting_world(places: dict[str, L.Place]) -> dict:
     from convoy.events import EventLog
     from convoy.world_setup import new_world
 
+    cities = list(cities or [M.HOME_CITY])
     roster = [(f"Agent{n}", "preview") for n in range(1, AGENT_COUNT + 1)]
-    world = new_world(EventLog(None, echo_min=99), roster)
+    log = EventLog(None, echo_min=99)
+    if len(cities) > 1:
+        world = new_world(log, [], {
+            c: [(f"{M.CITIES[c].name}-{n}", "preview")
+                for n in range(1, AGENT_COUNT + 1)]
+            for c in cities
+        })
+    else:
+        world = new_world(log, roster)
 
     # A slot per government branch, taken in the order `layout` lays them out --
     # centre first, so the state holds the ground fronting each settlement.
@@ -430,12 +472,17 @@ def replay(run: Path, places: dict[str, L.Place]) -> dict:
 
     names: dict[str, str] = {}
     models: dict[str, str] = {}
+    homes: dict[str, str] = {}
     cp_path = run / "checkpoint.json"
     raw_cp = json.loads(cp_path.read_text(encoding="utf-8")) if cp_path.exists() else {}
+    run_cities = cities_of(run)
     for entry in walk_dict(raw_cp.get("agents")):
         if entry.get("id"):
             names[entry["id"]] = entry.get("name", entry["id"])
             models[entry["id"]] = entry.get("model", "")
+            # "" is what every agent recorded before there were cities carries,
+            # and they were all of the home city, because it was the only one.
+            homes[entry["id"]] = entry.get("city") or run_cities[0]
 
     agents: dict[str, dict] = {}
     robberies: list[dict] = []
@@ -455,7 +502,9 @@ def replay(run: Path, places: dict[str, L.Place]) -> dict:
         if actor and actor.startswith("A"):
             a = agents.setdefault(actor, {
                 "id": actor, "name": names.get(actor, actor),
-                "model": models.get(actor, ""), "died": None,
+                "model": models.get(actor, ""),
+                "city": homes.get(actor, run_cities[0]),
+                "died": None,
             })
             if loc in known:
                 tracks[actor].append([round(hour, 3), loc, None])
@@ -643,10 +692,17 @@ def _events_for_boards(run: Path) -> list:
 
 
 def build_payload(run: Path | None = None) -> dict:
-    places = L.build()
+    # THE CITIES COME FIRST, because the ground depends on them. A one-city run
+    # must not lay out an empty second valley for the camera to have to pan
+    # across, and a two-city run must not draw only half of itself.
+    cities = cities_of(run)
+    places = L.build(cities)
     minx, miny, maxx, maxy = L.bounds(places)
 
-    roads = [[(p.x, p.y) for p in L.main_road()]]
+    # ONE POLYLINE PER CITY, never joined. The valleys have no road between
+    # them, and a single road drawn through both would be the page asserting a
+    # journey the engine refuses to allow.
+    roads = [[(p.x, p.y) for p in road] for road in L.main_roads(cities)]
     roads += [[(p.x, p.y) for p in pl.path] for pl in places.values() if pl.path]
 
     return {
@@ -664,15 +720,29 @@ def build_payload(run: Path | None = None) -> dict:
             {
                 "name": p.name, "kind": p.kind, "protected": p.protected,
                 "x": p.center.x, "y": p.center.y,
-                "ground": GROUND_FOR_PLACE.get(p.name, "grass"),
+                "ground": ground_for(p.name),
                 "parcels": [{"x": q.x, "y": q.y} for q in p.parcels],
                 "props": [{"kind": q.kind, "x": q.x, "y": q.y,
                            "scale": q.scale} for q in p.props],
             }
             for p in places.values()
         ],
+        # Who is in this world, for the page's city tabs. Each carries the
+        # centre of its own market so the camera can jump to a city, and its
+        # places so a click anywhere can be attributed to one.
+        "cities": [
+            {
+                "key": key,
+                "name": M.CITIES[key].name,
+                "market": M.CITIES[key].market,
+                "places": M.places_in(key),
+                "x": places[M.CITIES[key].market].center.x,
+                "y": places[M.CITIES[key].market].center.y,
+            }
+            for key in cities if M.CITIES[key].market in places
+        ],
         **(replay(run, places) if run else
-           {"mode": "snapshot", **starting_world(places)}),
+           {"mode": "snapshot", **starting_world(places, cities)}),
     }
 
 
@@ -745,7 +815,11 @@ TEMPLATE = r"""<!doctype html>
   /* A thought, over the head of whoever is having it. */
   .bubble-canvas{}
 
-  #hud{position:fixed;left:12px;top:166px;background:#12160fdd;padding:9px 12px;
+  /* Below the button stack, measured at runtime -- see `placePanels`. It was a
+     fixed 166px, which was already a tight fit under four buttons and became an
+     overlap the moment a fifth was added. A number that has to be re-derived by
+     hand every time the nav changes is a number that will be wrong. */
+  #hud{position:fixed;left:12px;top:var(--under-nav,166px);background:#12160fdd;padding:9px 12px;
        border:1px solid #3a4030;border-radius:5px;pointer-events:none;z-index:2}
 
   /* THE BOARDS. Three stacked buttons top-left, and a dark panel behind them.
@@ -763,8 +837,9 @@ TEMPLATE = r"""<!doctype html>
                      text-align:left;letter-spacing:.04em;white-space:nowrap}
   #boards-nav button:hover{background:#1e2616;color:#e8e4d8}
   #boards-nav button.on{background:#44562f;color:#fffdf7;border-color:#6d8449}
-  #board{position:fixed;left:12px;top:166px;z-index:6;display:none;
-         width:min(760px,calc(100vw - 24px));max-height:calc(100vh - 162px);
+  #board{position:fixed;left:12px;top:var(--under-nav,166px);z-index:6;display:none;
+         width:min(760px,calc(100vw - 24px));
+         max-height:calc(100vh - var(--under-nav,166px) - 76px);
          overflow:auto;background:#12160ff2;border:1px solid #46502f;
          border-radius:7px;padding:13px 15px 15px;
          box-shadow:0 8px 30px #000a}
@@ -807,6 +882,26 @@ TEMPLATE = r"""<!doctype html>
   #board .key i{display:inline-block;width:8px;height:8px;border-radius:2px;
                 margin-right:4px;vertical-align:-1px}
   #board .empty{color:#7c8a63;font-style:italic;padding:10px 0}
+  /* THE CITY TABS. Inside the board rather than beside the map: they change
+     WHO you are reading about, which is a property of the table, not of the
+     valley. "Both" is first and is the default, because the entire reason
+     there are two cities is the comparison. */
+  #board .tabs{display:flex;gap:4px;margin:0 0 11px;flex-wrap:wrap}
+  #board .tabs button{background:#1a2013;color:#9db07c;border:1px solid #3a4030;
+                      border-radius:5px;padding:4px 11px;font:inherit;
+                      cursor:pointer;letter-spacing:.04em}
+  #board .tabs button:hover{background:#26301a;color:#e8e4d8}
+  #board .tabs button.on{background:#44562f;color:#fffdf7;border-color:#6d8449}
+  /* One accent per city, used by the tab, the leaderboard's city column and
+     the race chart, so the same colour means the same city everywhere. */
+  #board .c0{color:#9dd17a} #board .c1{color:#d9a06a}
+  #board .tabs button.on.c0{background:#3d5b2c;border-color:#7aa055}
+  #board .tabs button.on.c1{background:#5b442c;border-color:#a07f55}
+  #board .race{width:100%;height:132px;margin:2px 0 14px;display:block}
+  #board .score{display:flex;gap:22px;margin:0 0 12px;flex-wrap:wrap}
+  #board .score div{font-size:11.5px}
+  #board .score b{display:block;font-size:19px;letter-spacing:.02em}
+  #board .verdict{color:#e8e4d8;margin:0 0 12px;font-size:12px}
   #hud b{color:#c9d6a8}
   #keys{position:fixed;right:12px;top:12px;background:#12160fdd;padding:9px 12px;
         border:1px solid #3a4030;border-radius:5px;z-index:2;text-align:right}
@@ -873,6 +968,7 @@ TEMPLATE = r"""<!doctype html>
 </style></head><body>
 <canvas id="c"></canvas>
 <div id="boards-nav">
+  <button data-board="contest" id="contest-btn" hidden>The contest</button>
   <button data-board="leaderboard">Leaderboard</button>
   <button data-board="convoys">Convoy schedule</button>
   <button data-board="commodities">Commodity prices</button>
@@ -1775,16 +1871,29 @@ function draw(){
 
   drawBadges();
 
-  /* Labels last, and only when zoomed out far enough that they are not clutter. */
+  /* Labels last, and only when zoomed out far enough that they are not clutter.
+
+     THE BACKGROUND DREW AND THE NAME DID NOT. The plate was positioned with
+     `wx(p)/wy(p)` and the text with `p.sx/p.sy`, which a place record does not
+     have -- it carries `x`/`y` and nothing else, so `fillText` was called with
+     two undefined coordinates and drew nothing at all. What you saw was a row
+     of dark grey bars floating over the buildings and the road: a label plate
+     with no label on it. Both now use the same coordinates, which is the whole
+     fix.
+
+     They matter more than they did. With two valleys on one page, the name over
+     a settlement is what tells you which city you are looking at. */
   if (zoom < 0.75){
     g.font = `${Math.round(13 / zoom)}px ui-monospace,monospace`;
     g.textAlign = "center";
+    g.textBaseline = "alphabetic";
     for (const p of DATA.places){
-      g.fillStyle = "#0d1108cc";
+      const lx = wx(p), ly = wy(p);
       const w = g.measureText(p.name).width + 10 / zoom;
-      g.fillRect(wx(p) - w / 2, wy(p) - 26 / zoom, w, 18 / zoom);
+      g.fillStyle = "#0d1108cc";
+      g.fillRect(lx - w / 2, ly - 26 / zoom, w, 18 / zoom);
       g.fillStyle = p.kind === "spur" ? "#c9d6a8" : "#f2e9c9";
-      g.fillText(p.name, p.sx, p.sy - 12 / zoom);
+      g.fillText(p.name, lx, ly - 12 / zoom);
     }
   }
 
@@ -2165,7 +2274,31 @@ addEventListener("resize", resize);
    on the place itself rather than on a corner of the world box: the box includes
    every spur's outermost tree, so its centre is open country and the first thing
    you saw was an empty field. */
-const OPEN_ON = "Town";
+/* THE CITIES IN THIS WORLD, and which one the page is looking at. `null` means
+   both -- the only sensible default for a contest, since the whole point is the
+   comparison. A one-city page has one entry here and never shows a tab. */
+const CITIES = DATA.cities || [];
+const CONTEST = CITIES.length > 1;
+let cityFilter = null;
+const cityName = key => (CITIES.find(c => c.key === key) || {}).name || key;
+/* Open on the first city's market -- the market end, and the busiest ground in
+   the valley. */
+const OPEN_ON = (CITIES[0] && CITIES[0].market) || "Town";
+/* Frame a whole city rather than a point: with two valleys side by side the old
+   fixed zoom put half of one and none of the other on screen. */
+function frameCity(key){
+  const city = CITIES.find(q => q.key === key);
+  if (!city) return;
+  const pts = DATA.places.filter(p => city.places.includes(p.name));
+  if (!pts.length) return;
+  const xs = pts.map(wx), ys = pts.map(wy);
+  const w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
+  zoom = Math.max(0.05, Math.min(3, 0.82 * Math.min(
+    c.width / Math.max(w, 1), c.height / Math.max(h, 1))));
+  panx = -((Math.min(...xs) + w / 2) - c.width / 2 / zoom);
+  pany = -((Math.min(...ys) + h / 2) - c.height / 2 / zoom);
+  clampPan();
+}
 function centreOn(name){
   const p = DATA.places.find(q => q.name === name) || DATA.places[0];
   panx = -(wx(p) - c.width / 2 / zoom);
@@ -2230,16 +2363,36 @@ function assetBar(a){
   ).join("") + '</div>';
 }
 
+/* Which colour class a city gets, by its position in `CITIES`. Stable for the
+   life of the page, so a city is the same colour on the tab, in the table and
+   on the race chart. */
+const cityClass = key => "c" + Math.max(0, CITIES.findIndex(c => c.key === key));
+
 function boardLeaderboard(){
-  const rows = BOARDS.leaderboard || [];
+  let rows = BOARDS.leaderboard || [];
   if (!rows.length) return '<div class="empty">Nobody in the valley yet.</div>';
-  let h = '<div class="key">' + Object.entries(ASSET_COLOURS).map(([k, c]) =>
+  /* THE TAB FILTERS THE TABLE. Filtered rather than merely highlighted: the
+     question a tab answers is "how is Cinderhold doing", and twenty of its
+     citizens interleaved with twenty of somebody else's does not answer it.
+     "Both" keeps the interleaved view, which is the one that answers "who is
+     winning". */
+  if (cityFilter) rows = rows.filter(r => r.city === cityFilter);
+  if (!rows.length) return '<div class="empty">Nobody from that city yet.</div>';
+  let h = cityTabs();
+  h += '<div class="key">' + Object.entries(ASSET_COLOURS).map(([k, c]) =>
         `<span><i style="background:${c}"></i>${k}</span>`).join("") + "</div>";
-  h += '<table><tr><th>#</th><th>Who</th><th class="n">Net worth</th>'
+  h += '<table><tr><th>#</th>'
+    +  (CONTEST && !cityFilter ? '<th>City</th>' : '')
+    +  '<th>Who</th><th class="n">Net worth</th>'
     +  '<th>Job</th><th>Where the money is</th><th>Holdings</th></tr>';
   rows.forEach((r, i) => {
     const a = r.assets;
-    h += `<tr><td class="dim">${i + 1}</td>`
+    /* Rank AT HOME when a single city is shown, because that is the number
+       that city's citizens are actually scored on; the global position when
+       both are shown, because that is the comparison being made. */
+    h += `<tr><td class="dim">${cityFilter ? (r.rank_at_home || i + 1) : i + 1}</td>`
+      +  (CONTEST && !cityFilter
+          ? `<td class="${cityClass(r.city)}">${esc(r.city_name || "")}</td>` : "")
       +  `<td class="who">${esc(r.name)}`
       +  (r.alive ? "" : ' <span class="bad">dead</span>')
       +  `<br><span class="dim">${esc(r.doing)}</span></td>`
@@ -2390,7 +2543,120 @@ function boardConvoys(){
   return h;
 }
 
+/* THE TAB STRIP. Rendered into whichever board is open, so switching city keeps
+   you on the board you were reading. Empty string in a one-city world, which is
+   how every earlier run's page stays exactly as it was. */
+function cityTabs(){
+  if (!CONTEST) return "";
+  const tab = (key, label) => {
+    const on = (cityFilter === key) ? " on" : "";
+    const tone = key ? " " + cityClass(key) : "";
+    return `<button class="tab${on}${tone}" data-city="${key || ''}">${esc(label)}</button>`;
+  };
+  return '<div class="tabs">' + tab(null, "Both")
+       + CITIES.map(c => tab(c.key, c.name)).join("") + "</div>";
+}
+
+/* THE CONTEST. Two totals, the gap, and how the gap got there.
+
+   The chart is the board's reason to exist. A final score says who won; the
+   only interesting question about a race is WHEN, and that is only answerable
+   because the engine writes a `city_standings` row every hour -- the checkpoint
+   holds the present and is overwritten (PHASE8 §8), so without the log there is
+   no history to draw. */
+function boardContest(){
+  const b = BOARDS.cities || {};
+  const now = b.now || [];
+  if (!now.length) return '<div class="empty">This run has only one city.</div>';
+
+  let h = '<div class="score">' + now.map(r =>
+      `<div class="${cityClass(r.city)}">${esc(r.name)}<b>${coin(r.total_net_worth)}</b>`
+    + `<span class="dim">${r.living} alive`
+    + (r.dead ? ` &middot; <span class="bad">${r.dead} lost</span>` : "")
+    + ` &middot; ${r.businesses} businesses</span></div>`).join("") + "</div>";
+
+  h += '<div class="verdict">'
+    + (b.gap > 0
+        ? `<b>${esc(b.leader)}</b> leads by <b>${coin(b.gap)}</b>`
+          + (b.led_since != null
+             ? ` and has led since hour ${b.led_since.toFixed(0)}.` : ".")
+        : "Dead level.")
+    + '</div>';
+
+  h += raceChart(b.history || {});
+
+  h += '<table><tr><th>City</th><th class="n">Total net worth</th>'
+    +  '<th class="n">Per citizen</th><th class="n">Alive</th><th class="n">Lost</th>'
+    +  '<th class="n">Businesses</th><th>Richest</th></tr>';
+  now.forEach(r => {
+    h += `<tr><td class="who ${cityClass(r.city)}">${esc(r.name)}</td>`
+      +  `<td class="n who">${coin(r.total_net_worth)}</td>`
+      +  `<td class="n dim">${coin(r.mean_net_worth)}</td>`
+      +  `<td class="n">${r.living}</td>`
+      +  `<td class="n ${r.dead ? 'bad' : 'dim'}">${r.dead}</td>`
+      +  `<td class="n dim">${r.businesses}</td>`
+      +  `<td class="dim">${esc(r.richest || "\u2014")}</td></tr>`;
+  });
+  return h + "</table>";
+}
+
+/* The race, as one line per city over the hours. Inline SVG: no library, no
+   CDN, and the page has to open from a file:// URL on a laptop with no network.
+   Drawn from a SHARED y-scale across both cities -- two independently scaled
+   lines would show a city that is far behind as level with one that is far
+   ahead, which is the one thing this chart must never do. */
+function raceChart(history){
+  const keys = Object.keys(history).filter(k => (history[k] || []).length > 1);
+  if (keys.length < 2) return '<div class="empty">Not enough hours recorded yet '
+    + 'to draw the race.</div>';
+  const all = keys.flatMap(k => history[k]);
+  const maxH = Math.max(...all.map(r => r.hour));
+  const maxV = Math.max(...all.map(r => r.total || 0), 1);
+  /* SCALED TO THE DATA, NOT TO ZERO. Two cities that both grew from 300 to
+     2,500 are two nearly-identical lines when the axis starts at zero -- and
+     the only thing anybody wants from a race chart is where the lines SEPARATE,
+     which a zero-based axis flattens into invisibility. Both lines share one
+     scale, so the comparison between them stays exact; what changes is only how
+     much of the panel the interesting band gets. The bounds are printed under
+     the chart so a reader can see the axis is clipped. */
+  const minV = Math.min(...all.map(r => r.total || 0));
+  const lo = minV - (maxV - minV) * 0.08, span = Math.max(maxV - lo, 1);
+  const W = 700, H = 132, PAD = 6;
+  const px = hr => PAD + (hr / Math.max(maxH, 1e-9)) * (W - PAD * 2);
+  const py = v => H - PAD - ((v - lo) / span) * (H - PAD * 2);
+  /* COLOUR BY THE CITY, NOT BY THE ROW'S POSITION. `history` is keyed in
+     standings order, which is sorted by wealth and therefore changes hands
+     during a run -- indexing the palette by that drew Aldermarch's line in
+     Cinderhold's colour while the table beside it used the other one. A chart
+     whose legend contradicts the table under it is worse than no chart. Same
+     index `cityClass` uses, so one city is one colour everywhere on the page. */
+  const STROKE = ["#9dd17a", "#d9a06a", "#7aa9d1"];
+  const strokeFor = k => STROKE[
+    Math.max(0, CITIES.findIndex(c => c.key === k)) % STROKE.length];
+  const lines = keys.map(k => {
+    const d = history[k].map((r, j) =>
+      `${j ? "L" : "M"}${px(r.hour).toFixed(1)},${py(r.total || 0).toFixed(1)}`
+    ).join("");
+    return `<path d="${d}" fill="none" stroke="${strokeFor(k)}" `
+         + `stroke-width="2" stroke-linejoin="round"/>`;
+  }).join("");
+  const labels = keys.map(k => {
+    const last = history[k][history[k].length - 1];
+    return `<text x="${(px(last.hour) - 4).toFixed(1)}" y="${(py(last.total || 0) - 6).toFixed(1)}" `
+         + `text-anchor="end" fill="${strokeFor(k)}" font-size="10">`
+         + `${esc(cityName(k))}</text>`;
+  }).join("");
+  return `<svg class="race" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" `
+       + `role="img" aria-label="City net worth over time">`
+       + `<rect x="0" y="0" width="${W}" height="${H}" fill="#171c11"/>`
+       + lines + labels + `</svg>`
+       + `<div class="key"><span>hour 0 &rarr; ${maxH.toFixed(0)}</span>`
+       + `<span>axis ${coin(lo)} &ndash; ${coin(maxV)} (not zero-based)</span></div>`;
+}
+
 const BOARD_TITLES = {
+  contest: ["The contest", "Two cities, no road between them. The score is each "
+          + "city's TOTAL net worth, so a citizen who dies is a hole in it."],
   leaderboard: ["Leaderboard", "Every agent, richest first. The bar shows where "
               + "the money actually is."],
   convoys: ["Convoy schedule", "Loads on the road, and how the ones already run "
@@ -2404,27 +2670,63 @@ const BOARD_TITLES = {
 const boardEl = document.getElementById("board");
 let openBoard = null;
 
+/* TOGGLE and RENDER are separate. They used to be one function, which meant a
+   city tab -- which has to re-render the board it is standing in -- could only
+   ask for the board it was already on, and got it CLOSED. */
 function showBoard(which){
-  const nav = document.querySelectorAll("#boards-nav button");
-  if (openBoard === which) { which = null; }
+  if (openBoard === which) which = null;
   openBoard = which;
+  renderBoard();
+}
+
+function renderBoard(){
+  const which = openBoard;
+  const nav = document.querySelectorAll("#boards-nav button");
   nav.forEach(b => b.classList.toggle("on", b.dataset.board === which));
   if (!which) { boardEl.classList.remove("open"); return; }
   const [title, sub] = BOARD_TITLES[which];
   const body = which === "leaderboard" ? boardLeaderboard()
              : which === "commodities" ? boardCommodities()
-             : which === "advice" ? boardAdvice() : boardConvoys();
+             : which === "advice" ? boardAdvice()
+             : which === "contest" ? boardContest() : boardConvoys();
   boardEl.innerHTML = `<h2>${title}</h2><div class="sub">${sub}</div>` + body;
   // (boards) -- the agent-card follow link is wired in openPanel.
   boardEl.querySelectorAll("tr.jump").forEach(tr =>
     tr.addEventListener("click", () =>
       goToMoment(parseFloat(tr.dataset.hour), tr.dataset.who || null)));
+  /* Switching city re-renders the board you are on and takes the camera with
+     it, so "show me Cinderhold" answers with both the table AND the valley --
+     the two things you would otherwise have to do separately, on a map that is
+     now twice as wide as it used to be. */
+  boardEl.querySelectorAll(".tabs button").forEach(btn =>
+    btn.addEventListener("click", () => {
+      cityFilter = btn.dataset.city || null;
+      if (cityFilter) frameCity(cityFilter);
+      else { zoom = 1; resize(); }
+      draw();
+      renderBoard();
+    }));
   boardEl.classList.add("open");
   boardEl.scrollTop = 0;
 }
 
 document.querySelectorAll("#boards-nav button").forEach(b =>
   b.addEventListener("click", () => showBoard(b.dataset.board)));
+
+/* The contest board only exists when there IS a contest. A one-city page must
+   not offer a tab that opens on "this run has only one city". */
+if (CONTEST) document.getElementById("contest-btn").hidden = false;
+
+/* Push the HUD and the board clear of the button stack, whatever is in it.
+   Runs after the contest button's visibility is settled, and again on resize
+   because the buttons wrap on a narrow window. */
+function placePanels(){
+  const nav = document.getElementById("boards-nav");
+  document.documentElement.style.setProperty(
+    "--under-nav", Math.round(nav.getBoundingClientRect().bottom + 10) + "px");
+}
+placePanels();
+addEventListener("resize", placePanels);
 /* Escape closes whatever is open -- the board first, since it is on top. */
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && openBoard) showBoard(null);

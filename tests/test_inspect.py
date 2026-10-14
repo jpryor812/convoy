@@ -191,8 +191,11 @@ def test_the_boards_assemble() -> None:
 
     boards = I.boards(world, [])
     ok("every board is there",
-       set(boards) == {"leaderboard", "commodities", "convoys", "advice"},
+       set(boards) == {"leaderboard", "commodities", "convoys", "advice", "cities"},
        str(sorted(boards)))
+    # The contest board is EMPTY in a one-city world rather than absent, so the
+    # page can decide whether to offer the tab without special-casing a key.
+    ok("no contest in a one-city world", boards["cities"] == {}, str(boards["cities"]))
 
     lb = boards["leaderboard"]
     ok("every agent is on the leaderboard", len(lb) == len(world.agents))

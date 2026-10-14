@@ -256,11 +256,25 @@ class _Stream:
 # take the bridge square-on, then west again up the switchbacks. The bridge is
 # deliberately the straightest part: a crossing is a fixed point on a river, and
 # a road meets it head on.
+# KEYED BY ROLE, NOT BY NAME (2026-09-03). Every city is the same valley under
+# different names, so the shape of its road is the same shape -- west through
+# the hills, square onto the bridge. Keying this by "Refinery Row" would have
+# meant hand-authoring a second column for Cinderhold and hoping the two stayed
+# alike, which is exactly the drift `assert_cities_are_mirrors` exists to stop.
 _WANDER: dict[str, float] = {
-    "Refinery Row":          -55.0,
-    "The Hills":              20.0,
-    "Town":                  -30.0,
+    M.ROLE_REFINERY:         -55.0,
+    M.ROLE_HILLS:             20.0,
+    M.ROLE_MARKET:           -30.0,
 }
+
+# HOW FAR APART THE TWO VALLEYS ARE DRAWN. Wide enough that no spur of one city
+# reaches the other's ground, and that a viewer zoomed out sees two settlements
+# rather than one sprawling one. There is no road between them and the gap is
+# how the map says so -- open country, no line across it.
+#
+# Measured against what has to fit: a valley is at most 2 * (SPUR_DEPTH +
+# SPUR_LOOP_RADIUS) wide, so this is that plus a clear margin.
+VALLEY_PITCH = 2.0 * (SPUR_DEPTH + SPUR_LOOP_RADIUS) + 900.0
 
 
 def _wander(name: str) -> float:
@@ -268,9 +282,20 @@ def _wander(name: str) -> float:
 
     Scaled on read rather than baked into the table, so the column above stays
     the readable shape of the road -- west through the hills, square onto the
-    bridge -- instead of seven numbers nobody can eyeball against each other.
+    bridge -- instead of numbers nobody can eyeball against each other.
     """
-    return _WANDER[name] * GROUND_SCALE
+    return _WANDER[M.ROLE_OF[name]] * GROUND_SCALE
+
+
+def _valley_offset(place: str) -> float:
+    """How far east this place's city is drawn from the first city's.
+
+    Position in `M.CITY_KEYS` rather than anything spatial: the cities have no
+    geographic relationship to each other -- no road, no shared ground -- so
+    their arrangement on the page is a presentation choice and nothing in the
+    engine may come to depend on it.
+    """
+    return M.CITY_KEYS.index(M.city_of(place)) * VALLEY_PITCH
 
 
 def junction_center(name: str) -> Point:
@@ -285,26 +310,33 @@ def junction_center(name: str) -> Point:
     distance. Six percent is not visible; being unable to say the map is honest
     is the cost that matters.
     """
+    road = M.locations_in(M.city_of(name))
     y = 0.0
-    for i in range(1, M.LOCATIONS.index(name) + 1):
-        dx = _wander(M.LOCATIONS[i]) - _wander(M.LOCATIONS[i - 1])
+    for i in range(1, road.index(name) + 1):
+        dx = _wander(road[i]) - _wander(road[i - 1])
         y += math.sqrt(max(SEGMENT_LENGTH ** 2 - dx ** 2, 1.0))
-    return Point(_wander(name), y)
+    return Point(_wander(name) + _valley_offset(name), y)
 
 
-def main_road() -> list[Point]:
-    """The road as a polyline through the seven junctions, with easing points.
+def main_road(city: str | None = None) -> list[Point]:
+    """One city's road as a polyline through its junctions, with easing points.
 
     Two intermediate points per segment rather than a straight line, so the road
     curves between junctions instead of turning at sharp corners. Real roads
-    bend; more to the point, a hard vertex at every junction makes a seven-stop
-    road look like a flowchart.
+    bend; more to the point, a hard vertex at every junction makes a road look
+    like a flowchart.
+
+    ONE CITY'S ROAD, NOT THE WORLD'S. The valleys do not touch, so there is no
+    such thing as "the" road any more -- joining them into one polyline would
+    draw a highway between two places the engine refuses to let anyone walk
+    between. `main_roads()` returns them all, separately.
     """
+    road = M.locations_in(city or M.HOME_CITY)
     pts: list[Point] = []
-    for i, name in enumerate(M.LOCATIONS):
+    for i, name in enumerate(road):
         here = junction_center(name)
         if i:
-            prev = junction_center(M.LOCATIONS[i - 1])
+            prev = junction_center(road[i - 1])
             # Ease the lateral shift across the middle of the segment, so the
             # bend sits between junctions and each junction itself is square.
             for t in (0.33, 0.67):
@@ -314,6 +346,11 @@ def main_road() -> list[Point]:
                 ))
         pts.append(here)
     return pts
+
+
+def main_roads(cities: list[str] | None = None) -> list[list[Point]]:
+    """Every city's road, one polyline each. Never joined -- see `main_road`."""
+    return [main_road(c) for c in (cities or [M.HOME_CITY])]
 
 
 def _smooth(t: float) -> float:
@@ -362,13 +399,15 @@ _EAST_PAIR = [59.0, 121.0]
 _WEST_PAIR = [239.0, 301.0]
 _DUE_EAST, _DUE_WEST = 90.0, 270.0
 
+# BY ROLE, like `_WANDER` -- see the note there. Both valleys hang their spurs
+# off the hills, because they are the same valley.
 _SPUR_HEADINGS: dict[str, list[float]] = {
-    "Refinery Row":         [],
+    M.ROLE_REFINERY:        [],
     # All four hang off the one junction, so this is the only place the fan has
     # to be balanced -- two either side, straddling the perpendicular. With no
     # neighbouring junction carrying spurs there is nothing left to collide with.
-    "The Hills":            [*_EAST_PAIR, *_WEST_PAIR],
-    "Town":                 [],
+    M.ROLE_HILLS:           [*_EAST_PAIR, *_WEST_PAIR],
+    M.ROLE_MARKET:          [],
 }
 
 
@@ -384,7 +423,7 @@ def spur_geometry(spur: M.Spur, index: int) -> tuple[list[Point], Point]:
     engine. See the module docstring.
     """
     base = junction_center(spur.junction)
-    heading = _SPUR_HEADINGS[spur.junction][index]
+    heading = _SPUR_HEADINGS[M.ROLE_OF[spur.junction]][index]
     rad = math.radians(heading)
     dx, dy = math.sin(rad), -math.cos(rad)
 
@@ -494,9 +533,12 @@ def river_axis() -> float:
     one road crosses it, and the rule that you cannot leave the road on this
     stretch is something a viewer can now see.
     """
-    a = junction_center("The Hills").y
-    b = junction_center("Town").y
-    return (a + b) / 2.0
+    # Read off the home city; every city's road runs the same distances at the
+    # same y, so one river band crosses both valleys at the same latitude. That
+    # is not a coincidence to be tidied away -- it is `assert_cities_are_mirrors`
+    # showing up in the drawing.
+    home = M.CITIES[M.HOME_CITY]
+    return (junction_center(home.hills).y + junction_center(home.market).y) / 2.0
 
 
 def in_river(y: float, margin: float = 0.0) -> bool:
@@ -622,10 +664,12 @@ def _block_on_road(bx: float, by: float, roads: list[list[Point]]) -> bool:
 # thorn scrub, which at map size is a smudge -- indistinguishable from a rock and
 # adding nothing a tree does not add better. Trees read as trees at any zoom, so
 # every bush is now a tree and the mix is trees against rock.
+# By role, like every other per-place table here: the ground under a smelter is
+# spoil and slag in whichever city the smelter is in.
 _SCATTER: dict[str, tuple[tuple[str, ...], int]] = {
-    "Refinery Row":         (("rock", "stump", "rock"), 16),
-    "The Hills":            (("rock", "rock", "tree", "tree"), 34),
-    "Town":                 (("tree", "tree"), 14),
+    M.ROLE_REFINERY:        (("rock", "stump", "rock"), 16),
+    M.ROLE_HILLS:           (("rock", "rock", "tree", "tree"), 34),
+    M.ROLE_MARKET:          (("tree", "tree"), 14),
 }
 _SPUR_SCATTER = (("tree", "tree", "rock"), 14)
 
@@ -644,7 +688,7 @@ def scatter_for(
     grid of trees looks planted, and this ground is not an orchard. Attempts are
     capped so a crowded place simply ends up sparser rather than looping.
     """
-    kinds, count = _SCATTER.get(name, _SPUR_SCATTER)
+    kinds, count = _SCATTER.get(M.ROLE_OF.get(name, ""), _SPUR_SCATTER)
     r = _rng("scatter", name)
     out: list[Prop] = []
     attempts = 0
@@ -695,34 +739,41 @@ def _dist_to_segment(px: float, py: float, a: Point, b: Point) -> float:
 # THE WHOLE VALLEY
 # ---------------------------------------------------------------------------
 
-def build() -> dict[str, Place]:
-    """Every place in the world, positioned. The one entry point.
+def build(cities: list[str] | None = None) -> dict[str, Place]:
+    """Every place in the given cities, positioned. The one entry point.
+
+    Defaults to the home city alone, so every caller written when there was one
+    valley keeps drawing one valley. A two-city run passes both keys and gets
+    both, side by side with open country between them.
 
     Ordered junctions first so a spur can read its junction's centre. Roads are
     collected before scatter because scatter has to avoid them -- including the
     spur roads of NEIGHBOURING places, which is why the road list is global
     rather than per-place.
     """
+    cities = list(cities or [M.HOME_CITY])
     places: dict[str, Place] = {}
-    roads: list[list[Point]] = [main_road()]
+    roads: list[list[Point]] = main_roads(cities)
 
-    for name in M.LOCATIONS:
-        spec = M.LOCATION_BY_NAME[name]
-        places[name] = Place(
-            name=name, kind=spec.kind, center=junction_center(name),
-            junction=None, elevation=spec.elevation, protected=spec.protected,
-        )
-
-    for junction, spurs in M.SPURS_BY_JUNCTION.items():
-        for i, spur in enumerate(spurs):
-            path, head = spur_geometry(spur, i)
-            roads.append(path)
-            parent = M.LOCATION_BY_NAME[junction]
-            places[spur.name] = Place(
-                name=spur.name, kind="spur", center=head, junction=junction,
-                elevation=parent.elevation, protected=parent.protected,
-                path=path,
+    for city in cities:
+        for name in M.locations_in(city):
+            spec = M.LOCATION_BY_NAME[name]
+            places[name] = Place(
+                name=name, kind=spec.kind, center=junction_center(name),
+                junction=None, elevation=spec.elevation, protected=spec.protected,
             )
+
+    for city in cities:
+        for junction in M.locations_in(city):
+            for i, spur in enumerate(M.SPURS_BY_JUNCTION.get(junction, [])):
+                path, head = spur_geometry(spur, i)
+                roads.append(path)
+                parent = M.LOCATION_BY_NAME[junction]
+                places[spur.name] = Place(
+                    name=spur.name, kind="spur", center=head, junction=junction,
+                    elevation=parent.elevation, protected=parent.protected,
+                    path=path,
+                )
 
     # Buildings and land come out of ONE pass now, because they are one fact --
     # see the note above `PARCEL_PITCH`. Every road in the world is known by this
@@ -750,21 +801,28 @@ MIN_SLOT_GAP = BLOCK_STRIDE
 MIN_ROAD_GAP = (BUILDING_BASE_M + ROAD_WIDTH) / 2.0 + 8.0
 
 
-def check() -> list[str]:
+def check(cities: list[str] | None = None) -> list[str]:
     """Assert the valley is drawable. Runs in `run_phase1.py`.
 
     Beside the economic invariants and `sprites.check()` for the same reason
     they are: it depends on `world_map`, and its failure mode is not an
     exception but a picture that is quietly wrong -- two buildings in one spot,
     a shop in the middle of the road -- discovered in front of an audience.
-    """
-    problems: list[str] = []
-    places = build()
-    roads = [main_road()] + [p.path for p in places.values() if p.path]
 
-    for name in M.ALL_PLACES:
-        if name not in places:
-            problems.append(f"{name} has no position")
+    Checks EVERY city by default rather than only the home one. A second valley
+    that draws its spurs through its own market would be found the first time
+    somebody rendered a two-city run, in front of the audience, which is the
+    exact failure this function exists to prevent.
+    """
+    cities = list(cities or M.CITY_KEYS)
+    problems: list[str] = []
+    places = build(cities)
+    roads = main_roads(cities) + [p.path for p in places.values() if p.path]
+
+    for city in cities:
+        for name in M.places_in(city):
+            if name not in places:
+                problems.append(f"{name} has no position")
 
     # CAPACITY IS AN INVARIANT, NOT AN AMBITION. The land system sells a place's
     # ground and the geometry has to seat everything that ground can hold, or
@@ -829,11 +887,13 @@ def check() -> list[str]:
 
     # Equal distances are the promise the engine makes; see the module docstring.
     lengths = {
-        M.LOCATIONS[i]: math.hypot(
-            junction_center(M.LOCATIONS[i + 1]).x - junction_center(M.LOCATIONS[i]).x,
-            junction_center(M.LOCATIONS[i + 1]).y - junction_center(M.LOCATIONS[i]).y,
+        road[i]: math.hypot(
+            junction_center(road[i + 1]).x - junction_center(road[i]).x,
+            junction_center(road[i + 1]).y - junction_center(road[i]).y,
         )
-        for i in range(len(M.LOCATIONS) - 1)
+        for city in cities
+        for road in [M.locations_in(city)]
+        for i in range(len(road) - 1)
     }
     if lengths and (max(lengths.values()) - min(lengths.values())) > 0.5:
         problems.append(

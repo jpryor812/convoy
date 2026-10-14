@@ -11,6 +11,7 @@ from typing import Any
 
 from . import data as D
 from . import economy as E
+from . import world_map as M
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +215,16 @@ class Agent:
     name: str
     model: str                     # OpenRouter model id; "rule-based" in Phase 1
     archetype: str = "standard"    # Phase 1 rule-agent variant; unused from Phase 2 on
+    # WHICH CITY THIS PERSON IS OF. Empty means the home city, which is what
+    # every agent in every run recorded before 2026-09-03 was, so an old
+    # checkpoint loads with its whole population correctly placed rather than
+    # citizenless. Read it through `World.city_of` rather than directly.
+    #
+    # Citizenship is FIXED. It is not a location -- an agent standing in its own
+    # market and an agent down a spur are equally citizens -- and there is no
+    # action that changes it. The cities do not touch, so there is nowhere to
+    # defect to; what an agent can change is how much its city is worth.
+    city: str = ""
     denari: float = D.STARTING_DENARI
     location: str = "Town"
     in_transit: tuple[str, str, float] | None = None   # (origin, dest, progress 0-1)
@@ -581,6 +592,13 @@ class Business:
     def daily_revenue(self, world: "World") -> float:
         return world.market.revenue_since(self.id, world.sim_time - 24 * 3600.0)
 
+    def daily_profit(self, world: "World") -> float:
+        """What this business EARNED over the last 24 hours, above book value.
+
+        Never negative for valuation purposes -- see `valuation`.
+        """
+        return world.market.margin_since(self.id, world.sim_time - 24 * 3600.0)
+
     def valuation(self, world: "World") -> float:
         """What this business is worth: what it cost, plus what it earns.
 
@@ -599,17 +617,41 @@ class Business:
         that once made founding a business read as a loss -- and ordering stock
         is the behaviour these runs exist to observe.
 
-        Startup cost is the fixed asset, cash and stock are current assets, and
-        3x daily revenue is goodwill; nothing is counted twice. Stock is booked
-        at base price while liquidation pays the NPC buy rate, so net worth runs
-        a little ahead of what a fire sale would realise. That is ordinary book
-        value, and deliberate.
+        Twice the startup cost is the fixed asset, cash and stock are current
+        assets, and 3x daily PROFIT is goodwill; nothing is counted twice. Stock
+        is booked at base price while liquidation pays the NPC buy rate, so net
+        worth runs a little ahead of what a fire sale would realise. That is
+        ordinary book value, and deliberate.
+
+        TWO CHANGES, 2026-09-03, and both are incentives rather than accounting.
+
+        THE COST TERM DOUBLED. Founding used to move net worth sideways: you
+        swapped 450 denari for a business worth 450. Now founding CREATES 450,
+        because the thing these runs exist to observe is agents building rather
+        than drawing wages, and a neutral trade is a weak invitation to take a
+        risk. See `BUSINESS_COST_MULTIPLE`.
+
+        GOODWILL IS ON PROFIT, NOT REVENUE. On revenue, every sale minted three
+        times its price in net worth whether or not the seller made anything --
+        so two agents passing goods back and forth at book price generated
+        unbounded value from a trade that moved nothing into or out of anywhere.
+        Individual scoring limited that, since the counterparty's gain was a
+        rival's gain; CITY scoring counts both sides for you and makes the wash
+        trade dominant. On margin it is worth exactly zero. See `margin_since`.
+
+        LOSSES ARE FLOORED AT ZERO here, and only here. A business selling below
+        book is destroying value and the books already say so -- the stock
+        leaves at base price and less cash comes back. Multiplying that loss by
+        three as well would charge it twice and would make selling to the state
+        at 0.4x book (the only buyer some agents ever have) a catastrophe rather
+        than a bad price. Goodwill is what profitable trade is worth; an
+        unprofitable business simply has none.
         """
         spec = D.BUSINESS_TYPES.get(self.type)
         base = spec.startup_cost if spec else 0.0
         return (
-            base
-            + D.BUSINESS_REVENUE_MULTIPLE * self.daily_revenue(world)
+            D.BUSINESS_COST_MULTIPLE * base
+            + D.BUSINESS_PROFIT_MULTIPLE * max(0.0, self.daily_profit(world))
             + self.cash
             + E.inventory_value(self.inventory)
         )
@@ -744,12 +786,25 @@ class Convoy:
 
 @dataclass
 class Transaction:
+    """One sale, for the price feed.
+
+    `city` is the city the trade happened in. The valleys are separate markets
+    with no road between them, so a Cinderhold agent reading Aldermarch's prices
+    would be reading a market it cannot buy in or sell to -- and worse, the two
+    populations would be quietly informing each other, which is precisely the
+    contamination that isolating them was meant to avoid.
+
+    Defaulted so an older checkpoint's transactions load as the home city's,
+    which is what they were.
+    """
+
     sim_time: float
     item: str
     qty: int
     unit_price: float
     seller: str
     buyer: str
+    city: str = ""
 
 
 @dataclass
@@ -861,6 +916,41 @@ class Market:
     def record(self, t: Transaction) -> None:
         self.transactions.append(t)
 
+    def margin_since(self, seller: str, since: float) -> float:
+        """PROFIT on what `seller` sold at or after `since`, against book value.
+
+        Revenue minus what the goods were worth, rather than revenue. The
+        difference decides whether trading with yourself is a strategy.
+
+        Book price is the yardstick because it is the same yardstick
+        `inventory_value` uses, and the two have to agree or the books
+        contradict themselves. A business holding 100 Grain is credited with
+        100 x base; selling it for exactly base moves that value from stock to
+        cash and creates nothing, which is correct -- no wealth was made, an
+        asset changed form. Selling it ABOVE base is the business earning its
+        keep, and that is what gets capitalised.
+
+        WHY NOT COST OF ACQUISITION. Charging each sale against what the seller
+        actually paid would be truer accounting and needs per-unit cost
+        tracking through production, refining and haulage, which does not
+        exist. Book value is the honest approximation available: it is what
+        every other valuation in this economy already uses.
+
+        A REFINERY IS NOT PENALISED FOR SELLING AT BOOK. Its value-add is
+        already banked -- turning 600 of ore into 4,400 of bronze raises
+        `inventory_value` by 3,800 the moment the bronze exists. The margin
+        term is for trade, not for production; production is paid in stock.
+
+        Walks backwards and stops at the cutoff, like `revenue_since`.
+        """
+        total = 0.0
+        for t in reversed(self.transactions):
+            if t.sim_time < since:
+                break
+            if t.seller == seller:
+                total += (t.unit_price - D.base_price(t.item)) * t.qty
+        return total
+
     def revenue_since(self, seller: str, since: float) -> float:
         """What `seller` took in from sales at or after `since`.
 
@@ -950,10 +1040,20 @@ class ChatMessage:
     text: str
     guild_id: str | None = None      # channel == "guild"
     recipient: str | None = None     # channel == "direct"
+    # The speaker's city, copied from `Agent.city` RAW rather than normalised
+    # through `World.city_of`. "World" chat is a city's marketplace, not a
+    # broadcast across the map: there is no road between the valleys and
+    # shouting does not travel further than walking. Carried on the message
+    # rather than looked up on the sender, so `visible_to` stays a pure function
+    # of two records and a message keeps meaning what it meant when it was
+    # spoken -- which also means both sides of the comparison must be the same
+    # kind of value. Normalising one and not the other made an agent unable to
+    # read its own messages.
+    sender_city: str = ""
 
     def visible_to(self, agent: "Agent") -> bool:
         if self.channel == "world":
-            return True
+            return (self.sender_city or "") == (agent.city or "")
         if self.channel == "direct":
             return agent.id in (self.sender, self.recipient)
         if self.channel == "guild":
@@ -1091,6 +1191,12 @@ class TradeOffer:
 @dataclass
 class World:
     sim_time: float = 0.0            # seconds since hour 0
+    # THE CITIES THIS WORLD CONTAINS, by key, in a stable order. A one-city
+    # world -- everything before 2026-09-03, and still the default -- holds one
+    # entry and behaves exactly as it always did. `world_map` knows how to
+    # describe more cities than any given world actually populates, so this is
+    # the authority on which ones exist, not `M.CITY_KEYS`.
+    cities: list[str] = field(default_factory=lambda: [M.HOME_CITY])
     agents: dict[str, Agent] = field(default_factory=dict)
     businesses: dict[str, Business] = field(default_factory=dict)
     vehicles: dict[str, VehicleInstance] = field(default_factory=dict)
@@ -1147,3 +1253,87 @@ class World:
     def leaderboard(self) -> list[tuple[str, float]]:
         rows = [(a.name, a.net_worth(self)) for a in self.agents.values()]
         return sorted(rows, key=lambda kv: -kv[1])
+
+    # -- cities ------------------------------------------------------------
+
+    def city_of(self, agent: "Agent | str") -> str:
+        """Which city an agent is of. Empty citizenship means the home city.
+
+        Takes an agent or an id, because half the callers hold one and half the
+        other and neither should have to look the other up.
+        """
+        if isinstance(agent, str):
+            found = self.agents.get(agent)
+            if found is None:
+                return self.cities[0]
+            agent = found
+        return agent.city or self.cities[0]
+
+    def agents_in(self, city: str) -> list["Agent"]:
+        return [a for a in self.agents.values() if self.city_of(a) == city]
+
+    def rival_of(self, city: str) -> str | None:
+        """The city this one is competing with, or None in a one-city world."""
+        others = [c for c in self.cities if c != city]
+        return others[0] if others else None
+
+    def is_contest(self) -> bool:
+        return len(self.cities) > 1
+
+    def city_wealth(self, city: str) -> float:
+        """THE SCORE. The sum of every citizen's net worth, living and dead.
+
+        This is the definition of winning, so it is worth being explicit about
+        what it does and does not do.
+
+        IT IS A SUM, NOT A MEAN. Twenty citizens each worth 500 and nineteen
+        citizens each worth 520 with one dead are 10,000 and 9,880: losing a
+        person costs the city that person's entire contribution and is never
+        offset by the survivors averaging higher. That is the intended
+        incentive. Death already wipes an agent's businesses, vehicles and home
+        (`Engine._wipe_assets`), so a corpse contributes roughly its pocket
+        change -- keeping a neighbour alive is worth more to a city than almost
+        anything else one citizen can do for another.
+
+        THE DEAD ARE COUNTED, at whatever they are now worth, rather than
+        dropped. Dropping them would make a city's score RISE when its poorest
+        citizen starved, which is the exact opposite of the thing being
+        measured.
+
+        BUSINESS CASH IS COUNTED ONCE, through the owner, because
+        `Business.valuation` is what `Agent.net_worth` already uses. A business
+        is not a citizen and has no separate seat at the table.
+        """
+        return sum(a.net_worth(self) for a in self.agents_in(city))
+
+    def city_standings(self) -> list[dict[str, Any]]:
+        """Every city, richest first, with the numbers behind the number.
+
+        The shape the observation, the boards and the hourly event all read, so
+        that a citizen, a spectator and the log cannot disagree about who is
+        winning.
+        """
+        rows = []
+        for city in self.cities:
+            people = self.agents_in(city)
+            worths = {a.id: a.net_worth(self) for a in people}
+            total = sum(worths.values())
+            rows.append({
+                "city": city,
+                "name": M.CITIES[city].name if city in M.CITIES else city,
+                "total_net_worth": round(total, 2),
+                "citizens": len(people),
+                "living": sum(1 for a in people if a.alive),
+                "dead": sum(1 for a in people if not a.alive),
+                "businesses": sum(
+                    1 for b in self.businesses.values()
+                    if not b.closed and not b.is_government
+                    and M.city_of(b.location) == city
+                ),
+                "richest": (
+                    max(people, key=lambda a: worths[a.id]).name if people else None
+                ),
+                "mean_net_worth": round(total / len(people), 2) if people else 0.0,
+            })
+        rows.sort(key=lambda r: -r["total_net_worth"])
+        return rows

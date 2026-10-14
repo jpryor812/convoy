@@ -273,7 +273,14 @@ def _enum_for(action: str, param: str) -> list[str] | None:
         # five vehicles stay: a Vehicle Dealer really does stock them.
         return [i for i in D.ALL_ITEMS if i != "On Foot"]
     if param == "destination":
-        return list(D.ALL_PLACES)
+        # EVERY city's places, not just the home one -- the schema is one
+        # cached document shared by every agent in the run, so an enum of one
+        # valley's names would leave the other city's agents unable to name
+        # anywhere they can actually walk. `travel_to` refuses the unreachable
+        # half with a message that says why, which is the honest division of
+        # labour: the schema says what the world contains, the action says what
+        # this agent can reach.
+        return list(M.EVERY_PLACE)
     if param == "vehicle_type":
         return [v for v in D.VEHICLES if v != "On Foot"]
     if param == "type" and action == "start_business":
