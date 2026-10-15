@@ -1038,6 +1038,13 @@ TEMPLATE = r"""<!doctype html>
                border-radius:4px;padding:6px;font:inherit;cursor:pointer}
   .chat button:hover{background:#44562f}
   .chat button:disabled{opacity:.45;cursor:not-allowed}
+  details.note{border-top:1px solid #e3dec9;padding:5px 0}
+  details.note summary{cursor:pointer;list-style:none}
+  details.note summary::-webkit-details-marker{display:none}
+  details.note summary::before{content:"\25B8  ";color:#8d9779}
+  details.note[open] summary::before{content:"\25BE  "}
+  details.note .woke{font-size:11px;color:#8d9779;margin:3px 0 2px}
+  details.note .why{color:#3d4534;white-space:pre-wrap;margin-top:3px}
   .chat input[type=email]{width:100%;box-sizing:border-box;background:#fff;
                  color:#20241a;border:1px solid #cfc9b0;border-radius:4px;
                  padding:6px;font:inherit}
@@ -2194,6 +2201,11 @@ function agentPanel(card){
   h += row("Net worth", `${money(card.net_worth)}<br>`
         + `<span class="none">rank ${card.rank} of ${card.of}</span>`);
 
+  /* THEIR NOTES COME BEFORE THEIR POSSESSIONS. The rest of the card is state
+     anyone could read off a spreadsheet; this is the agent's own account of
+     why, which is the thing worth watching. */
+  h += notesBlock(card.id);
+
   h += `<h3>Carrying</h3>`;
   const carry = Object.entries(card.carrying);
   h += carry.length
@@ -2213,23 +2225,48 @@ function agentPanel(card){
       `${esc(e.business)} &middot; ${esc(e.role)}`, `${money(e.wage)}/h`)).join("");
   }
 
-  /* WHAT THEY SAID, and the reason a replay is worth watching at all. The rest
-     of the card is state; this is the agent's own account of why. Filtered to
-     the slider's hour, because a decision it has not made yet is not something
-     it can be asked about. */
-  const said = (DATA.decisions && DATA.decisions[card.id] || [])
-    .filter(d => d.h <= HOUR).slice(-4).reverse();
-  if (said.length){
-    h += `<h3>What they said</h3>`;
-    h += said.map(d =>
-      `<div style="margin-bottom:7px">`
-      + `<b>h${d.h}</b> ${esc(d.did || "thought about it")}`
-      + `<div class="none" style="font-style:normal;color:#4a5340">`
-      + `${esc(d.why).slice(0, 260)}</div></div>`).join("");
-  }
-
   h += chatBox(card.id, card.name, "them");
   return h;
+}
+
+/* EVERY DECISION, NEWEST FIRST: when, what woke them, what they did, and their
+   own reasoning in full. The newest is open; older ones open on a click, so a
+   seventy-hour agent is a list of headlines rather than a wall of text.
+
+   Read from the decision log the map already carries, not from the server's
+   card -- so it works from the very first decision of a live run, before the
+   run has saved anything, and follows the slider: a decision the agent has
+   not made yet at this hour is not shown. */
+const NOTES_SHOWN = 40;
+function notesBlock(id){
+  const all = (DATA.decisions && DATA.decisions[id] || []).filter(d => d.h <= HOUR);
+  if (!all.length) return `<h3>Their notes</h3><div class="none">no decisions yet</div>`;
+  const shown = all.slice(-NOTES_SHOWN).reverse();
+  let h = `<h3>Their notes <span class="none">(${all.length})</span></h3>`;
+  h += shown.map((d, i) =>
+    `<details class="note"${i === 0 ? " open" : ""}>`
+    + `<summary><b>h${d.h}</b> ${esc(d.did || "thought about it")}</summary>`
+    + (d.woken ? `<div class="woke">woken: ${esc(String(d.woken).replace(/_/g, " "))}</div>` : "")
+    + `<div class="why">${esc(d.why || "(acted without saying why)")}</div>`
+    + `</details>`).join("");
+  if (all.length > NOTES_SHOWN)
+    h += `<div class="none">${all.length - NOTES_SHOWN} earlier notes not shown</div>`;
+  return h;
+}
+
+/* A PERSON WITH NO CARD YET. A live run writes its first save at simulated
+   hour one, and the card -- cash, job, holdings -- comes from that save. This
+   showed "asking the server..." for the whole of that hour. The notes need no
+   save, so show those, and say plainly what is still to come. */
+function noCardPanel(ref){
+  const a = (DATA.agents || []).find(x => x.id === ref.id) || {};
+  const name = a.name || ref.name || ref.id;
+  return `<h2>${esc(name)}</h2>`
+    + (a.model ? `<div class="sub">${esc(a.model)}</div>` : "")
+    + `<div class="sub">Cash, job and holdings appear once the run makes its
+       first save, at simulated hour 1.</div>`
+    + notesBlock(ref.id)
+    + chatBox(ref.id, name, "them");
 }
 
 /* Chat pass: what the server issued for the email this browser gave. Kept in
@@ -2308,6 +2345,7 @@ function chatBox(agentId, who, label){
    works with no server at all; when `?server=` is given it refreshes them from
    the running simulation, and every panel opened after that is current. Same
    page, same shapes -- `convoy/inspect` builds both. */
+let CARDS_ASKED = false;
 async function refreshCards(){
   // The public page's cards are the finished run's, baked in and complete;
   // a server running some other world has nothing to add to them.
@@ -2320,6 +2358,7 @@ async function refreshCards(){
       LIVE_HOUR = data.hour;
     }
   } catch (err) { /* keep the baked cards; the panel says which it is showing */ }
+  CARDS_ASKED = true;
 }
 let LIVE_HOUR = null;
 
@@ -2383,12 +2422,20 @@ async function openPanel(hit){
 
 function renderPanel(hit){
   const card = DATA.cards[hit.ref.id];
+  if (!card && hit.kind === "person" && REPLAY){
+    panelBody.innerHTML = noCardPanel(hit.ref);
+    wireChat();
+    draw();
+    return;
+  }
   if (!card){
     // Not "nothing on record" while a fetch is still in flight -- that reads
-    // as an answer when it is only a wait.
+    // as an answer when it is only a wait. But only WHILE it is in flight:
+    // once the server has answered without this card, say so.
     panelBody.innerHTML = `<h2>${esc(hit.ref.name || hit.ref.type || "?")}</h2>`
-      + `<div class="sub">${SERVER ? "asking the server&hellip;"
-                                   : "nothing on record for " + esc(hit.ref.id)}</div>`;
+      + `<div class="sub">${SERVER && !CARDS_ASKED ? "asking the server&hellip;"
+          : SERVER ? "no details yet -- they appear once the run makes its first save"
+          : "nothing on record for " + esc(hit.ref.id)}</div>`;
     draw();
     return;
   }
