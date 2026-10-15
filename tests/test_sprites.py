@@ -206,7 +206,11 @@ def test_the_snapshot_payload_is_drawable() -> None:
 
 def test_a_real_run_replays() -> None:
     r = _renderer()
-    runs = [d for d in Path("runs/phase2").iterdir()
+    # Local runs if there are any; otherwise the showcase run committed for the
+    # public site -- `runs/` is gitignored, so a fresh clone (and GitHub's
+    # runners) has none, and this used to crash there instead of checking.
+    homes = [Path("runs/phase2"), Path("showcase")]
+    runs = [d for home in homes if home.is_dir() for d in home.iterdir()
             if (d / "events.jsonl").exists()
             and (d / "events.jsonl").stat().st_size > 10_000
             and (d / "checkpoint.json").exists()]

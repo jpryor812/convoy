@@ -1,0 +1,65 @@
+# Tests on every push and pull request; the public site on every push to main.
+#
+# The site is the always-on front door (see PUBLISHING.md): the showcase run
+# replaying, with a waitlist. It is rebuilt from source here rather than
+# committed as HTML, so a change to the viewer reaches the site without anyone
+# remembering to rebuild it.
+name: Tests and site
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # Stdlib only, by design (see serve.py): nothing to install. Every test
+      # file runs even after one fails, so one red run shows every failure.
+      - name: Run the test suite
+        run: |
+          fail=0
+          for t in tests/test_*.py; do
+            python3 "$t" || fail=1
+          done
+          exit $fail
+
+  build:
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build the front door
+        run: python3 preview_world.py --run showcase/20260821-232951 --site _site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

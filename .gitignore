@@ -43,3 +43,12 @@ art/Meshy/
 # The zip beside it is the same thing undone.
 Pipoya RPG World Tileset*/
 Pipoya RPG World Tileset*.zip
+
+# Waitlist emails -- personal data, never committed
+waitlist*
+
+# The built public site -- GitHub Actions builds it; never committed
+_site/
+
+# What visitors asked the showcase agents -- written by serve.py, never committed
+showcase/*/conversations.json

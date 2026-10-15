@@ -22,11 +22,20 @@ The two that matter:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# NO KEY NEEDED, AND NONE USED. Every test here runs on a scripted transport or
+# a zero call budget, but `LiveSession.open` builds a real `LLMPolicy`, which
+# refuses to exist without a key -- so this file passed only on a machine with
+# a `.env`, and failed on GitHub's runners. A placeholder satisfies the
+# constructor; if anything ever did reach the network with it, OpenRouter would
+# reject it rather than bill anyone.
+os.environ.setdefault("OPENROUTER_API_KEY", "test-placeholder-never-valid")
 
 from convoy import checkpoint
 from convoy import live as LV

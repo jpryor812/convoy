@@ -21,6 +21,31 @@
         "8777"
       ],
       "port": 8777
+    },
+    {
+      "name": "public",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "serve.py",
+        "--public",
+        "--port",
+        "8010",
+        "--showcase",
+        "showcase/20260821-232951"
+      ],
+      "port": 8010
+    },
+    {
+      "name": "site",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8778",
+        "--directory",
+        "_site"
+      ],
+      "port": 8778
     }
   ]
 }

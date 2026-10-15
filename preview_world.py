@@ -746,10 +746,66 @@ def build_payload(run: Path | None = None) -> dict:
     }
 
 
+def script_json(value) -> str:
+    """JSON that is safe to paste inside a <script> element.
+
+    `json.dumps` leaves `</script>` alone, and the payload carries text the
+    models wrote -- reasoning, gists, business names. One agent musing about
+    "</script>" would end the script early and turn the rest of the payload into
+    markup. Harmless on a page you built for yourself; not on one served to the
+    public, so it is escaped for both.
+    """
+    return (json.dumps(value)
+            .replace("<", "\\u003c").replace(">", "\\u003e")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+
+
+SITE_CONFIG = Path(__file__).resolve().parent / "site" / "config.json"
+
+
+def site_config() -> dict:
+    """`site/config.json`: where the public page looks for a live server, and
+    where it sends emails when there is none. Empty if the file is missing."""
+    try:
+        return json.loads(SITE_CONFIG.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def render_html(payload: dict, art: dict[str, str] | None = None,
+                served: bool = False, site: dict | None = None) -> str:
+    """The whole page, as a string.
+
+    `served` is True when `serve.py` hands the page out itself: the page then
+    talks to the origin it came from, with no `?server=` to type. A file built
+    with `python3 preview_world.py` stays exactly what it was -- a page that
+    works with no server at all.
+
+    `site` is the public page's config (`site/config.json`). With it the page
+    is the always-on front door: it looks for a live server at start-up and,
+    finding none, is a replay with a waitlist. Without it, nothing changes.
+    """
+    art = collect_assets() if art is None else art
+    return (TEMPLATE
+            .replace("__SERVER__", "location.origin" if served else "null")
+            .replace("__SITE__", script_json(site) if site else "null")
+            .replace("__PROPS__", json.dumps(
+                {k: len(v) for k, v in SP.PROP_SPRITES.items()}))
+            .replace("__PEOPLE__", json.dumps(SP.PERSON_FOR_MODEL))
+            .replace("__DEFAULT_PERSON__", json.dumps(
+                next(iter(SP.PERSON_FOR_MODEL.values()))))
+            .replace("__HAULER__", json.dumps(SP.HAULER))
+            .replace("__DATA__", script_json(payload))
+            .replace("__ART__", script_json(art)))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--run", nargs="?", const="latest", default=None,
                     help="a run directory, or 'latest'; omit for hour zero")
+    ap.add_argument("--site", type=Path, default=None, metavar="DIR",
+                    help="build the public front door into DIR/index.html, "
+                         "configured by site/config.json (what GitHub Pages serves)")
     args = ap.parse_args()
 
     run = None
@@ -760,16 +816,19 @@ def main() -> int:
 
     payload = build_payload(run)
     art = collect_assets()
-    html = (TEMPLATE
-            .replace("__PROPS__", json.dumps(
-                {k: len(v) for k, v in SP.PROP_SPRITES.items()}))
-            .replace("__PEOPLE__", json.dumps(SP.PERSON_FOR_MODEL))
-            .replace("__DEFAULT_PERSON__", json.dumps(
-                next(iter(SP.PERSON_FOR_MODEL.values()))))
-            .replace("__HAULER__", json.dumps(SP.HAULER))
-            .replace("__DATA__", json.dumps(payload))
-            .replace("__ART__", json.dumps(art)))
-    OUT.write_text(html, encoding="utf-8")
+    if args.site:
+        args.site.mkdir(parents=True, exist_ok=True)
+        page = args.site / "index.html"
+        page.write_text(render_html(payload, art, site=site_config()),
+                        encoding="utf-8")
+        # GitHub Pages runs Jekyll over anything without this, which would
+        # only slow the deploy down: there is nothing here for it to build.
+        (args.site / ".nojekyll").write_text("")
+        print(f"wrote {page} -- the public front door, "
+              f"{payload.get('run', 'hour zero')} "
+              f"({page.stat().st_size / 1024:,.0f} KB)")
+        return 0
+    OUT.write_text(render_html(payload, art), encoding="utf-8")
     b = payload["bounds"]
     if payload["mode"] == "replay":
         print(f"wrote {OUT.name} -- replaying {payload['run']} to hour "
@@ -950,6 +1009,11 @@ TEMPLATE = r"""<!doctype html>
                border-radius:4px;padding:6px;font:inherit;cursor:pointer}
   .chat button:hover{background:#44562f}
   .chat button:disabled{opacity:.45;cursor:not-allowed}
+  .chat input[type=email]{width:100%;box-sizing:border-box;background:#fff;
+                 color:#20241a;border:1px solid #cfc9b0;border-radius:4px;
+                 padding:6px;font:inherit}
+  .chat p{margin:0 0 7px}
+  .chat .fine{font-size:11px;color:#7d806f;margin:6px 0 0}
   #reply{margin-top:8px;padding:7px;background:#f1eede;border-radius:4px;
          border:1px solid #ddd8c4;white-space:pre-wrap;display:none}
   #reply.show{display:block}
@@ -965,6 +1029,48 @@ TEMPLATE = r"""<!doctype html>
   #playbtn:hover{background:#44562f}
   #clock input[type=range]{width:min(46vw,460px);accent-color:#c9d6a8}
   #clocktext{color:#f2e9c9;min-width:120px}
+
+  /* THE FRONT DOOR. A pill that says whether this is happening NOW, and -- when
+     it is not -- a card that says so plainly, takes an email for next time, and
+     offers the last run instead of an empty page. */
+  #livepill{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:5;
+            display:none;background:#12160fe8;border:1px solid #46502f;
+            border-radius:999px;padding:5px 14px;color:#f2e9c9;cursor:pointer;
+            white-space:nowrap}
+  #livepill.on{display:block}
+  /* Under an open card, never over it: the card is what you clicked. */
+  body:has(#popup.open) #livepill{visibility:hidden}
+  @media (max-width:1100px){ body:has(#livepill.on) #keys{display:none} }
+  #livepill .dot{display:inline-block;width:8px;height:8px;border-radius:50%;
+                 margin-right:7px;background:#8a8f7e;vertical-align:1px}
+  #livepill.live .dot{background:#e0503c;animation:pulse 1.6s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+  #frontdoor{position:fixed;inset:0;z-index:20;display:none;align-items:center;
+             justify-content:center;background:#0b0e09cc;padding:16px}
+  #frontdoor.open{display:flex}
+  #frontdoor .card{background:#171c12;border:1px solid #46502f;border-radius:10px;
+                   max-width:420px;width:100%;padding:22px 22px 18px;
+                   box-shadow:0 12px 40px #000a}
+  #frontdoor h2{margin:0 0 6px;font-size:17px;color:#f2e9c9}
+  #frontdoor p{margin:0 0 14px;color:#c9c3b0}
+  #frontdoor form{display:flex;gap:8px;margin-bottom:6px}
+  #frontdoor input[type=email]{flex:1;min-width:0;background:#0f130c;color:#e8e4d8;
+                   border:1px solid #46502f;border-radius:5px;padding:8px 10px;
+                   font:inherit}
+  #frontdoor button{background:#44562f;color:#f2e9c9;border:1px solid #5d7140;
+                    border-radius:5px;padding:8px 12px;font:inherit;cursor:pointer}
+  #frontdoor button:hover{background:#56703a}
+  #frontdoor .hp{position:absolute;left:-9999px}
+  #frontdoor .msg{min-height:1.5em;color:#9dd17a;margin-bottom:10px}
+  #frontdoor .msg.err{color:#e8a06a}
+  #frontdoor .or{display:flex;align-items:center;gap:10px;color:#7d806f;margin:6px 0 12px}
+  #frontdoor .or::before,#frontdoor .or::after{content:"";flex:1;border-top:1px solid #33402a}
+  #frontdoor .watch{width:100%;background:#2c3720}
+  #frontdoor .stay{display:block;margin:10px auto 0;background:none;border:0;
+                   color:#9a9d8c;text-decoration:underline;padding:4px}
+  #frontdoor .stay:hover{background:none;color:#e8e4d8}
+  #frontdoor .stay[hidden]{display:none}
+  #frontdoor .fine{font-size:11px;color:#7d806f;margin:12px 0 0}
 </style></head><body>
 <canvas id="c"></canvas>
 <div id="boards-nav">
@@ -982,6 +1088,28 @@ TEMPLATE = r"""<!doctype html>
   <span id="clocktext"></span></div>
 <div id="popup"><button id="close" title="close">&times;</button>
   <div id="popup-body"></div></div>
+<div id="livepill" title=""><span class="dot"></span><span id="livetext"></span></div>
+<div id="frontdoor" role="dialog" aria-modal="true" aria-labelledby="fd-title">
+  <div class="card">
+    <h2 id="fd-title">No simulation is running right now</h2>
+    <p id="fd-sub">Twenty AI agents run a Bronze Age economy &mdash; farming, mining,
+      hauling, getting robbed. Leave your email and we&rsquo;ll tell you when the next
+      one starts.</p>
+    <form id="fd-form" novalidate>
+      <input type="email" id="fd-email" placeholder="you@example.com"
+             autocomplete="email" required maxlength="254">
+      <input type="text" class="hp" id="fd-website" tabindex="-1" autocomplete="off"
+             aria-hidden="true">
+      <button type="submit">Notify me</button>
+    </form>
+    <div class="msg" id="fd-msg"></div>
+    <div class="or" id="fd-or">or</div>
+    <button class="watch" id="fd-watch">Watch the last run &rarr;</button>
+    <button class="stay" id="fd-stay" hidden>or keep watching the last run</button>
+    <p class="fine" id="fd-fine">You must be 13 or older. We only use your email
+      to tell you about new runs.</p>
+  </div>
+</div>
 <div id="keys"><span>click</span> a building or a person &nbsp; <span>drag</span> pan
   &nbsp; <span>wheel</span> zoom &nbsp; <span>0</span> whole valley</div>
 <script>
@@ -1933,7 +2061,11 @@ let HOVER = null, SELECTED = null;
    the chat box says so plainly rather than posting into the void and failing
    silently -- an "Ask" button that does nothing is worse than one that explains
    it cannot. Point this at a running `serve.py` and the same UI works live. */
-const SERVER = new URLSearchParams(location.search).get("server") || null;
+const SITE = __SITE__;
+let SERVER = new URLSearchParams(location.search).get("server") || __SERVER__;
+/* Every request names the run this page is showing, so a question asked after
+   the server has moved on to another run still reaches THIS run's agent. */
+const api = (path) => `${SERVER}${path}` + (DATA.run ? `?run=${encodeURIComponent(DATA.run)}` : "");
 
 const esc = (t) => String(t).replace(/[&<>"]/g,
   ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[ch]));
@@ -2034,13 +2166,73 @@ function agentPanel(card){
   return h;
 }
 
+/* Chat pass: what the server issued for the email this browser gave. Kept in
+   localStorage so a visitor types it once -- and in memory as well, because
+   storage can be blocked, and a blocked store must not mean asking again on
+   every click. */
+let PASS_MEMO = null;
+function chatPass(){
+  try { return localStorage.getItem("convoy.pass") || PASS_MEMO; }
+  catch (err) { return PASS_MEMO; }
+}
+function setChatPass(v){
+  PASS_MEMO = v;
+  try { v ? localStorage.setItem("convoy.pass", v) : localStorage.removeItem("convoy.pass"); }
+  catch (err) { /* memory copy is enough for this visit */ }
+}
+const EMAIL_OK = /^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/;
+
+/* The newsletter, if the site has one: the same address goes there too, so
+   there is one list to write to. `no-cors` because a mailing service will not
+   answer a page on another origin; the post still lands. */
+function subscribeElsewhere(email){
+  const f = SITE && SITE.waitlist_form;
+  if (!f || !f.action) return false;
+  fetch(f.action, {method: "POST", mode: "no-cors",
+    body: new URLSearchParams({[f.field || "email"]: email})}).catch(() => {});
+  return true;
+}
+
 function chatBox(agentId, who, label){
+  /* THE PUBLIC PAGE WITH NOBODY HOME. No server, so nobody can answer -- say
+     when that changes rather than offering a box that cannot work. */
+  if (SITE && !SERVER){
+    return `<h3>Talk to ${esc(who)}</h3>
+    <div class="chat">
+      <p>Talking to the agents opens while a simulation is live.</p>
+      <div class="btns"><button data-act="notify">Tell me when the next one starts</button></div>
+    </div>`;
+  }
+  /* A server is up, but it is running a DIFFERENT world. These agents are not
+     in it, so send the visitor to the one that is rather than ask a stranger. */
+  if (SITE && STATUS && STATUS.run !== DATA.run){
+    return `<h3>Talk to ${esc(who)}</h3>
+    <div class="chat">
+      <p>This is a past run. A new simulation is live &mdash; its agents are
+        the ones you can talk to.</p>
+      <div class="btns"><button data-act="golive">Watch the live run</button></div>
+    </div>`;
+  }
+  /* EMAIL FIRST, on a public server. Watching is free; talking costs money,
+     and asking for an address is how the list grows from the people who
+     cared enough to ask something. */
+  if (STATUS && STATUS.needs_pass && !chatPass()){
+    return `<h3>Talk to ${esc(who)}</h3>
+    <div class="chat" data-agent="${esc(agentId)}">
+      <p>Enter your email to talk to the agents. We&rsquo;ll also let you know
+        when the next simulation starts.</p>
+      <input type="email" placeholder="you@example.com" autocomplete="email" maxlength="254">
+      <div class="btns"><button data-act="pass">Start talking</button></div>
+      <p class="fine">You must be 13 or older.</p>
+      <div id="reply"></div>
+    </div>`;
+  }
   return `<h3>Talk to ${esc(who)}</h3>
     <div class="chat" data-agent="${esc(agentId)}">
       <textarea placeholder="Ask ${esc(label)} a question, or suggest what to do next."></textarea>
       <div class="btns">
         <button data-act="ask">Ask</button>
-        <button data-act="advise">Advise</button>
+        ${CAN_ADVISE ? '<button data-act="advise">Advise</button>' : ""}
       </div>
       <div id="reply"></div>
     </div>`;
@@ -2051,9 +2243,11 @@ function chatBox(agentId, who, label){
    the running simulation, and every panel opened after that is current. Same
    page, same shapes -- `convoy/inspect` builds both. */
 async function refreshCards(){
-  if (!SERVER) return;
+  // The public page's cards are the finished run's, baked in and complete;
+  // a server running some other world has nothing to add to them.
+  if (!SERVER || SITE) return;
   try {
-    const res = await fetch(`${SERVER}/cards`);
+    const res = await fetch(api("/cards"));
     const data = await res.json();
     if (data.cards){
       DATA.cards = data.cards;
@@ -2186,6 +2380,41 @@ function wireChat(){
   if (!box) return;
   const area = box.querySelector("textarea");
   const reply = box.querySelector("#reply");
+  const notify = box.querySelector('[data-act="notify"]');
+  if (notify){ notify.onclick = () => openDoor(); return; }
+  const golive = box.querySelector('[data-act="golive"]');
+  if (golive){ golive.onclick = () => { location.href = SERVER + "/"; }; return; }
+  const passBtn = box.querySelector('[data-act="pass"]');
+  if (passBtn){
+    const input = box.querySelector("input[type=email]");
+    const go = async () => {
+      const email = input.value.trim();
+      reply.classList.add("show");
+      if (!EMAIL_OK.test(email)){
+        reply.textContent = "That doesn\u2019t look like an email address."; return;
+      }
+      passBtn.disabled = true; reply.textContent = "one moment\u2026";
+      try {
+        const res = await fetch(api("/waitlist"), {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({email, source: "chat"}),
+        });
+        const data = await res.json();
+        if (!data.pass) throw new Error(data.error || "no pass came back");
+        setChatPass(data.pass);
+        subscribeElsewhere(email);
+        if (SELECTED) renderPanel(SELECTED);
+        const fresh = panelBody.querySelector(".chat textarea");
+        if (fresh) fresh.focus();
+      } catch (err) {
+        reply.textContent = `Couldn\u2019t do that: ${err.message || err}`;
+        passBtn.disabled = false;
+      }
+    };
+    passBtn.onclick = go;
+    input.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+    return;
+  }
   for (const btn of box.querySelectorAll("button")) btn.onclick = async () => {
     const text = area.value.trim();
     if (!text) return;
@@ -2201,15 +2430,28 @@ function wireChat(){
     for (const b of box.querySelectorAll("button")) b.disabled = true;
     reply.textContent = act === "ask" ? "asking..." : "sending..."; reply.classList.add("show");
     try {
-      const res = await fetch(`${SERVER}/agent/${box.dataset.agent}/${act}`, {
+      const res = await fetch(api(`/agent/${box.dataset.agent}/${act}`), {
         method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify(act === "ask"
-          ? {question: text, who: "a viewer"}
-          : {text: text, from_who: "a viewer"}),
+          ? {question: text, who: "a viewer", pass: chatPass()}
+          : {text: text, from_who: "a viewer", pass: chatPass()}),
       });
       const data = await res.json();
-      reply.textContent = data.error ? `error: ${data.error}`
-        : (data.text || data.answer || JSON.stringify(data, null, 1));
+      if (res.status === 401 && data.needs_pass){
+        // A pass this server does not recognise -- a new server, a new
+        // secret. Ask for the email again rather than failing forever.
+        setChatPass(null);
+        if (STATUS) STATUS.needs_pass = true;
+        if (SELECTED) renderPanel(SELECTED);
+        return;
+      }
+      // A limit is a message for the visitor, not an error to debug.
+      reply.textContent = data.error
+        ? (res.status === 429 ? data.error : `error: ${data.error}`)
+        : (data.text || data.answer || JSON.stringify(data, null, 1))
+          + (typeof data.questions_left === "number"
+             ? `\n\n(${data.questions_left} question${data.questions_left === 1 ? "" : "s"} left today)`
+             : "");
       if (!data.error) area.value = "";
     } catch (err) {
       reply.textContent = `could not reach ${SERVER}: ${err}`;
@@ -2731,6 +2973,188 @@ addEventListener("resize", placePanels);
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && openBoard) showBoard(null);
 });
+
+/* ------------------------------------------------------------ front door
+
+   WHETHER THIS IS HAPPENING NOW. With a server behind the page, `/status` says
+   whether a simulation is running. If one is, the map keeps up with it: the
+   page asks for the new hours as they are written and, if you were watching
+   the present, carries you along. If none is, a card says so in plain words,
+   takes an email for the next one, and offers the last run -- which is still
+   fully interactive: its agents can be asked about everything they did.
+
+   Without a server none of this exists; the page is the static replay it
+   always was. */
+let STATUS = null, CAN_ADVISE = !SERVER;
+const pill = document.getElementById("livepill");
+const pilltext = document.getElementById("livetext");
+const door = document.getElementById("frontdoor");
+const fdMsg = document.getElementById("fd-msg");
+
+const fd = id => document.getElementById(id);
+/* Can this page take an email right now? Through the server if there is one,
+   or the site's newsletter if not. If neither, the form would swallow
+   addresses into nothing, so it is not shown at all. */
+const canCollect = () => !!SERVER || !!(SITE && SITE.waitlist_form && SITE.waitlist_form.action);
+
+/* Two cards in one. "offline": nothing is running -- leave an email or watch
+   the last run. "live": the public page found a simulation running somewhere
+   else -- go and watch it. */
+function openDoor(mode){
+  const live = mode === "live";
+  fd("fd-title").textContent = live ? "A simulation is live right now"
+                                    : "No simulation is running right now";
+  fd("fd-sub").textContent = live
+    ? "Twenty AI agents are running a Bronze Age economy as we speak \u2014 "
+      + "farming, mining, hauling, getting robbed. Watch it happen, and click "
+      + "anyone to talk to them."
+    : "Twenty AI agents run a Bronze Age economy \u2014 farming, mining, "
+      + "hauling, getting robbed. "
+      + (canCollect() ? "Leave your email and we\u2019ll tell you when the "
+                        + "next one starts." : "Check back soon for the next one.");
+  const showForm = !live && canCollect();
+  fd("fd-form").style.display = showForm ? "" : "none";
+  fd("fd-msg").style.display = showForm ? "" : "none";
+  fd("fd-or").style.display = showForm ? "" : "none";
+  fd("fd-fine").style.display = showForm ? "" : "none";
+  const watch = fd("fd-watch");
+  fd("fd-stay").hidden = !live;
+  fd("fd-stay").onclick = closeDoor;
+  if (live){
+    watch.innerHTML = "Watch it live &rarr;";
+    watch.onclick = () => { location.href = SERVER + "/"; };
+  } else {
+    watch.innerHTML = "Watch the last run &rarr;";
+    watch.onclick = closeDoor;
+  }
+  door.classList.add("open");
+  if (showForm) setTimeout(() => fd("fd-email").focus(), 50);
+}
+function closeDoor(){ door.classList.remove("open"); }
+door.addEventListener("click", e => { if (e.target === door) closeDoor(); });
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && door.classList.contains("open")) closeDoor();
+});
+
+function showPill(){
+  if (!STATUS){ pill.classList.remove("on"); return; }
+  pill.classList.add("on");
+  pill.classList.toggle("live", !!STATUS.live);
+  if (STATUS.live && STATUS.run !== DATA.run){
+    pilltext.textContent = "A simulation is live now \u2014 click to watch";
+    pill.onclick = () => { location.href = SERVER + "/"; };
+  } else if (STATUS.live){
+    pilltext.textContent = `LIVE · hour ${Number(STATUS.hour).toFixed(1)}`
+      + ` · click anyone to talk to them`;
+    pill.onclick = () => { setPlaying(false); setHour(DATA.end_hour); };
+  } else if (STATUS.run !== DATA.run && DATA.run && !SITE){
+    pilltext.textContent = "This run has ended · get notified of the next one";
+    pill.onclick = openDoor;
+  } else {
+    pilltext.textContent = "Last run · get notified of the next one";
+    pill.onclick = openDoor;
+  }
+}
+
+async function pullReplay(){
+  const atEdge = HOUR >= DATA.end_hour - 0.05;
+  let p;
+  try { p = await (await fetch(api("/replay"))).json(); } catch (err) { return; }
+  if (!p || p.run !== DATA.run || p.mode !== "replay") return;
+  Object.assign(DATA, p);
+  for (const k of Object.keys(BUILDING_BY_ID)) delete BUILDING_BY_ID[k];
+  for (const b of (DATA.buildings || [])) BUILDING_BY_ID[b.id] = b;
+  for (const k of Object.keys(BOARDS)) delete BOARDS[k];
+  Object.assign(BOARDS, DATA.boards || {});
+  _rankHour = null;
+  slider.max = DATA.end_hour;
+  // Watching the present: stay on it. Scrubbing the past: stay where you were.
+  if (atEdge && !playing) setHour(DATA.end_hour);
+  else { slider.value = HOUR; draw(); }
+  if (openBoard) showBoard(openBoard);
+}
+
+async function pollStatus(first){
+  try {
+    STATUS = await (await fetch(`${SERVER}/status`)).json();
+  } catch (err) { STATUS = null; showPill(); return; }
+  CAN_ADVISE = !!STATUS.can_advise;
+  showPill();
+  if (first && !STATUS.live) openDoor();
+  if (STATUS.live && STATUS.run === DATA.run &&
+      STATUS.hour > DATA.end_hour + 0.02) await pullReplay();
+}
+
+document.getElementById("fd-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const email = document.getElementById("fd-email").value.trim();
+  fdMsg.classList.remove("err");
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(email)){
+    fdMsg.textContent = "That doesn’t look like an email address.";
+    fdMsg.classList.add("err"); return;
+  }
+  fdMsg.textContent = "saving\u2026";
+  if (document.getElementById("fd-website").value){
+    fdMsg.textContent = "You\u2019re on the list."; return;   // a bot; say nothing more
+  }
+  try {
+    let data = {ok: true, already: false};
+    if (SERVER){
+      const res = await fetch(api("/waitlist"), {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({email}),
+      });
+      data = await res.json();
+      if (data.error) throw new Error(data.error);
+      if (data.pass) setChatPass(data.pass);   // they can talk now, too
+    }
+    subscribeElsewhere(email);
+    fdMsg.textContent = data.already
+      ? "You’re already on the list — we’ll be in touch."
+      : "You’re on the list. We’ll email you when the next run starts.";
+    document.getElementById("fd-email").value = "";
+  } catch (err) {
+    fdMsg.textContent = `Couldn’t save that: ${err.message || err}`;
+    fdMsg.classList.add("err");
+  }
+});
+
+/* THE PUBLIC PAGE (GitHub Pages). It cannot know where a live server is
+   until it asks: `site/config.json` names a small file -- `live.json` on the
+   repository's `live` branch -- that `go_live.py` writes when a simulation
+   starts and clears when it stops. No server named, or the one named is not
+   answering: the page is the last run, with a waitlist. */
+async function sitePoll(first){
+  let server = null, st = null;
+  try {
+    const j = await (await fetch(`${SITE.live_json}?t=${Date.now()}`,
+                                 {cache: "no-store"})).json();
+    // https only -- except this machine, so the whole flow can be tried
+    // locally before anything is public.
+    if (j && typeof j.server === "string" &&
+        /^(https:\/\/[^\s"<>]+|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?)$/.test(j.server))
+      server = j.server.replace(/\/+$/, "");
+  } catch (err) { /* no file, no network: nothing is live */ }
+  if (server){
+    try { st = await (await fetch(`${server}/status`)).json(); }
+    catch (err) { st = null; }            // named, but gone: treat as offline
+  }
+  const was = SERVER;
+  SERVER = st ? server : null;
+  STATUS = st || {live: false, run: DATA.run, needs_pass: false};
+  CAN_ADVISE = false;                     // never from the public page
+  showPill();
+  if (was !== SERVER && SELECTED) renderPanel(SELECTED);
+  if (first) openDoor(STATUS.live && STATUS.run !== DATA.run ? "live" : undefined);
+}
+
+if (REPLAY && SITE && SITE.live_json && !SERVER){
+  sitePoll(true);
+  setInterval(() => sitePoll(false), 60000);
+} else if (SERVER && REPLAY){
+  pollStatus(true);
+  setInterval(() => pollStatus(false), 30000);
+}
 </script></body></html>
 """
 
