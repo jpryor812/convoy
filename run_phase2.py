@@ -45,7 +45,7 @@ from convoy.state import Agent, World
 from convoy.world_setup import new_world
 
 RUN_DIR = Path("runs/phase2")
-DEFAULT_MODEL = "openai/gpt-5.6-luna"     # cheapest model with structured outputs
+DEFAULT_MODEL = "openai/gpt-6-luna"       # cheapest model with structured outputs
 
 
 # Decisions held back so that running out of budget cannot kill an agent.
@@ -433,6 +433,19 @@ def main() -> int:
              "hour and its stores spill onto the ground. Tests whether the "
              "economy can stand without a buyer of last resort.",
     )
+    ap.add_argument(
+        "--state-exits-city", default=None, metavar="CITY",
+        help="with --state-exits-at in a two-city run: the state leaves THIS "
+             "city only (aldermarch or cinderhold) and stays in the other for "
+             "the whole run. Omit to withdraw from every city at once.",
+    )
+    ap.add_argument(
+        "--runs-dir", type=Path, default=RUN_DIR,
+        help=f"where the run folder is made (default {RUN_DIR}). Point smoke "
+             "tests elsewhere, e.g. runs/smoke: the public server (go_live.py) "
+             f"follows the newest run under {RUN_DIR} and would show a smoke "
+             "test to the world as the live simulation.",
+    )
     ap.add_argument("--dry-run", action="store_true", help="build prompts, call nothing")
     ap.add_argument("--max-actions", type=int, default=llm.MAX_ACTIONS_PER_DECISION)
     ap.add_argument(
@@ -441,6 +454,19 @@ def main() -> int:
              "remaining limit, so a high ceiling on a capped key causes 402s.",
     )
     args = ap.parse_args()
+
+    # Refused here, before a key is read or a world is built: a typo in the city
+    # would otherwise run the whole contest with the state never leaving, and
+    # nothing would say so until somebody looked at hour 36.
+    if args.state_exits_city is not None:
+        city = args.state_exits_city.lower()
+        in_play = M.CITY_KEYS[:args.cities]
+        if city not in in_play:
+            ap.error(f"--state-exits-city must be one of {', '.join(in_play)}"
+                     f" in a {args.cities}-city run, not {args.state_exits_city!r}")
+        if args.state_exits_at is None:
+            ap.error("--state-exits-city needs --state-exits-at HOUR")
+        args.state_exits_city = city
 
     load_env()
     if not args.dry_run and not os.environ.get("OPENROUTER_API_KEY"):
@@ -484,7 +510,7 @@ def main() -> int:
         # silently interleaves runs with only sim_start to tell them apart --
         # which made the first live runs painful to read back.
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        run_dir = RUN_DIR / stamp
+        run_dir = args.runs_dir / stamp
         run_dir.mkdir(parents=True, exist_ok=True)
         log = EventLog(run_dir / "events.jsonl", echo_min=Significance.HIGH)
         if args.cities > 1:
@@ -550,6 +576,7 @@ def main() -> int:
             # with nothing recoverable.
             checkpoint_every_hours=1.0 if not args.dry_run else 1e9,
             state_exits_at=args.state_exits_at,
+            state_exits_city=args.state_exits_city,
         ),
         on_checkpoint=None if args.dry_run else _checkpoint_hook(
             world, log, run_dir, args.day_hours, advisor

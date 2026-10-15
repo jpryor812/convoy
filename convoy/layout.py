@@ -541,6 +541,42 @@ def river_axis() -> float:
     return (junction_center(home.hills).y + junction_center(home.market).y) / 2.0
 
 
+# THE RIVER BETWEEN THE CITIES. Not a road obstacle and not a crossing -- there
+# is no road between the valleys and this does not add one. It is how the map
+# says "two places" at a glance: on a page with both cities, open grass between
+# them read as one sprawling settlement with a gap in it.
+#
+# Wider than the valley river, so the eye ranks it as the bigger feature.
+BORDER_RIVER_HALF_WIDTH = 92.0
+# Nothing of either city may stand within this of the water: banks, not shore.
+BORDER_RIVER_CLEARANCE = 30.0
+
+
+def border_rivers(cities: list[str] | None = None) -> list[float]:
+    """The centre of the river between each pair of neighbouring valleys, as a
+    lateral position (world x): the middle of the open ground between the
+    northern city's southernmost anything and the southern city's northernmost.
+
+    NOT halfway between the roads. A valley is not symmetric about its road --
+    the spurs fan out further on one side -- and the road midpoint put the
+    water ten metres from Aldermarch's last tree and two hundred from
+    Cinderhold's. `check()` proves neither city reaches it."""
+    cities = cities or [M.HOME_CITY]
+    if len(cities) < 2:
+        return []
+    places = build(cities)
+
+    def reach(city: str) -> tuple[float, float]:
+        xs = [q.x for p in places.values() if M.city_of(p.name) == city
+              for q in (p.center, *p.parcels, *p.props, *(p.path or []))]
+        return min(xs), max(xs)
+
+    axes = []
+    for a, b in zip(cities, cities[1:]):
+        axes.append((reach(a)[1] + reach(b)[0]) / 2.0)
+    return axes
+
+
 def in_river(y: float, margin: float = 0.0) -> bool:
     """Is this position along the valley in the water?"""
     return abs(y - river_axis()) < RIVER_HALF_WIDTH + margin
@@ -900,6 +936,27 @@ def check(cities: list[str] | None = None) -> list[str]:
             f"road segments are drawn unequal ({min(lengths.values()):.0f}-"
             f"{max(lengths.values()):.0f}m) -- the engine makes them the same distance"
         )
+    # The water between the valleys, when there is more than one.
+    if cities and len(cities) > 1:
+        problems += check_border_rivers(cities)
+    return problems
+
+
+def check_border_rivers(cities: list[str]) -> list[str]:
+    """Nothing of either city -- centre, parcel, prop or spur -- in the water
+    between them. The gap is measured, not assumed: widen a spur or the river
+    and this is where it shows."""
+    problems: list[str] = []
+    places = build(cities)
+    reach = BORDER_RIVER_HALF_WIDTH + BORDER_RIVER_CLEARANCE
+    for axis in border_rivers(cities):
+        for p in places.values():
+            pts = [p.center, *p.parcels, *p.props, *(p.path or [])]
+            for q in pts:
+                if abs(q.x - axis) < reach:
+                    problems.append(f"{p.name}: something at x={q.x:.0f} is within "
+                                    f"{reach:.0f}m of the border river at {axis:.0f}")
+                    break
     return problems
 
 

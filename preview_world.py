@@ -141,7 +141,11 @@ def cities_of(run: Path | None) -> list[str]:
         return [M.HOME_CITY]
     cp = run / "checkpoint.json"
     if not cp.exists():
-        return [M.HOME_CITY]
+        # A LIVE RUN HAS NO CHECKPOINT FOR ITS FIRST SIMULATED HOUR, and the
+        # public site serves runs while they happen. Falling back to the home
+        # city drew a two-city contest as one valley until hour one. The log
+        # already names places in both; read the cities off those.
+        return _cities_from_log(run)
     try:
         raw = json.loads(cp.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -152,6 +156,28 @@ def cities_of(run: Path | None) -> list[str]:
     # valley with half its places missing.
     found = decode(raw.get("cities"))
     keep = [c for c in (found or []) if c in M.CITIES]
+    return keep or [M.HOME_CITY]
+
+
+def _cities_from_log(run: Path, lines: int = 4000) -> list[str]:
+    found: set[str] = set()
+    try:
+        with (run / "events.jsonl").open(encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if i >= lines:
+                    break
+                try:
+                    where = json.loads(line).get("location")
+                except ValueError:
+                    continue
+                if where:
+                    try:
+                        found.add(M.city_of(where))
+                    except (KeyError, ValueError):
+                        continue
+    except OSError:
+        pass
+    keep = [c for c in M.CITY_KEYS if c in found]
     return keep or [M.HOME_CITY]
 
 
@@ -713,7 +739,10 @@ def build_payload(run: Path | None = None) -> dict:
         "parcel_m": L.PARCEL_PITCH,
         "block_m": L.BLOCK_PITCH,
         "stride_m": L.BLOCK_STRIDE,
-        "river": {"axis": L.river_axis(), "half": L.RIVER_HALF_WIDTH},
+        "river": {"axis": L.river_axis(), "half": L.RIVER_HALF_WIDTH,
+                  # The water between the cities; empty for one valley.
+                  "borders": [{"axis": x, "half": L.BORDER_RIVER_HALF_WIDTH}
+                              for x in L.border_rivers(cities)]},
         # `wx`/`wy` turn these into screen pixels; the replay interpolates an
         # agent between two of them to draw it moving along the road.
         "places": [
@@ -1573,7 +1602,12 @@ function updateClock(){
 let framed = false;
 function resize(){
   c.width = innerWidth; c.height = innerHeight;
-  if (!framed && c.width > 0 && c.height > 0){ framed = true; centreOn(OPEN_ON); }
+  if (!framed && c.width > 0 && c.height > 0){
+    framed = true;
+    // A CONTEST OPENS ON BOTH CITIES. The comparison is the point; opening on
+    // one market left the other valley entirely off screen.
+    if (CONTEST) frameAll(); else centreOn(OPEN_ON);
+  }
   else clampPan();
   draw();
 }
@@ -1621,12 +1655,17 @@ function hash(x, y){
    first version drew, reads as a village duck pond and explains nothing. */
 const RIVER_X = (DATA.river.axis - B.miny) * PPM;
 const RIVER_HALF = DATA.river.half * PPM;
+/* The river BETWEEN the cities, running across the page (the cities are
+   stacked north and south). World x is screen y, so its axis is a screen y. */
+const BORDERS = (DATA.river.borders || []).map(r => ({
+  y: (r.axis - B.minx) * PPM, half: r.half * PPM}));
 
 /* Everything else is one terrain per place, nearest wins, grass otherwise.
    Cheap and good enough: places are far apart and the transition falls in open
    country where nobody is looking for a coastline. */
 function groundAt(px, py){
   if (Math.abs(px - RIVER_X) < RIVER_HALF) return "water";
+  for (const r of BORDERS) if (Math.abs(py - r.y) < r.half) return "water";
   let best = null, bd = Infinity;
   for (const p of DATA.places){
     if (p.ground === "grass" || p.ground === "water") continue;
@@ -1910,6 +1949,31 @@ function drawFlags(){
   }
 }
 
+/* WHICH CITY IS WHICH, written on the ground above each valley -- the place
+   labels name a junction, and nothing on the page said "this is Aldermarch".
+   A fixed size on screen at any zoom, and only in a contest. */
+function drawCityNames(){
+  if (!CONTEST) return;
+  const fs = 20 / zoom;
+  g.font = `bold ${fs}px ui-monospace,Menlo,monospace`;
+  g.textAlign = "center"; g.textBaseline = "alphabetic";
+  CITIES.forEach((city, i) => {
+    const pts = DATA.places.filter(p => city.places.includes(p.name));
+    if (!pts.length) return;
+    // AT THE WEST END OF THE VALLEY, level with its road. Above the valley it
+    // sat on top of the spur names; out here there is only grass.
+    const xs = pts.map(wx), ys = pts.map(wy);
+    const label = city.name.toUpperCase();
+    const w = g.measureText(label).width + 22 / zoom;
+    const x = Math.min(...xs) - 90 * PPM - w / 2;
+    const y = (Math.min(...ys) + Math.max(...ys)) / 2 + fs / 3;
+    g.fillStyle = "#0d1108d9";
+    g.fillRect(x - w / 2, y - fs - 6 / zoom, w, fs + 14 / zoom);
+    g.fillStyle = i === 0 ? "#9dc4e8" : "#e8b48a";
+    g.fillText(label, x, y);
+  });
+}
+
 function draw(){
   if (!ready) return;
   g.setTransform(1, 0, 0, 1, 0, 0);
@@ -2011,6 +2075,8 @@ function draw(){
 
      They matter more than they did. With two valleys on one page, the name over
      a settlement is what tells you which city you are looking at. */
+  drawCityNames();
+
   if (zoom < 0.75){
     g.font = `${Math.round(13 / zoom)}px ui-monospace,monospace`;
     g.textAlign = "center";
@@ -2531,7 +2597,10 @@ const OPEN_ON = (CITIES[0] && CITIES[0].market) || "Town";
 function frameCity(key){
   const city = CITIES.find(q => q.key === key);
   if (!city) return;
-  const pts = DATA.places.filter(p => city.places.includes(p.name));
+  framePlaces(DATA.places.filter(p => city.places.includes(p.name)));
+}
+function frameAll(){ framePlaces(DATA.places); }
+function framePlaces(pts){
   if (!pts.length) return;
   const xs = pts.map(wx), ys = pts.map(wy);
   const w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);

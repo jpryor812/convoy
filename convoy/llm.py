@@ -135,7 +135,7 @@ class LLMPolicy:
         briefing would be correct and ruinous.
         """
         city = world.city_of(agent)
-        gone = world.state_withdrawn_at is not None
+        gone = world.state_gone_at(city) is not None
         key = (city, gone)
         if key not in self._prefixes:
             self._prefixes[key] = (

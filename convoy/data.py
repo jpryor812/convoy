@@ -1054,7 +1054,11 @@ MODEL_ROSTER: list[ModelSlot] = [
     # a 120-hour comparison (designer decision, 2026-08-11).
     ModelSlot("DeepSeek V4 Flash 0731", "deepseek/deepseek-v4-flash-0731", 15, "max", True, 0.09, 0.18),
     ModelSlot("Grok 4.3", "x-ai/grok-4.3", 15, "minimal", True, 1.25, 2.50),
-    ModelSlot("GPT-5.6 Luna", "openai/gpt-5.6-luna", 15, "medium", True, 0.10, 0.60),
+    # GPT-6 Luna replaced GPT-5.6 Luna on 2026-10-14: same tools, structured
+    # outputs and reasoning controls, at half the input price and 42% of the
+    # output price ($0.10 / $0.50 per Mtok, cached input $0.01). Kept at the
+    # SAME effort, so the switch changes the model and nothing else.
+    ModelSlot("GPT-6 Luna", "openai/gpt-6-luna", 15, "medium", True, 0.10, 0.50),
 ]
 
 # The roster pins a reasoning effort per model, and it is part of the experiment
@@ -1066,6 +1070,11 @@ EFFORT_BY_MODEL: dict[str, str] = {
     s.openrouter_id: s.reasoning_effort
     for s in MODEL_ROSTER if s.reasoning_effort
 }
+# RETIRED FROM THE ROSTER, NOT FROM THE RECORD. Every run before 2026-10-14 was
+# GPT-5.6 Luna at medium effort; resuming or branching one of them must still
+# send that effort, or it continues at the provider's default and is quietly a
+# different experiment from the hours before it.
+EFFORT_BY_MODEL.setdefault("openai/gpt-5.6-luna", "medium")
 
 # COMBAT MODEL -- designer override of the Combat & Heroes tab (2026-08-11).
 #
