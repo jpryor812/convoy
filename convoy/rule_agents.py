@@ -33,9 +33,16 @@ BUSINESS_THRESHOLD = D.BUSINESS_TYPES["Farm"].startup_cost + 120.0
 # ---------------------------------------------------------------------------
 
 def _nearest(world: World, agent: Agent, btype: str):
-    """Closest non-closed business of `btype` by travel time."""
+    """Closest non-closed business of `btype` IN THIS AGENT'S CITY, by travel time.
+
+    Scoped to the city because `travel_seconds` raises for a pair of places with
+    no road between them, and the rival valley's stable is exactly such a pair.
+    An unscoped search does not merely return a bad answer -- it kills the tick.
+    """
+    home = M.city_of(agent.location)
     candidates = [
-        b for b in world.businesses.values() if b.type == btype and not b.closed
+        b for b in world.businesses.values()
+        if b.type == btype and not b.closed and M.city_of(b.location) == home
     ]
     if not candidates:
         return None
@@ -56,7 +63,8 @@ def _goto(world: World, log: EventLog, agent: Agent, location: str) -> bool:
 def _spur_with_room(world: World, agent: Agent, plots: int) -> str | None:
     """Nearest spur with at least `plots` of free land, ties broken by distance."""
     options = [
-        s.name for s in M.SPURS if M.plots_free(world, s.name) >= plots
+        s.name for s in M.spurs_in(world.city_of(agent))
+        if M.plots_free(world, s.name) >= plots
     ]
     if not options:
         return None
@@ -354,7 +362,7 @@ class Manufacturer(StandardRules):
             cost = D.BUSINESS_TYPES[self.TARGET].startup_cost
             if agent.denari >= cost + 150:
                 # A store belongs on the main road, not down a spur.
-                if not _goto(world, log, agent, "Town"):
+                if not _goto(world, log, agent, M.market_of(world.city_of(agent))):
                     return
                 if agent.current_job:
                     A.quit_job(world, log, agent)

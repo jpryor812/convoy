@@ -22,6 +22,7 @@ from typing import Callable, Protocol
 from . import banditry as B
 from . import data as D
 from . import economy as E
+from . import world_map as M
 from .events import EventLog, Significance
 from .state import Activity, Agent, Business, World
 
@@ -165,6 +166,7 @@ class Engine:
 
             if w.sim_time >= self._next_checkpoint:
                 self._next_checkpoint += cfg.checkpoint_every_hours * 3600.0
+                self._record_standings()
                 self.log.flush()
                 if self.on_checkpoint:
                     self.on_checkpoint(w)
@@ -1248,8 +1250,41 @@ class Engine:
                 if agent.owned_property:
                     agent.location = w.properties[agent.owned_property].location
                 else:
-                    agent.location = "Town"
+                    # Your OWN city's market square. Respawning in Aldermarch's
+                    # Town was fine while there was only one; it would now
+                    # teleport a dead Cinderholder across a border that has no
+                    # road, stranding them in a valley where nothing they own
+                    # exists and every travel_to home would be refused.
+                    agent.location = M.market_of(w.city_of(agent))
                 agent.activity = Activity("idle", w.sim_time)
+
+    def _record_standings(self) -> None:
+        """The score, on the hour, into the log.
+
+        WITHOUT THIS THE RACE IS NOT RECOVERABLE. There is one checkpoint file
+        and it is overwritten hourly (PHASE8 §8), so the only surviving record
+        of what a city was worth at hour 40 is whatever the log kept -- and
+        `Snapshot` is written by the advisor, which most runs never enable.
+        "Cinderhold pulled ahead at h37 and never gave it back" is the sentence
+        this whole contest exists to be able to say, and it cannot be said from
+        a final total.
+
+        Cheap on purpose: one row per hour per city, ~72 rows a side for a full
+        run, holding the numbers the boards plot and nothing else.
+        """
+        w = self.world
+        if not w.is_contest():
+            return
+        for row in w.city_standings():
+            self.log.emit(
+                w.sim_time, "city_standings", subject=row["city"],
+                city=row["city"], name=row["name"],
+                total_net_worth=row["total_net_worth"],
+                mean_net_worth=row["mean_net_worth"],
+                living=row["living"], dead=row["dead"],
+                businesses=row["businesses"],
+                significance=Significance.LOW,
+            )
 
     # -- decision scheduling ----------------------------------------------
 

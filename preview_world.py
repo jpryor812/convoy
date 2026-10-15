@@ -119,9 +119,40 @@ TERRAIN = ROOT / "art" / "generated" / "terrain"
 # places whose NAME makes a claim about their ground, so they are the only ones
 # that get anything but grass -- the hills and the climb are rock, the crossing
 # is a river.
-GROUND_FOR_PLACE = {
-    "The Hills": "rock",
+GROUND_FOR_PLACE_BY_ROLE = {
+    M.ROLE_HILLS: "rock",
 }
+
+
+def ground_for(place: str) -> str:
+    """By ROLE, so both cities' hills are rock and neither is hard-coded."""
+    return GROUND_FOR_PLACE_BY_ROLE.get(M.ROLE_OF.get(place, ""), "grass")
+
+
+def cities_of(run: Path | None) -> list[str]:
+    """Which cities a run contains, off its checkpoint.
+
+    The renderer has to know BEFORE it lays any ground out -- `layout.build`
+    takes the city list and a one-city page must not draw an empty second
+    valley. Falls back to the home city, which is what every run recorded
+    before 2026-09-03 was.
+    """
+    if run is None:
+        return [M.HOME_CITY]
+    cp = run / "checkpoint.json"
+    if not cp.exists():
+        return [M.HOME_CITY]
+    try:
+        raw = json.loads(cp.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [M.HOME_CITY]
+    # Through `decode`, because the checkpoint wraps every list in a
+    # {"__seq__": [...]} envelope -- read raw, `cities` is a dict and the
+    # membership test silently keeps nothing, which draws a two-city run as one
+    # valley with half its places missing.
+    found = decode(raw.get("cities"))
+    keep = [c for c in (found or []) if c in M.CITIES]
+    return keep or [M.HOME_CITY]
 
 
 def collect_assets() -> dict[str, str]:
@@ -194,7 +225,9 @@ SITE_TYPES = ["Farm", "Mining Operation", "Refinery", "Tavern / Inn"]
 # A PLAUSIBLE VALLEY
 # ---------------------------------------------------------------------------
 
-def starting_world(places: dict[str, L.Place]) -> dict:
+def starting_world(
+    places: dict[str, L.Place], cities: list[str] | None = None
+) -> dict:
     """The world at hour zero, built by the simulation rather than invented.
 
     THIS USED TO MAKE THINGS UP. It filled every place to a share of its slots
@@ -213,8 +246,17 @@ def starting_world(places: dict[str, L.Place]) -> dict:
     from convoy.events import EventLog
     from convoy.world_setup import new_world
 
+    cities = list(cities or [M.HOME_CITY])
     roster = [(f"Agent{n}", "preview") for n in range(1, AGENT_COUNT + 1)]
-    world = new_world(EventLog(None, echo_min=99), roster)
+    log = EventLog(None, echo_min=99)
+    if len(cities) > 1:
+        world = new_world(log, [], {
+            c: [(f"{M.CITIES[c].name}-{n}", "preview")
+                for n in range(1, AGENT_COUNT + 1)]
+            for c in cities
+        })
+    else:
+        world = new_world(log, roster)
 
     # A slot per government branch, taken in the order `layout` lays them out --
     # centre first, so the state holds the ground fronting each settlement.
@@ -430,12 +472,17 @@ def replay(run: Path, places: dict[str, L.Place]) -> dict:
 
     names: dict[str, str] = {}
     models: dict[str, str] = {}
+    homes: dict[str, str] = {}
     cp_path = run / "checkpoint.json"
     raw_cp = json.loads(cp_path.read_text(encoding="utf-8")) if cp_path.exists() else {}
+    run_cities = cities_of(run)
     for entry in walk_dict(raw_cp.get("agents")):
         if entry.get("id"):
             names[entry["id"]] = entry.get("name", entry["id"])
             models[entry["id"]] = entry.get("model", "")
+            # "" is what every agent recorded before there were cities carries,
+            # and they were all of the home city, because it was the only one.
+            homes[entry["id"]] = entry.get("city") or run_cities[0]
 
     agents: dict[str, dict] = {}
     robberies: list[dict] = []
@@ -455,7 +502,9 @@ def replay(run: Path, places: dict[str, L.Place]) -> dict:
         if actor and actor.startswith("A"):
             a = agents.setdefault(actor, {
                 "id": actor, "name": names.get(actor, actor),
-                "model": models.get(actor, ""), "died": None,
+                "model": models.get(actor, ""),
+                "city": homes.get(actor, run_cities[0]),
+                "died": None,
             })
             if loc in known:
                 tracks[actor].append([round(hour, 3), loc, None])
@@ -643,10 +692,17 @@ def _events_for_boards(run: Path) -> list:
 
 
 def build_payload(run: Path | None = None) -> dict:
-    places = L.build()
+    # THE CITIES COME FIRST, because the ground depends on them. A one-city run
+    # must not lay out an empty second valley for the camera to have to pan
+    # across, and a two-city run must not draw only half of itself.
+    cities = cities_of(run)
+    places = L.build(cities)
     minx, miny, maxx, maxy = L.bounds(places)
 
-    roads = [[(p.x, p.y) for p in L.main_road()]]
+    # ONE POLYLINE PER CITY, never joined. The valleys have no road between
+    # them, and a single road drawn through both would be the page asserting a
+    # journey the engine refuses to allow.
+    roads = [[(p.x, p.y) for p in road] for road in L.main_roads(cities)]
     roads += [[(p.x, p.y) for p in pl.path] for pl in places.values() if pl.path]
 
     return {
@@ -664,22 +720,92 @@ def build_payload(run: Path | None = None) -> dict:
             {
                 "name": p.name, "kind": p.kind, "protected": p.protected,
                 "x": p.center.x, "y": p.center.y,
-                "ground": GROUND_FOR_PLACE.get(p.name, "grass"),
+                "ground": ground_for(p.name),
                 "parcels": [{"x": q.x, "y": q.y} for q in p.parcels],
                 "props": [{"kind": q.kind, "x": q.x, "y": q.y,
                            "scale": q.scale} for q in p.props],
             }
             for p in places.values()
         ],
+        # Who is in this world, for the page's city tabs. Each carries the
+        # centre of its own market so the camera can jump to a city, and its
+        # places so a click anywhere can be attributed to one.
+        "cities": [
+            {
+                "key": key,
+                "name": M.CITIES[key].name,
+                "market": M.CITIES[key].market,
+                "places": M.places_in(key),
+                "x": places[M.CITIES[key].market].center.x,
+                "y": places[M.CITIES[key].market].center.y,
+            }
+            for key in cities if M.CITIES[key].market in places
+        ],
         **(replay(run, places) if run else
-           {"mode": "snapshot", **starting_world(places)}),
+           {"mode": "snapshot", **starting_world(places, cities)}),
     }
+
+
+def script_json(value) -> str:
+    """JSON that is safe to paste inside a <script> element.
+
+    `json.dumps` leaves `</script>` alone, and the payload carries text the
+    models wrote -- reasoning, gists, business names. One agent musing about
+    "</script>" would end the script early and turn the rest of the payload into
+    markup. Harmless on a page you built for yourself; not on one served to the
+    public, so it is escaped for both.
+    """
+    return (json.dumps(value)
+            .replace("<", "\\u003c").replace(">", "\\u003e")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+
+
+SITE_CONFIG = Path(__file__).resolve().parent / "site" / "config.json"
+
+
+def site_config() -> dict:
+    """`site/config.json`: where the public page looks for a live server, and
+    where it sends emails when there is none. Empty if the file is missing."""
+    try:
+        return json.loads(SITE_CONFIG.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def render_html(payload: dict, art: dict[str, str] | None = None,
+                served: bool = False, site: dict | None = None) -> str:
+    """The whole page, as a string.
+
+    `served` is True when `serve.py` hands the page out itself: the page then
+    talks to the origin it came from, with no `?server=` to type. A file built
+    with `python3 preview_world.py` stays exactly what it was -- a page that
+    works with no server at all.
+
+    `site` is the public page's config (`site/config.json`). With it the page
+    is the always-on front door: it looks for a live server at start-up and,
+    finding none, is a replay with a waitlist. Without it, nothing changes.
+    """
+    art = collect_assets() if art is None else art
+    return (TEMPLATE
+            .replace("__SERVER__", "location.origin" if served else "null")
+            .replace("__SITE__", script_json(site) if site else "null")
+            .replace("__PROPS__", json.dumps(
+                {k: len(v) for k, v in SP.PROP_SPRITES.items()}))
+            .replace("__PEOPLE__", json.dumps(SP.PERSON_FOR_MODEL))
+            .replace("__DEFAULT_PERSON__", json.dumps(
+                next(iter(SP.PERSON_FOR_MODEL.values()))))
+            .replace("__HAULER__", json.dumps(SP.HAULER))
+            .replace("__DATA__", script_json(payload))
+            .replace("__ART__", script_json(art)))
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--run", nargs="?", const="latest", default=None,
                     help="a run directory, or 'latest'; omit for hour zero")
+    ap.add_argument("--site", type=Path, default=None, metavar="DIR",
+                    help="build the public front door into DIR/index.html, "
+                         "configured by site/config.json (what GitHub Pages serves)")
     args = ap.parse_args()
 
     run = None
@@ -690,16 +816,19 @@ def main() -> int:
 
     payload = build_payload(run)
     art = collect_assets()
-    html = (TEMPLATE
-            .replace("__PROPS__", json.dumps(
-                {k: len(v) for k, v in SP.PROP_SPRITES.items()}))
-            .replace("__PEOPLE__", json.dumps(SP.PERSON_FOR_MODEL))
-            .replace("__DEFAULT_PERSON__", json.dumps(
-                next(iter(SP.PERSON_FOR_MODEL.values()))))
-            .replace("__HAULER__", json.dumps(SP.HAULER))
-            .replace("__DATA__", json.dumps(payload))
-            .replace("__ART__", json.dumps(art)))
-    OUT.write_text(html, encoding="utf-8")
+    if args.site:
+        args.site.mkdir(parents=True, exist_ok=True)
+        page = args.site / "index.html"
+        page.write_text(render_html(payload, art, site=site_config()),
+                        encoding="utf-8")
+        # GitHub Pages runs Jekyll over anything without this, which would
+        # only slow the deploy down: there is nothing here for it to build.
+        (args.site / ".nojekyll").write_text("")
+        print(f"wrote {page} -- the public front door, "
+              f"{payload.get('run', 'hour zero')} "
+              f"({page.stat().st_size / 1024:,.0f} KB)")
+        return 0
+    OUT.write_text(render_html(payload, art), encoding="utf-8")
     b = payload["bounds"]
     if payload["mode"] == "replay":
         print(f"wrote {OUT.name} -- replaying {payload['run']} to hour "
@@ -745,7 +874,11 @@ TEMPLATE = r"""<!doctype html>
   /* A thought, over the head of whoever is having it. */
   .bubble-canvas{}
 
-  #hud{position:fixed;left:12px;top:166px;background:#12160fdd;padding:9px 12px;
+  /* Below the button stack, measured at runtime -- see `placePanels`. It was a
+     fixed 166px, which was already a tight fit under four buttons and became an
+     overlap the moment a fifth was added. A number that has to be re-derived by
+     hand every time the nav changes is a number that will be wrong. */
+  #hud{position:fixed;left:12px;top:var(--under-nav,166px);background:#12160fdd;padding:9px 12px;
        border:1px solid #3a4030;border-radius:5px;pointer-events:none;z-index:2}
 
   /* THE BOARDS. Three stacked buttons top-left, and a dark panel behind them.
@@ -763,8 +896,9 @@ TEMPLATE = r"""<!doctype html>
                      text-align:left;letter-spacing:.04em;white-space:nowrap}
   #boards-nav button:hover{background:#1e2616;color:#e8e4d8}
   #boards-nav button.on{background:#44562f;color:#fffdf7;border-color:#6d8449}
-  #board{position:fixed;left:12px;top:166px;z-index:6;display:none;
-         width:min(760px,calc(100vw - 24px));max-height:calc(100vh - 162px);
+  #board{position:fixed;left:12px;top:var(--under-nav,166px);z-index:6;display:none;
+         width:min(760px,calc(100vw - 24px));
+         max-height:calc(100vh - var(--under-nav,166px) - 76px);
          overflow:auto;background:#12160ff2;border:1px solid #46502f;
          border-radius:7px;padding:13px 15px 15px;
          box-shadow:0 8px 30px #000a}
@@ -807,6 +941,26 @@ TEMPLATE = r"""<!doctype html>
   #board .key i{display:inline-block;width:8px;height:8px;border-radius:2px;
                 margin-right:4px;vertical-align:-1px}
   #board .empty{color:#7c8a63;font-style:italic;padding:10px 0}
+  /* THE CITY TABS. Inside the board rather than beside the map: they change
+     WHO you are reading about, which is a property of the table, not of the
+     valley. "Both" is first and is the default, because the entire reason
+     there are two cities is the comparison. */
+  #board .tabs{display:flex;gap:4px;margin:0 0 11px;flex-wrap:wrap}
+  #board .tabs button{background:#1a2013;color:#9db07c;border:1px solid #3a4030;
+                      border-radius:5px;padding:4px 11px;font:inherit;
+                      cursor:pointer;letter-spacing:.04em}
+  #board .tabs button:hover{background:#26301a;color:#e8e4d8}
+  #board .tabs button.on{background:#44562f;color:#fffdf7;border-color:#6d8449}
+  /* One accent per city, used by the tab, the leaderboard's city column and
+     the race chart, so the same colour means the same city everywhere. */
+  #board .c0{color:#9dd17a} #board .c1{color:#d9a06a}
+  #board .tabs button.on.c0{background:#3d5b2c;border-color:#7aa055}
+  #board .tabs button.on.c1{background:#5b442c;border-color:#a07f55}
+  #board .race{width:100%;height:132px;margin:2px 0 14px;display:block}
+  #board .score{display:flex;gap:22px;margin:0 0 12px;flex-wrap:wrap}
+  #board .score div{font-size:11.5px}
+  #board .score b{display:block;font-size:19px;letter-spacing:.02em}
+  #board .verdict{color:#e8e4d8;margin:0 0 12px;font-size:12px}
   #hud b{color:#c9d6a8}
   #keys{position:fixed;right:12px;top:12px;background:#12160fdd;padding:9px 12px;
         border:1px solid #3a4030;border-radius:5px;z-index:2;text-align:right}
@@ -855,6 +1009,11 @@ TEMPLATE = r"""<!doctype html>
                border-radius:4px;padding:6px;font:inherit;cursor:pointer}
   .chat button:hover{background:#44562f}
   .chat button:disabled{opacity:.45;cursor:not-allowed}
+  .chat input[type=email]{width:100%;box-sizing:border-box;background:#fff;
+                 color:#20241a;border:1px solid #cfc9b0;border-radius:4px;
+                 padding:6px;font:inherit}
+  .chat p{margin:0 0 7px}
+  .chat .fine{font-size:11px;color:#7d806f;margin:6px 0 0}
   #reply{margin-top:8px;padding:7px;background:#f1eede;border-radius:4px;
          border:1px solid #ddd8c4;white-space:pre-wrap;display:none}
   #reply.show{display:block}
@@ -870,9 +1029,52 @@ TEMPLATE = r"""<!doctype html>
   #playbtn:hover{background:#44562f}
   #clock input[type=range]{width:min(46vw,460px);accent-color:#c9d6a8}
   #clocktext{color:#f2e9c9;min-width:120px}
+
+  /* THE FRONT DOOR. A pill that says whether this is happening NOW, and -- when
+     it is not -- a card that says so plainly, takes an email for next time, and
+     offers the last run instead of an empty page. */
+  #livepill{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:5;
+            display:none;background:#12160fe8;border:1px solid #46502f;
+            border-radius:999px;padding:5px 14px;color:#f2e9c9;cursor:pointer;
+            white-space:nowrap}
+  #livepill.on{display:block}
+  /* Under an open card, never over it: the card is what you clicked. */
+  body:has(#popup.open) #livepill{visibility:hidden}
+  @media (max-width:1100px){ body:has(#livepill.on) #keys{display:none} }
+  #livepill .dot{display:inline-block;width:8px;height:8px;border-radius:50%;
+                 margin-right:7px;background:#8a8f7e;vertical-align:1px}
+  #livepill.live .dot{background:#e0503c;animation:pulse 1.6s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+  #frontdoor{position:fixed;inset:0;z-index:20;display:none;align-items:center;
+             justify-content:center;background:#0b0e09cc;padding:16px}
+  #frontdoor.open{display:flex}
+  #frontdoor .card{background:#171c12;border:1px solid #46502f;border-radius:10px;
+                   max-width:420px;width:100%;padding:22px 22px 18px;
+                   box-shadow:0 12px 40px #000a}
+  #frontdoor h2{margin:0 0 6px;font-size:17px;color:#f2e9c9}
+  #frontdoor p{margin:0 0 14px;color:#c9c3b0}
+  #frontdoor form{display:flex;gap:8px;margin-bottom:6px}
+  #frontdoor input[type=email]{flex:1;min-width:0;background:#0f130c;color:#e8e4d8;
+                   border:1px solid #46502f;border-radius:5px;padding:8px 10px;
+                   font:inherit}
+  #frontdoor button{background:#44562f;color:#f2e9c9;border:1px solid #5d7140;
+                    border-radius:5px;padding:8px 12px;font:inherit;cursor:pointer}
+  #frontdoor button:hover{background:#56703a}
+  #frontdoor .hp{position:absolute;left:-9999px}
+  #frontdoor .msg{min-height:1.5em;color:#9dd17a;margin-bottom:10px}
+  #frontdoor .msg.err{color:#e8a06a}
+  #frontdoor .or{display:flex;align-items:center;gap:10px;color:#7d806f;margin:6px 0 12px}
+  #frontdoor .or::before,#frontdoor .or::after{content:"";flex:1;border-top:1px solid #33402a}
+  #frontdoor .watch{width:100%;background:#2c3720}
+  #frontdoor .stay{display:block;margin:10px auto 0;background:none;border:0;
+                   color:#9a9d8c;text-decoration:underline;padding:4px}
+  #frontdoor .stay:hover{background:none;color:#e8e4d8}
+  #frontdoor .stay[hidden]{display:none}
+  #frontdoor .fine{font-size:11px;color:#7d806f;margin:12px 0 0}
 </style></head><body>
 <canvas id="c"></canvas>
 <div id="boards-nav">
+  <button data-board="contest" id="contest-btn" hidden>The contest</button>
   <button data-board="leaderboard">Leaderboard</button>
   <button data-board="convoys">Convoy schedule</button>
   <button data-board="commodities">Commodity prices</button>
@@ -886,6 +1088,28 @@ TEMPLATE = r"""<!doctype html>
   <span id="clocktext"></span></div>
 <div id="popup"><button id="close" title="close">&times;</button>
   <div id="popup-body"></div></div>
+<div id="livepill" title=""><span class="dot"></span><span id="livetext"></span></div>
+<div id="frontdoor" role="dialog" aria-modal="true" aria-labelledby="fd-title">
+  <div class="card">
+    <h2 id="fd-title">No simulation is running right now</h2>
+    <p id="fd-sub">Twenty AI agents run a Bronze Age economy &mdash; farming, mining,
+      hauling, getting robbed. Leave your email and we&rsquo;ll tell you when the next
+      one starts.</p>
+    <form id="fd-form" novalidate>
+      <input type="email" id="fd-email" placeholder="you@example.com"
+             autocomplete="email" required maxlength="254">
+      <input type="text" class="hp" id="fd-website" tabindex="-1" autocomplete="off"
+             aria-hidden="true">
+      <button type="submit">Notify me</button>
+    </form>
+    <div class="msg" id="fd-msg"></div>
+    <div class="or" id="fd-or">or</div>
+    <button class="watch" id="fd-watch">Watch the last run &rarr;</button>
+    <button class="stay" id="fd-stay" hidden>or keep watching the last run</button>
+    <p class="fine" id="fd-fine">You must be 13 or older. We only use your email
+      to tell you about new runs.</p>
+  </div>
+</div>
 <div id="keys"><span>click</span> a building or a person &nbsp; <span>drag</span> pan
   &nbsp; <span>wheel</span> zoom &nbsp; <span>0</span> whole valley</div>
 <script>
@@ -1775,16 +1999,29 @@ function draw(){
 
   drawBadges();
 
-  /* Labels last, and only when zoomed out far enough that they are not clutter. */
+  /* Labels last, and only when zoomed out far enough that they are not clutter.
+
+     THE BACKGROUND DREW AND THE NAME DID NOT. The plate was positioned with
+     `wx(p)/wy(p)` and the text with `p.sx/p.sy`, which a place record does not
+     have -- it carries `x`/`y` and nothing else, so `fillText` was called with
+     two undefined coordinates and drew nothing at all. What you saw was a row
+     of dark grey bars floating over the buildings and the road: a label plate
+     with no label on it. Both now use the same coordinates, which is the whole
+     fix.
+
+     They matter more than they did. With two valleys on one page, the name over
+     a settlement is what tells you which city you are looking at. */
   if (zoom < 0.75){
     g.font = `${Math.round(13 / zoom)}px ui-monospace,monospace`;
     g.textAlign = "center";
+    g.textBaseline = "alphabetic";
     for (const p of DATA.places){
-      g.fillStyle = "#0d1108cc";
+      const lx = wx(p), ly = wy(p);
       const w = g.measureText(p.name).width + 10 / zoom;
-      g.fillRect(wx(p) - w / 2, wy(p) - 26 / zoom, w, 18 / zoom);
+      g.fillStyle = "#0d1108cc";
+      g.fillRect(lx - w / 2, ly - 26 / zoom, w, 18 / zoom);
       g.fillStyle = p.kind === "spur" ? "#c9d6a8" : "#f2e9c9";
-      g.fillText(p.name, p.sx, p.sy - 12 / zoom);
+      g.fillText(p.name, lx, ly - 12 / zoom);
     }
   }
 
@@ -1824,7 +2061,11 @@ let HOVER = null, SELECTED = null;
    the chat box says so plainly rather than posting into the void and failing
    silently -- an "Ask" button that does nothing is worse than one that explains
    it cannot. Point this at a running `serve.py` and the same UI works live. */
-const SERVER = new URLSearchParams(location.search).get("server") || null;
+const SITE = __SITE__;
+let SERVER = new URLSearchParams(location.search).get("server") || __SERVER__;
+/* Every request names the run this page is showing, so a question asked after
+   the server has moved on to another run still reaches THIS run's agent. */
+const api = (path) => `${SERVER}${path}` + (DATA.run ? `?run=${encodeURIComponent(DATA.run)}` : "");
 
 const esc = (t) => String(t).replace(/[&<>"]/g,
   ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[ch]));
@@ -1925,13 +2166,73 @@ function agentPanel(card){
   return h;
 }
 
+/* Chat pass: what the server issued for the email this browser gave. Kept in
+   localStorage so a visitor types it once -- and in memory as well, because
+   storage can be blocked, and a blocked store must not mean asking again on
+   every click. */
+let PASS_MEMO = null;
+function chatPass(){
+  try { return localStorage.getItem("convoy.pass") || PASS_MEMO; }
+  catch (err) { return PASS_MEMO; }
+}
+function setChatPass(v){
+  PASS_MEMO = v;
+  try { v ? localStorage.setItem("convoy.pass", v) : localStorage.removeItem("convoy.pass"); }
+  catch (err) { /* memory copy is enough for this visit */ }
+}
+const EMAIL_OK = /^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/;
+
+/* The newsletter, if the site has one: the same address goes there too, so
+   there is one list to write to. `no-cors` because a mailing service will not
+   answer a page on another origin; the post still lands. */
+function subscribeElsewhere(email){
+  const f = SITE && SITE.waitlist_form;
+  if (!f || !f.action) return false;
+  fetch(f.action, {method: "POST", mode: "no-cors",
+    body: new URLSearchParams({[f.field || "email"]: email})}).catch(() => {});
+  return true;
+}
+
 function chatBox(agentId, who, label){
+  /* THE PUBLIC PAGE WITH NOBODY HOME. No server, so nobody can answer -- say
+     when that changes rather than offering a box that cannot work. */
+  if (SITE && !SERVER){
+    return `<h3>Talk to ${esc(who)}</h3>
+    <div class="chat">
+      <p>Talking to the agents opens while a simulation is live.</p>
+      <div class="btns"><button data-act="notify">Tell me when the next one starts</button></div>
+    </div>`;
+  }
+  /* A server is up, but it is running a DIFFERENT world. These agents are not
+     in it, so send the visitor to the one that is rather than ask a stranger. */
+  if (SITE && STATUS && STATUS.run !== DATA.run){
+    return `<h3>Talk to ${esc(who)}</h3>
+    <div class="chat">
+      <p>This is a past run. A new simulation is live &mdash; its agents are
+        the ones you can talk to.</p>
+      <div class="btns"><button data-act="golive">Watch the live run</button></div>
+    </div>`;
+  }
+  /* EMAIL FIRST, on a public server. Watching is free; talking costs money,
+     and asking for an address is how the list grows from the people who
+     cared enough to ask something. */
+  if (STATUS && STATUS.needs_pass && !chatPass()){
+    return `<h3>Talk to ${esc(who)}</h3>
+    <div class="chat" data-agent="${esc(agentId)}">
+      <p>Enter your email to talk to the agents. We&rsquo;ll also let you know
+        when the next simulation starts.</p>
+      <input type="email" placeholder="you@example.com" autocomplete="email" maxlength="254">
+      <div class="btns"><button data-act="pass">Start talking</button></div>
+      <p class="fine">You must be 13 or older.</p>
+      <div id="reply"></div>
+    </div>`;
+  }
   return `<h3>Talk to ${esc(who)}</h3>
     <div class="chat" data-agent="${esc(agentId)}">
       <textarea placeholder="Ask ${esc(label)} a question, or suggest what to do next."></textarea>
       <div class="btns">
         <button data-act="ask">Ask</button>
-        <button data-act="advise">Advise</button>
+        ${CAN_ADVISE ? '<button data-act="advise">Advise</button>' : ""}
       </div>
       <div id="reply"></div>
     </div>`;
@@ -1942,9 +2243,11 @@ function chatBox(agentId, who, label){
    the running simulation, and every panel opened after that is current. Same
    page, same shapes -- `convoy/inspect` builds both. */
 async function refreshCards(){
-  if (!SERVER) return;
+  // The public page's cards are the finished run's, baked in and complete;
+  // a server running some other world has nothing to add to them.
+  if (!SERVER || SITE) return;
   try {
-    const res = await fetch(`${SERVER}/cards`);
+    const res = await fetch(api("/cards"));
     const data = await res.json();
     if (data.cards){
       DATA.cards = data.cards;
@@ -2077,6 +2380,41 @@ function wireChat(){
   if (!box) return;
   const area = box.querySelector("textarea");
   const reply = box.querySelector("#reply");
+  const notify = box.querySelector('[data-act="notify"]');
+  if (notify){ notify.onclick = () => openDoor(); return; }
+  const golive = box.querySelector('[data-act="golive"]');
+  if (golive){ golive.onclick = () => { location.href = SERVER + "/"; }; return; }
+  const passBtn = box.querySelector('[data-act="pass"]');
+  if (passBtn){
+    const input = box.querySelector("input[type=email]");
+    const go = async () => {
+      const email = input.value.trim();
+      reply.classList.add("show");
+      if (!EMAIL_OK.test(email)){
+        reply.textContent = "That doesn\u2019t look like an email address."; return;
+      }
+      passBtn.disabled = true; reply.textContent = "one moment\u2026";
+      try {
+        const res = await fetch(api("/waitlist"), {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({email, source: "chat"}),
+        });
+        const data = await res.json();
+        if (!data.pass) throw new Error(data.error || "no pass came back");
+        setChatPass(data.pass);
+        subscribeElsewhere(email);
+        if (SELECTED) renderPanel(SELECTED);
+        const fresh = panelBody.querySelector(".chat textarea");
+        if (fresh) fresh.focus();
+      } catch (err) {
+        reply.textContent = `Couldn\u2019t do that: ${err.message || err}`;
+        passBtn.disabled = false;
+      }
+    };
+    passBtn.onclick = go;
+    input.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+    return;
+  }
   for (const btn of box.querySelectorAll("button")) btn.onclick = async () => {
     const text = area.value.trim();
     if (!text) return;
@@ -2092,15 +2430,28 @@ function wireChat(){
     for (const b of box.querySelectorAll("button")) b.disabled = true;
     reply.textContent = act === "ask" ? "asking..." : "sending..."; reply.classList.add("show");
     try {
-      const res = await fetch(`${SERVER}/agent/${box.dataset.agent}/${act}`, {
+      const res = await fetch(api(`/agent/${box.dataset.agent}/${act}`), {
         method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify(act === "ask"
-          ? {question: text, who: "a viewer"}
-          : {text: text, from_who: "a viewer"}),
+          ? {question: text, who: "a viewer", pass: chatPass()}
+          : {text: text, from_who: "a viewer", pass: chatPass()}),
       });
       const data = await res.json();
-      reply.textContent = data.error ? `error: ${data.error}`
-        : (data.text || data.answer || JSON.stringify(data, null, 1));
+      if (res.status === 401 && data.needs_pass){
+        // A pass this server does not recognise -- a new server, a new
+        // secret. Ask for the email again rather than failing forever.
+        setChatPass(null);
+        if (STATUS) STATUS.needs_pass = true;
+        if (SELECTED) renderPanel(SELECTED);
+        return;
+      }
+      // A limit is a message for the visitor, not an error to debug.
+      reply.textContent = data.error
+        ? (res.status === 429 ? data.error : `error: ${data.error}`)
+        : (data.text || data.answer || JSON.stringify(data, null, 1))
+          + (typeof data.questions_left === "number"
+             ? `\n\n(${data.questions_left} question${data.questions_left === 1 ? "" : "s"} left today)`
+             : "");
       if (!data.error) area.value = "";
     } catch (err) {
       reply.textContent = `could not reach ${SERVER}: ${err}`;
@@ -2165,7 +2516,31 @@ addEventListener("resize", resize);
    on the place itself rather than on a corner of the world box: the box includes
    every spur's outermost tree, so its centre is open country and the first thing
    you saw was an empty field. */
-const OPEN_ON = "Town";
+/* THE CITIES IN THIS WORLD, and which one the page is looking at. `null` means
+   both -- the only sensible default for a contest, since the whole point is the
+   comparison. A one-city page has one entry here and never shows a tab. */
+const CITIES = DATA.cities || [];
+const CONTEST = CITIES.length > 1;
+let cityFilter = null;
+const cityName = key => (CITIES.find(c => c.key === key) || {}).name || key;
+/* Open on the first city's market -- the market end, and the busiest ground in
+   the valley. */
+const OPEN_ON = (CITIES[0] && CITIES[0].market) || "Town";
+/* Frame a whole city rather than a point: with two valleys side by side the old
+   fixed zoom put half of one and none of the other on screen. */
+function frameCity(key){
+  const city = CITIES.find(q => q.key === key);
+  if (!city) return;
+  const pts = DATA.places.filter(p => city.places.includes(p.name));
+  if (!pts.length) return;
+  const xs = pts.map(wx), ys = pts.map(wy);
+  const w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
+  zoom = Math.max(0.05, Math.min(3, 0.82 * Math.min(
+    c.width / Math.max(w, 1), c.height / Math.max(h, 1))));
+  panx = -((Math.min(...xs) + w / 2) - c.width / 2 / zoom);
+  pany = -((Math.min(...ys) + h / 2) - c.height / 2 / zoom);
+  clampPan();
+}
 function centreOn(name){
   const p = DATA.places.find(q => q.name === name) || DATA.places[0];
   panx = -(wx(p) - c.width / 2 / zoom);
@@ -2230,16 +2605,36 @@ function assetBar(a){
   ).join("") + '</div>';
 }
 
+/* Which colour class a city gets, by its position in `CITIES`. Stable for the
+   life of the page, so a city is the same colour on the tab, in the table and
+   on the race chart. */
+const cityClass = key => "c" + Math.max(0, CITIES.findIndex(c => c.key === key));
+
 function boardLeaderboard(){
-  const rows = BOARDS.leaderboard || [];
+  let rows = BOARDS.leaderboard || [];
   if (!rows.length) return '<div class="empty">Nobody in the valley yet.</div>';
-  let h = '<div class="key">' + Object.entries(ASSET_COLOURS).map(([k, c]) =>
+  /* THE TAB FILTERS THE TABLE. Filtered rather than merely highlighted: the
+     question a tab answers is "how is Cinderhold doing", and twenty of its
+     citizens interleaved with twenty of somebody else's does not answer it.
+     "Both" keeps the interleaved view, which is the one that answers "who is
+     winning". */
+  if (cityFilter) rows = rows.filter(r => r.city === cityFilter);
+  if (!rows.length) return '<div class="empty">Nobody from that city yet.</div>';
+  let h = cityTabs();
+  h += '<div class="key">' + Object.entries(ASSET_COLOURS).map(([k, c]) =>
         `<span><i style="background:${c}"></i>${k}</span>`).join("") + "</div>";
-  h += '<table><tr><th>#</th><th>Who</th><th class="n">Net worth</th>'
+  h += '<table><tr><th>#</th>'
+    +  (CONTEST && !cityFilter ? '<th>City</th>' : '')
+    +  '<th>Who</th><th class="n">Net worth</th>'
     +  '<th>Job</th><th>Where the money is</th><th>Holdings</th></tr>';
   rows.forEach((r, i) => {
     const a = r.assets;
-    h += `<tr><td class="dim">${i + 1}</td>`
+    /* Rank AT HOME when a single city is shown, because that is the number
+       that city's citizens are actually scored on; the global position when
+       both are shown, because that is the comparison being made. */
+    h += `<tr><td class="dim">${cityFilter ? (r.rank_at_home || i + 1) : i + 1}</td>`
+      +  (CONTEST && !cityFilter
+          ? `<td class="${cityClass(r.city)}">${esc(r.city_name || "")}</td>` : "")
       +  `<td class="who">${esc(r.name)}`
       +  (r.alive ? "" : ' <span class="bad">dead</span>')
       +  `<br><span class="dim">${esc(r.doing)}</span></td>`
@@ -2390,7 +2785,120 @@ function boardConvoys(){
   return h;
 }
 
+/* THE TAB STRIP. Rendered into whichever board is open, so switching city keeps
+   you on the board you were reading. Empty string in a one-city world, which is
+   how every earlier run's page stays exactly as it was. */
+function cityTabs(){
+  if (!CONTEST) return "";
+  const tab = (key, label) => {
+    const on = (cityFilter === key) ? " on" : "";
+    const tone = key ? " " + cityClass(key) : "";
+    return `<button class="tab${on}${tone}" data-city="${key || ''}">${esc(label)}</button>`;
+  };
+  return '<div class="tabs">' + tab(null, "Both")
+       + CITIES.map(c => tab(c.key, c.name)).join("") + "</div>";
+}
+
+/* THE CONTEST. Two totals, the gap, and how the gap got there.
+
+   The chart is the board's reason to exist. A final score says who won; the
+   only interesting question about a race is WHEN, and that is only answerable
+   because the engine writes a `city_standings` row every hour -- the checkpoint
+   holds the present and is overwritten (PHASE8 §8), so without the log there is
+   no history to draw. */
+function boardContest(){
+  const b = BOARDS.cities || {};
+  const now = b.now || [];
+  if (!now.length) return '<div class="empty">This run has only one city.</div>';
+
+  let h = '<div class="score">' + now.map(r =>
+      `<div class="${cityClass(r.city)}">${esc(r.name)}<b>${coin(r.total_net_worth)}</b>`
+    + `<span class="dim">${r.living} alive`
+    + (r.dead ? ` &middot; <span class="bad">${r.dead} lost</span>` : "")
+    + ` &middot; ${r.businesses} businesses</span></div>`).join("") + "</div>";
+
+  h += '<div class="verdict">'
+    + (b.gap > 0
+        ? `<b>${esc(b.leader)}</b> leads by <b>${coin(b.gap)}</b>`
+          + (b.led_since != null
+             ? ` and has led since hour ${b.led_since.toFixed(0)}.` : ".")
+        : "Dead level.")
+    + '</div>';
+
+  h += raceChart(b.history || {});
+
+  h += '<table><tr><th>City</th><th class="n">Total net worth</th>'
+    +  '<th class="n">Per citizen</th><th class="n">Alive</th><th class="n">Lost</th>'
+    +  '<th class="n">Businesses</th><th>Richest</th></tr>';
+  now.forEach(r => {
+    h += `<tr><td class="who ${cityClass(r.city)}">${esc(r.name)}</td>`
+      +  `<td class="n who">${coin(r.total_net_worth)}</td>`
+      +  `<td class="n dim">${coin(r.mean_net_worth)}</td>`
+      +  `<td class="n">${r.living}</td>`
+      +  `<td class="n ${r.dead ? 'bad' : 'dim'}">${r.dead}</td>`
+      +  `<td class="n dim">${r.businesses}</td>`
+      +  `<td class="dim">${esc(r.richest || "\u2014")}</td></tr>`;
+  });
+  return h + "</table>";
+}
+
+/* The race, as one line per city over the hours. Inline SVG: no library, no
+   CDN, and the page has to open from a file:// URL on a laptop with no network.
+   Drawn from a SHARED y-scale across both cities -- two independently scaled
+   lines would show a city that is far behind as level with one that is far
+   ahead, which is the one thing this chart must never do. */
+function raceChart(history){
+  const keys = Object.keys(history).filter(k => (history[k] || []).length > 1);
+  if (keys.length < 2) return '<div class="empty">Not enough hours recorded yet '
+    + 'to draw the race.</div>';
+  const all = keys.flatMap(k => history[k]);
+  const maxH = Math.max(...all.map(r => r.hour));
+  const maxV = Math.max(...all.map(r => r.total || 0), 1);
+  /* SCALED TO THE DATA, NOT TO ZERO. Two cities that both grew from 300 to
+     2,500 are two nearly-identical lines when the axis starts at zero -- and
+     the only thing anybody wants from a race chart is where the lines SEPARATE,
+     which a zero-based axis flattens into invisibility. Both lines share one
+     scale, so the comparison between them stays exact; what changes is only how
+     much of the panel the interesting band gets. The bounds are printed under
+     the chart so a reader can see the axis is clipped. */
+  const minV = Math.min(...all.map(r => r.total || 0));
+  const lo = minV - (maxV - minV) * 0.08, span = Math.max(maxV - lo, 1);
+  const W = 700, H = 132, PAD = 6;
+  const px = hr => PAD + (hr / Math.max(maxH, 1e-9)) * (W - PAD * 2);
+  const py = v => H - PAD - ((v - lo) / span) * (H - PAD * 2);
+  /* COLOUR BY THE CITY, NOT BY THE ROW'S POSITION. `history` is keyed in
+     standings order, which is sorted by wealth and therefore changes hands
+     during a run -- indexing the palette by that drew Aldermarch's line in
+     Cinderhold's colour while the table beside it used the other one. A chart
+     whose legend contradicts the table under it is worse than no chart. Same
+     index `cityClass` uses, so one city is one colour everywhere on the page. */
+  const STROKE = ["#9dd17a", "#d9a06a", "#7aa9d1"];
+  const strokeFor = k => STROKE[
+    Math.max(0, CITIES.findIndex(c => c.key === k)) % STROKE.length];
+  const lines = keys.map(k => {
+    const d = history[k].map((r, j) =>
+      `${j ? "L" : "M"}${px(r.hour).toFixed(1)},${py(r.total || 0).toFixed(1)}`
+    ).join("");
+    return `<path d="${d}" fill="none" stroke="${strokeFor(k)}" `
+         + `stroke-width="2" stroke-linejoin="round"/>`;
+  }).join("");
+  const labels = keys.map(k => {
+    const last = history[k][history[k].length - 1];
+    return `<text x="${(px(last.hour) - 4).toFixed(1)}" y="${(py(last.total || 0) - 6).toFixed(1)}" `
+         + `text-anchor="end" fill="${strokeFor(k)}" font-size="10">`
+         + `${esc(cityName(k))}</text>`;
+  }).join("");
+  return `<svg class="race" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" `
+       + `role="img" aria-label="City net worth over time">`
+       + `<rect x="0" y="0" width="${W}" height="${H}" fill="#171c11"/>`
+       + lines + labels + `</svg>`
+       + `<div class="key"><span>hour 0 &rarr; ${maxH.toFixed(0)}</span>`
+       + `<span>axis ${coin(lo)} &ndash; ${coin(maxV)} (not zero-based)</span></div>`;
+}
+
 const BOARD_TITLES = {
+  contest: ["The contest", "Two cities, no road between them. The score is each "
+          + "city's TOTAL net worth, so a citizen who dies is a hole in it."],
   leaderboard: ["Leaderboard", "Every agent, richest first. The bar shows where "
               + "the money actually is."],
   convoys: ["Convoy schedule", "Loads on the road, and how the ones already run "
@@ -2404,31 +2912,249 @@ const BOARD_TITLES = {
 const boardEl = document.getElementById("board");
 let openBoard = null;
 
+/* TOGGLE and RENDER are separate. They used to be one function, which meant a
+   city tab -- which has to re-render the board it is standing in -- could only
+   ask for the board it was already on, and got it CLOSED. */
 function showBoard(which){
-  const nav = document.querySelectorAll("#boards-nav button");
-  if (openBoard === which) { which = null; }
+  if (openBoard === which) which = null;
   openBoard = which;
+  renderBoard();
+}
+
+function renderBoard(){
+  const which = openBoard;
+  const nav = document.querySelectorAll("#boards-nav button");
   nav.forEach(b => b.classList.toggle("on", b.dataset.board === which));
   if (!which) { boardEl.classList.remove("open"); return; }
   const [title, sub] = BOARD_TITLES[which];
   const body = which === "leaderboard" ? boardLeaderboard()
              : which === "commodities" ? boardCommodities()
-             : which === "advice" ? boardAdvice() : boardConvoys();
+             : which === "advice" ? boardAdvice()
+             : which === "contest" ? boardContest() : boardConvoys();
   boardEl.innerHTML = `<h2>${title}</h2><div class="sub">${sub}</div>` + body;
   // (boards) -- the agent-card follow link is wired in openPanel.
   boardEl.querySelectorAll("tr.jump").forEach(tr =>
     tr.addEventListener("click", () =>
       goToMoment(parseFloat(tr.dataset.hour), tr.dataset.who || null)));
+  /* Switching city re-renders the board you are on and takes the camera with
+     it, so "show me Cinderhold" answers with both the table AND the valley --
+     the two things you would otherwise have to do separately, on a map that is
+     now twice as wide as it used to be. */
+  boardEl.querySelectorAll(".tabs button").forEach(btn =>
+    btn.addEventListener("click", () => {
+      cityFilter = btn.dataset.city || null;
+      if (cityFilter) frameCity(cityFilter);
+      else { zoom = 1; resize(); }
+      draw();
+      renderBoard();
+    }));
   boardEl.classList.add("open");
   boardEl.scrollTop = 0;
 }
 
 document.querySelectorAll("#boards-nav button").forEach(b =>
   b.addEventListener("click", () => showBoard(b.dataset.board)));
+
+/* The contest board only exists when there IS a contest. A one-city page must
+   not offer a tab that opens on "this run has only one city". */
+if (CONTEST) document.getElementById("contest-btn").hidden = false;
+
+/* Push the HUD and the board clear of the button stack, whatever is in it.
+   Runs after the contest button's visibility is settled, and again on resize
+   because the buttons wrap on a narrow window. */
+function placePanels(){
+  const nav = document.getElementById("boards-nav");
+  document.documentElement.style.setProperty(
+    "--under-nav", Math.round(nav.getBoundingClientRect().bottom + 10) + "px");
+}
+placePanels();
+addEventListener("resize", placePanels);
 /* Escape closes whatever is open -- the board first, since it is on top. */
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && openBoard) showBoard(null);
 });
+
+/* ------------------------------------------------------------ front door
+
+   WHETHER THIS IS HAPPENING NOW. With a server behind the page, `/status` says
+   whether a simulation is running. If one is, the map keeps up with it: the
+   page asks for the new hours as they are written and, if you were watching
+   the present, carries you along. If none is, a card says so in plain words,
+   takes an email for the next one, and offers the last run -- which is still
+   fully interactive: its agents can be asked about everything they did.
+
+   Without a server none of this exists; the page is the static replay it
+   always was. */
+let STATUS = null, CAN_ADVISE = !SERVER;
+const pill = document.getElementById("livepill");
+const pilltext = document.getElementById("livetext");
+const door = document.getElementById("frontdoor");
+const fdMsg = document.getElementById("fd-msg");
+
+const fd = id => document.getElementById(id);
+/* Can this page take an email right now? Through the server if there is one,
+   or the site's newsletter if not. If neither, the form would swallow
+   addresses into nothing, so it is not shown at all. */
+const canCollect = () => !!SERVER || !!(SITE && SITE.waitlist_form && SITE.waitlist_form.action);
+
+/* Two cards in one. "offline": nothing is running -- leave an email or watch
+   the last run. "live": the public page found a simulation running somewhere
+   else -- go and watch it. */
+function openDoor(mode){
+  const live = mode === "live";
+  fd("fd-title").textContent = live ? "A simulation is live right now"
+                                    : "No simulation is running right now";
+  fd("fd-sub").textContent = live
+    ? "Twenty AI agents are running a Bronze Age economy as we speak \u2014 "
+      + "farming, mining, hauling, getting robbed. Watch it happen, and click "
+      + "anyone to talk to them."
+    : "Twenty AI agents run a Bronze Age economy \u2014 farming, mining, "
+      + "hauling, getting robbed. "
+      + (canCollect() ? "Leave your email and we\u2019ll tell you when the "
+                        + "next one starts." : "Check back soon for the next one.");
+  const showForm = !live && canCollect();
+  fd("fd-form").style.display = showForm ? "" : "none";
+  fd("fd-msg").style.display = showForm ? "" : "none";
+  fd("fd-or").style.display = showForm ? "" : "none";
+  fd("fd-fine").style.display = showForm ? "" : "none";
+  const watch = fd("fd-watch");
+  fd("fd-stay").hidden = !live;
+  fd("fd-stay").onclick = closeDoor;
+  if (live){
+    watch.innerHTML = "Watch it live &rarr;";
+    watch.onclick = () => { location.href = SERVER + "/"; };
+  } else {
+    watch.innerHTML = "Watch the last run &rarr;";
+    watch.onclick = closeDoor;
+  }
+  door.classList.add("open");
+  if (showForm) setTimeout(() => fd("fd-email").focus(), 50);
+}
+function closeDoor(){ door.classList.remove("open"); }
+door.addEventListener("click", e => { if (e.target === door) closeDoor(); });
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && door.classList.contains("open")) closeDoor();
+});
+
+function showPill(){
+  if (!STATUS){ pill.classList.remove("on"); return; }
+  pill.classList.add("on");
+  pill.classList.toggle("live", !!STATUS.live);
+  if (STATUS.live && STATUS.run !== DATA.run){
+    pilltext.textContent = "A simulation is live now \u2014 click to watch";
+    pill.onclick = () => { location.href = SERVER + "/"; };
+  } else if (STATUS.live){
+    pilltext.textContent = `LIVE · hour ${Number(STATUS.hour).toFixed(1)}`
+      + ` · click anyone to talk to them`;
+    pill.onclick = () => { setPlaying(false); setHour(DATA.end_hour); };
+  } else if (STATUS.run !== DATA.run && DATA.run && !SITE){
+    pilltext.textContent = "This run has ended · get notified of the next one";
+    pill.onclick = openDoor;
+  } else {
+    pilltext.textContent = "Last run · get notified of the next one";
+    pill.onclick = openDoor;
+  }
+}
+
+async function pullReplay(){
+  const atEdge = HOUR >= DATA.end_hour - 0.05;
+  let p;
+  try { p = await (await fetch(api("/replay"))).json(); } catch (err) { return; }
+  if (!p || p.run !== DATA.run || p.mode !== "replay") return;
+  Object.assign(DATA, p);
+  for (const k of Object.keys(BUILDING_BY_ID)) delete BUILDING_BY_ID[k];
+  for (const b of (DATA.buildings || [])) BUILDING_BY_ID[b.id] = b;
+  for (const k of Object.keys(BOARDS)) delete BOARDS[k];
+  Object.assign(BOARDS, DATA.boards || {});
+  _rankHour = null;
+  slider.max = DATA.end_hour;
+  // Watching the present: stay on it. Scrubbing the past: stay where you were.
+  if (atEdge && !playing) setHour(DATA.end_hour);
+  else { slider.value = HOUR; draw(); }
+  if (openBoard) showBoard(openBoard);
+}
+
+async function pollStatus(first){
+  try {
+    STATUS = await (await fetch(`${SERVER}/status`)).json();
+  } catch (err) { STATUS = null; showPill(); return; }
+  CAN_ADVISE = !!STATUS.can_advise;
+  showPill();
+  if (first && !STATUS.live) openDoor();
+  if (STATUS.live && STATUS.run === DATA.run &&
+      STATUS.hour > DATA.end_hour + 0.02) await pullReplay();
+}
+
+document.getElementById("fd-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const email = document.getElementById("fd-email").value.trim();
+  fdMsg.classList.remove("err");
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(email)){
+    fdMsg.textContent = "That doesn’t look like an email address.";
+    fdMsg.classList.add("err"); return;
+  }
+  fdMsg.textContent = "saving\u2026";
+  if (document.getElementById("fd-website").value){
+    fdMsg.textContent = "You\u2019re on the list."; return;   // a bot; say nothing more
+  }
+  try {
+    let data = {ok: true, already: false};
+    if (SERVER){
+      const res = await fetch(api("/waitlist"), {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({email}),
+      });
+      data = await res.json();
+      if (data.error) throw new Error(data.error);
+      if (data.pass) setChatPass(data.pass);   // they can talk now, too
+    }
+    subscribeElsewhere(email);
+    fdMsg.textContent = data.already
+      ? "You’re already on the list — we’ll be in touch."
+      : "You’re on the list. We’ll email you when the next run starts.";
+    document.getElementById("fd-email").value = "";
+  } catch (err) {
+    fdMsg.textContent = `Couldn’t save that: ${err.message || err}`;
+    fdMsg.classList.add("err");
+  }
+});
+
+/* THE PUBLIC PAGE (GitHub Pages). It cannot know where a live server is
+   until it asks: `site/config.json` names a small file -- `live.json` on the
+   repository's `live` branch -- that `go_live.py` writes when a simulation
+   starts and clears when it stops. No server named, or the one named is not
+   answering: the page is the last run, with a waitlist. */
+async function sitePoll(first){
+  let server = null, st = null;
+  try {
+    const j = await (await fetch(`${SITE.live_json}?t=${Date.now()}`,
+                                 {cache: "no-store"})).json();
+    // https only -- except this machine, so the whole flow can be tried
+    // locally before anything is public.
+    if (j && typeof j.server === "string" &&
+        /^(https:\/\/[^\s"<>]+|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?)$/.test(j.server))
+      server = j.server.replace(/\/+$/, "");
+  } catch (err) { /* no file, no network: nothing is live */ }
+  if (server){
+    try { st = await (await fetch(`${server}/status`)).json(); }
+    catch (err) { st = null; }            // named, but gone: treat as offline
+  }
+  const was = SERVER;
+  SERVER = st ? server : null;
+  STATUS = st || {live: false, run: DATA.run, needs_pass: false};
+  CAN_ADVISE = false;                     // never from the public page
+  showPill();
+  if (was !== SERVER && SELECTED) renderPanel(SELECTED);
+  if (first) openDoor(STATUS.live && STATUS.run !== DATA.run ? "live" : undefined);
+}
+
+if (REPLAY && SITE && SITE.live_json && !SERVER){
+  sitePoll(true);
+  setInterval(() => sitePoll(false), 60000);
+} else if (SERVER && REPLAY){
+  pollStatus(true);
+  setInterval(() => pollStatus(false), 30000);
+}
 </script></body></html>
 """
 

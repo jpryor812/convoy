@@ -79,7 +79,33 @@ GOVERNMENT_MAX_EMPLOYEES = 2
 
 # A business is worth its startup cost plus this multiple of its last 24 hours
 # of sales (designer decision, 2026-08-15).
-BUSINESS_REVENUE_MULTIPLE = 3.0
+# HOW A BUSINESS IS VALUED (2026-09-03). Two terms, and the split is the whole
+# incentive design.
+#
+# THE COST MULTIPLE is what makes founding attractive rather than merely
+# neutral. At 1.0 a business was worth exactly what you paid for it on day one,
+# so founding moved net worth sideways and an agent had to believe in future
+# trade to justify the risk -- four smoke runs produced no business at all. At
+# 2.0 the act of founding CREATES value: spend 450 on a refinery and hold 900.
+# That is a deliberate thumb on the scale for the behaviour these runs exist to
+# observe, and it is bounded by land, which is finite (see `plots_free`).
+BUSINESS_COST_MULTIPLE = 2.0
+
+# THE PROFIT MULTIPLE capitalises what a business EARNS, and it is profit
+# rather than revenue for one specific reason.
+#
+# On gross revenue, every sale minted 3x its price in net worth regardless of
+# whether the seller made anything on it -- so two agents passing the same
+# goods back and forth at book price generated unlimited value out of a trade
+# that moved nothing. Under individual scoring that was self-limiting, because
+# handing a counterparty 3x was arming a rival. Under CITY scoring both sides
+# count for you and the wash trade becomes the dominant strategy. Margin makes
+# it worthless: goods sold at book price earn no goodwill at all.
+BUSINESS_PROFIT_MULTIPLE = 3.0
+
+# Kept as an alias: it appears in PHASE2-PHASE8 and in the generated reference,
+# and the number it names has not changed -- only what it multiplies.
+BUSINESS_REVENUE_MULTIPLE = BUSINESS_PROFIT_MULTIPLE
 
 BANKRUPTCY_GRACE_HOURS = 24.0
 # How long a job advert stays on the board before it lapses. Long enough that a

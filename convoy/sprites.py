@@ -309,15 +309,20 @@ GROUND_FOR_KIND = {
 ROAD_STRAIGHT = _tile(8)        # a north-south length of road, transparent bg
 ROAD_JUNCTION = _tile(10)       # a crossroads
 
-# Decor per location, keyed by name because elevation alone does not say whether
-# a place is a quarry or a river crossing.
-DECOR_FOR_LOCATION = {
-    "Refinery Row": [_env(9), _env(12)],       # spoil heaps and ore-flecked rock
-    "The Hills": [_env(18), _env(19)],         # copper-bearing rock
-    "The Crossing": [_env(6), _env(8)],        # a fallen log, a boulder
-    "The Climb": [_env(10), _env(11)],         # grey rock with metal flecks
-    "Town": [_env(13), _env(20)],              # kept shrubs
+# Decor per location, keyed by ROLE rather than by name (2026-09-03) -- what a
+# place is made of follows from what it does, and both cities' smelter ends are
+# the same spoil and ore-flecked rock. Elevation alone does not say whether a
+# place is a quarry or a market, which is why this table exists at all.
+DECOR_FOR_ROLE = {
+    M.ROLE_REFINERY: [_env(9), _env(12)],     # spoil heaps and ore-flecked rock
+    M.ROLE_HILLS: [_env(18), _env(19)],       # copper-bearing rock
+    M.ROLE_MARKET: [_env(13), _env(20)],      # kept shrubs
 }
+
+
+def decor_for(place: str) -> list:
+    """Decor for a place in any city. Empty for ground with no claim to make."""
+    return DECOR_FOR_ROLE.get(M.ROLE_OF.get(place, ""), [])
 
 # Elevation drives the ground tint in the renderer: the valley runs 20m at The
 # Crossing to 340m at The Climb, and that gradient is the whole reason haulage
@@ -448,12 +453,14 @@ def check() -> list[str]:
         else:
             exists(STRUCTURE_FOR_BUSINESS[btype], f"business {btype!r}")
 
-    for loc in M.LOCATIONS_SPEC:
-        if loc.name not in DECOR_FOR_LOCATION:
+    # EVERY city's locations, not just the home one. A second valley whose
+    # market had no decor would render as bare grass and nothing would say so.
+    for loc in M.EVERY_LOCATION_SPEC:
+        if not decor_for(loc.name):
             problems.append(f"location {loc.name!r} has no decor")
         if loc.kind not in GROUND_FOR_KIND:
             problems.append(f"location kind {loc.kind!r} has no ground tile")
-        for path in DECOR_FOR_LOCATION.get(loc.name, []):
+        for path in decor_for(loc.name):
             exists(path, f"decor for {loc.name!r}")
 
     for role in D.WAGE_ROLES:

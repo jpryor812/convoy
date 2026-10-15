@@ -16,6 +16,7 @@ from .state import Agent, Business, Plot, World
 # Placement now comes from the world design: the state's mine and farm sit on the
 # two spurs closest to the refineries, so its own supply chain is short and
 # everyone else has to beat it on price or on distance to the market.
+from . import world_map as M
 from .world_map import (  # noqa: F401
     GOVERNMENT_SITES,
     PLOT_CONSUMING_BUSINESSES,
@@ -30,7 +31,7 @@ GOVERNMENT_DEFAULT_OUTPUT: dict[str, str] = {
 }
 
 
-def build_government(world: World, log: EventLog) -> None:
+def build_government(world: World, log: EventLog, city: str | None = None) -> None:
     """The state's own sites, standing on the state's own land.
 
     Government plots are recorded like anyone else's rather than left implicit,
@@ -38,8 +39,13 @@ def build_government(world: World, log: EventLog) -> None:
     state is already standing on. They are owned by "Government", which owns no
     agent record -- so the land market cannot buy them either, which is correct:
     the backstop is not for sale.
+
+    ONE FULL SET PER CITY. Both sides start with the same backstop, the same
+    market floor and the same market ceiling, or the contest measures the state
+    rather than the citizens. When the state withdraws it withdraws from
+    everywhere at once, for the same reason.
     """
-    for btype, location in GOVERNMENT_SITES.items():
+    for btype, location in M.government_sites_for(city or world.cities[0]).items():
         biz = Business(
             id=world.new_id("G"),
             type=btype,
@@ -59,10 +65,17 @@ def build_government(world: World, log: EventLog) -> None:
             world.plots[plot.id] = plot
 
 
-def spawn_agents(world: World, log: EventLog, roster: list[tuple[str, str]]) -> None:
-    """roster is a list of (name, model_id)."""
+def spawn_agents(
+    world: World, log: EventLog, roster: list[tuple[str, str]],
+    city: str | None = None,
+) -> None:
+    """roster is a list of (name, model_id). Everyone starts in their market."""
+    home = city or world.cities[0]
     for name, model in roster:
-        agent = Agent(id=world.new_id("A"), name=name, model=model, location="Town")
+        agent = Agent(
+            id=world.new_id("A"), name=name, model=model,
+            city=home, location=M.market_of(home),
+        )
         world.agents[agent.id] = agent
 
 
@@ -80,8 +93,35 @@ def full_roster() -> list[tuple[str, str]]:
     return roster
 
 
-def new_world(log: EventLog, roster: list[tuple[str, str]]) -> World:
+def new_world(
+    log: EventLog,
+    roster: list[tuple[str, str]],
+    rosters: dict[str, list[tuple[str, str]]] | None = None,
+) -> World:
+    """A one-city world from `roster`, or a contest from `rosters`.
+
+    `rosters` maps city key -> that city's population. Passing it is what turns
+    the simulation into a contest: each city gets its own valley, its own full
+    set of government branches and its own twenty people, and nothing crosses
+    between them but the scoreboard.
+
+    EVERY GOVERNMENT FIRST, THEN EVERY POPULATION. `World.new_id` runs one
+    sequence across businesses, plots and agents alike, so interleaving the two
+    passes would scatter agent ids through the land register -- A0046 next to
+    A0092 with seventy plot ids between them. Seating the state everywhere
+    first means each city's people take one contiguous block of ids, which is
+    what makes a raw event log readable without a lookup table. Ids are the only
+    handle a log line has on a person.
+    """
     world = World()
+    if rosters:
+        world.cities = list(rosters)
+        for city in world.cities:
+            build_government(world, log, city)
+        for city, people in rosters.items():
+            spawn_agents(world, log, people, city)
+        return world
+
     build_government(world, log)
     spawn_agents(world, log, roster)
     return world

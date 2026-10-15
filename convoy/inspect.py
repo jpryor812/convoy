@@ -26,6 +26,7 @@ from typing import Any
 
 from . import data as D
 from . import economy as E
+from . import world_map as M
 from .state import Agent, Business, World
 
 
@@ -226,10 +227,17 @@ def leaderboard(world: World) -> list[dict[str, Any]]:
         vehicles = [world.vehicles[v].type for v in agent.owned_vehicles
                     if v in world.vehicles]
         rank, worth = ranks.get(agent.id, (0, 0.0))
+        home = world.city_of(agent)
         rows.append({
             "id": agent.id,
             "name": agent.name,
             "model": agent.model,
+            # WHICH CITY THIS PERSON IS OF, on the row rather than looked up.
+            # The page filters twenty rows out of forty by it, and a board that
+            # had to join against a separate roster to do that would be a board
+            # that silently shows the wrong twenty the first time an id moves.
+            "city": home,
+            "city_name": M.CITIES[home].name if home in M.CITIES else home,
             "rank": rank,
             "net_worth": round(worth, 2),
             "alive": agent.alive,
@@ -260,7 +268,98 @@ def leaderboard(world: World) -> list[dict[str, Any]]:
             "has_home": bool(agent.owned_property),
         })
     rows.sort(key=lambda r: -r["net_worth"])
+    # RANK AT HOME, filled after the global sort. The objective ranks a citizen
+    # against its own neighbours, not against a city it cannot reach, so a board
+    # showing only the global position would be showing a number nobody is
+    # playing for. Both are kept: the global one is how a spectator compares the
+    # two populations, the local one is how a citizen is actually scored.
+    seen: dict[str, int] = {}
+    for row in rows:
+        seen[row["city"]] = seen.get(row["city"], 0) + 1
+        row["rank_at_home"] = seen[row["city"]]
     return rows
+
+
+def city_standings(world: World, events: list | None = None) -> dict[str, Any]:
+    """The contest: where each city stands now, and how it got there.
+
+    `now` is computed from the world; `history` is read off the `city_standings`
+    events the engine writes on the hour, because the checkpoint holds only the
+    present and is overwritten hourly (PHASE8 §8). Without the log there is no
+    answer to "when did they pull ahead?", which is the question the whole
+    two-city arrangement exists to ask.
+
+    Empty in a one-city world, so the board simply does not offer itself.
+    """
+    if not world.is_contest():
+        return {}
+
+    now = world.city_standings()
+    history: dict[str, list[dict[str, Any]]] = {row["city"]: [] for row in now}
+    for e in (events or []):
+        etype = getattr(e, "type", None) or (e.get("type") if isinstance(e, dict) else None)
+        if etype != "city_standings":
+            continue
+        detail = getattr(e, "detail", None)
+        if detail is None and isinstance(e, dict):
+            detail = e.get("detail", {})
+        detail = detail or {}
+        city = detail.get("city")
+        if city not in history:
+            continue
+        sim_time = getattr(e, "sim_time", None)
+        if sim_time is None and isinstance(e, dict):
+            sim_time = e.get("sim_time", 0.0)
+        history[city].append({
+            "hour": round(float(sim_time or 0.0) / 3600.0, 2),
+            "total": detail.get("total_net_worth"),
+            "living": detail.get("living"),
+            "dead": detail.get("dead"),
+            "businesses": detail.get("businesses"),
+        })
+    for rows in history.values():
+        rows.sort(key=lambda r: r["hour"])
+
+    leader = now[0]
+    gap = leader["total_net_worth"] - now[-1]["total_net_worth"] if len(now) > 1 else 0.0
+    return {
+        "now": now,
+        "history": history,
+        "leader": leader["name"],
+        "gap": round(gap, 2),
+        # The hour the current leader took the lead and never lost it again.
+        # Answerable only from the history, and the single most useful sentence
+        # about a finished run.
+        "led_since": _led_since(history, leader["city"]),
+    }
+
+
+def _led_since(history: dict[str, list[dict[str, Any]]], leader: str) -> float | None:
+    """The earliest hour after which `leader` was never behind.
+
+    Walks backwards from the end and stops at the last hour it was NOT ahead,
+    so a city that led the whole way reports its first recorded hour and one
+    that only just overtook reports the overtake.
+    """
+    rows = history.get(leader) or []
+    others = [rs for key, rs in history.items() if key != leader]
+    if not rows or not others:
+        return None
+    by_hour = [
+        (r["hour"], r["total"] or 0.0,
+         max((o["total"] or 0.0)
+             for other in others
+             for o in other if abs(o["hour"] - r["hour"]) < 1e-6) if any(
+                 abs(o["hour"] - r["hour"]) < 1e-6 for other in others for o in other
+             ) else None)
+        for r in rows
+    ]
+    since = None
+    for hour, mine, theirs in reversed(by_hour):
+        if theirs is None or mine <= theirs:
+            break
+        since = hour
+    return since
 
 
 def commodity_prices(world: World, window_hours: float | None = None) -> list[dict[str, Any]]:
@@ -429,10 +528,15 @@ def advice_report(world: World, events: list | None = None) -> list[dict[str, An
 
 
 def boards(world: World, events: list | None = None) -> dict[str, Any]:
-    """All three, for whichever consumer is asking."""
+    """Every board, for whichever consumer is asking.
+
+    `cities` is empty in a one-city world and the page hides that board rather
+    than showing a contest with one entrant.
+    """
     return {
         "leaderboard": leaderboard(world),
         "commodities": commodity_prices(world),
         "convoys": convoy_schedule(world, events),
         "advice": advice_report(world, events),
+        "cities": city_standings(world, events),
     }

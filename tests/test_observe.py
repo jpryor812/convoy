@@ -201,7 +201,10 @@ def test_affordances_track_the_ground_underfoot():
     # then off Town; the demo map has neither, so the lookup raised StopIteration
     # and the test died on its own fixture rather than on an affordance.
     from convoy import world_map as WM
-    a.location = next(iter(WM.PROTECTED_ZONES))
+    # THE HOME CITY'S protected ground. `PROTECTED_ZONES` covers every city now,
+    # and it is a set -- so `next(iter(...))` was picking whichever market came
+    # out of the hash first and dropping an Aldermarch agent into Cinderhold.
+    a.location = next(p for p in WM.ALL_PLACES if WM.is_protected(p))
     lines = O.observe(w, log, a, "reevaluation")["you_can"]
     ok("protected ground is not flagged unsafe",
        not any("attacked" in x for x in lines))
@@ -323,9 +326,25 @@ def test_payload_stays_within_budget():
     # All three are things an agent is refused or robbed for not knowing --
     # the split paragraph in particular, since a deal it cannot name is a deal
     # it cannot make. Raised alongside the prefix guard in test_schemas.
+    # 5,300 -> 5,400 on 2026-09-03, for HOW A BUSINESS IS VALUED. The valuation
+    # changed twice over in one edit: 2x the founding cost instead of 1x, and
+    # goodwill on PROFIT ABOVE BOOK instead of on gross revenue. Both are things
+    # an agent is penalised for not knowing, which is the bar every raise above
+    # has had to clear. An agent that has not been told profit is measured above
+    # book will price its goods AT book, watch its valuation never move, and
+    # have no way to find out why; the same agent will sell to the state at 0.4x
+    # and lose the difference on every load. Measured cost: +112 tokens against
+    # 66 of headroom, so this buys 100 rather than trimming the rule down to
+    # something that no longer states it.
+    #
+    # THE TWO-CITY CONTEST IS NOT IN THIS NUMBER. `static_briefing()` with no
+    # rival is the one-city briefing, and the contest header only exists when a
+    # rival is passed -- so this guard keeps measuring the thing it has always
+    # measured. The contest briefing runs ~400 tokens longer and is cached
+    # per city, twice per run.
     ok(
-        "briefing under 5.3k tokens",
-        len(brief) // 4 < 5300,
+        "briefing under 5.4k tokens",
+        len(brief) // 4 < 5400,
         f"~{len(brief) // 4} tokens",
     )
     ok(

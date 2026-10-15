@@ -37,6 +37,7 @@ from convoy import advice as ADV
 from convoy import checkpoint, chronicle
 from convoy import data as D
 from convoy import llm
+from convoy import world_map as M
 from convoy.config import load_env
 from convoy.engine import Engine, EngineConfig
 from convoy.events import EventLog, Significance
@@ -129,6 +130,31 @@ def roster(n: int, models: list[str]) -> list[tuple[str, str]]:
         model = models[i % len(models)]
         per[model] += 1
         out.append((f"{model.split('/')[-1]}-{per[model]:02d}", model))
+    return out
+
+
+def city_rosters(
+    per_city: int, models: list[str], cities: list[str]
+) -> dict[str, list[tuple[str, str]]]:
+    """One population per city, dealt from the same models in the same order.
+
+    THE MODEL MIX IS IDENTICAL ON BOTH SIDES, and that is the whole point. The
+    contest is between two economies under identical conditions; if one city
+    got the stronger half of a mixed roster the result would measure the model
+    line-up rather than what the cities did. Same count, same models, same
+    round-robin order, mirrored ground (`assert_cities_are_mirrors`) -- so the
+    only thing left that can differ is the play.
+
+    Names carry the city so a transcript is readable without a lookup: an event
+    log full of `claude-01` twice over is a log nobody can read.
+    """
+    out: dict[str, list[tuple[str, str]]] = {}
+    for city in cities:
+        tag = M.CITIES[city].name
+        out[city] = [
+            (f"{tag}-{name}", model)
+            for name, model in roster(per_city, models)
+        ]
     return out
 
 
@@ -343,7 +369,18 @@ def harness_report(log: EventLog, policy: CappedPolicy) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--agents", type=int, default=3)
+    ap.add_argument("--agents", type=int, default=3,
+                    help="agents PER CITY. Two cities of 20 is 40 agents and "
+                         "roughly twice the API spend of one city of 20.")
+    ap.add_argument(
+        "--cities", type=int, default=1, choices=[1, 2],
+        help="1 (default) is the single valley every earlier run used. 2 makes "
+             "it a CONTEST: two mirrored valleys with no road between them, "
+             "each with its own government, its own market and its own "
+             "population, scored on which city's TOTAL net worth is higher. "
+             "Agents are told their city comes first and their rank among "
+             "their own neighbours second.",
+    )
     ap.add_argument("--decisions", type=int, default=15, help="hard cap per agent")
     ap.add_argument(
         "--model", default=DEFAULT_MODEL,
@@ -450,7 +487,13 @@ def main() -> int:
         run_dir = RUN_DIR / stamp
         run_dir.mkdir(parents=True, exist_ok=True)
         log = EventLog(run_dir / "events.jsonl", echo_min=Significance.HIGH)
-        world = new_world(log, roster(args.agents, models))
+        if args.cities > 1:
+            cities = M.CITY_KEYS[:args.cities]
+            world = new_world(
+                log, [], city_rosters(args.agents, models, cities)
+            )
+        else:
+            world = new_world(log, roster(args.agents, models))
 
     policy = CappedPolicy(
         log=log, cap=args.decisions, dry_run=args.dry_run,
@@ -473,6 +516,10 @@ def main() -> int:
         )
 
     print(f"Phase 2 — {len(world.agents)} agents on {', '.join(models)}")
+    if args.cities > 1:
+        names = ", ".join(M.CITIES[c].name for c in M.CITY_KEYS[:args.cities])
+        print(f"CONTEST: {names} — {args.agents} agents each, "
+              f"{args.agents * args.cities} in total, no road between them")
     print(f"{args.decisions} decisions each, up to {args.max_actions} actions per decision")
     print(f"{hours:.1f} simulated hours, pacing {args.rpm:g} req/min")
     if args.time_scale != 1.0:

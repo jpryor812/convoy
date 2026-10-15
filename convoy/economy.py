@@ -428,6 +428,7 @@ class Quote:
 
 def ticker(
     world, window_hours: float = TICKER_WINDOW_HOURS, items: list[str] | None = None,
+    city: str | None = None,
 ) -> dict[str, Quote]:
     """Recent trade, by item, most recently traded first.
 
@@ -435,6 +436,12 @@ def ticker(
     same reason: transactions are append-ordered and this is read often, so a
     full scan would grow with the length of the run rather than with the size of
     the window.
+
+    `city` narrows it to one valley's market. Passing None gives every trade in
+    the world, which is what a spectator board wants and what a one-city run has
+    always produced; an AGENT is always given its own city's feed, because the
+    other one is a market it can neither buy in nor sell to. See
+    `Transaction.city`.
     """
     cutoff = world.sim_time - max(0.0, window_hours) * 3600.0
     wanted = set(items) if items else None
@@ -445,6 +452,10 @@ def ticker(
         if wanted is not None and t.item not in wanted:
             continue
         if t.qty <= 0:
+            continue
+        # An older checkpoint's transactions carry no city; they were all the
+        # home city's, because there was only one.
+        if city is not None and (t.city or world.cities[0]) != city:
             continue
         a = acc.setdefault(t.item, {
             "last": t.unit_price, "last_hour": t.sim_time / 3600.0,
@@ -593,6 +604,7 @@ class Quote:
 
 def ticker(
     world, window_hours: float = TICKER_WINDOW_HOURS, items: list[str] | None = None,
+    city: str | None = None,
 ) -> dict[str, Quote]:
     """Recent trade, by item, most recently traded first.
 
@@ -600,6 +612,12 @@ def ticker(
     same reason: transactions are append-ordered and this is read often, so a
     full scan would grow with the length of the run rather than with the size of
     the window.
+
+    `city` narrows it to one valley's market. Passing None gives every trade in
+    the world, which is what a spectator board wants and what a one-city run has
+    always produced; an AGENT is always given its own city's feed, because the
+    other one is a market it can neither buy in nor sell to. See
+    `Transaction.city`.
     """
     cutoff = world.sim_time - max(0.0, window_hours) * 3600.0
     wanted = set(items) if items else None
@@ -610,6 +628,10 @@ def ticker(
         if wanted is not None and t.item not in wanted:
             continue
         if t.qty <= 0:
+            continue
+        # An older checkpoint's transactions carry no city; they were all the
+        # home city's, because there was only one.
+        if city is not None and (t.city or world.cities[0]) != city:
             continue
         a = acc.setdefault(t.item, {
             "last": t.unit_price, "last_hour": t.sim_time / 3600.0,

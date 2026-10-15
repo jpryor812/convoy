@@ -71,8 +71,10 @@ def test_every_item_and_action_is_covered_by_name() -> None:
         ok(f"glyph for {name}", name in SP.GLYPH_FOR_ACTION)
     for btype in D.BUSINESS_TYPES:
         ok(f"structure for {btype}", btype in SP.STRUCTURE_FOR_BUSINESS)
-    for loc in M.LOCATIONS_SPEC:
-        ok(f"decor for {loc.name}", loc.name in SP.DECOR_FOR_LOCATION)
+    # EVERY city's locations, not just the home one -- a second valley whose
+    # market had no decor would render as bare grass and nothing would say so.
+    for loc in M.EVERY_LOCATION_SPEC:
+        ok(f"decor for {loc.name}", bool(SP.decor_for(loc.name)))
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +206,11 @@ def test_the_snapshot_payload_is_drawable() -> None:
 
 def test_a_real_run_replays() -> None:
     r = _renderer()
-    runs = [d for d in Path("runs/phase2").iterdir()
+    # Local runs if there are any; otherwise the showcase run committed for the
+    # public site -- `runs/` is gitignored, so a fresh clone (and GitHub's
+    # runners) has none, and this used to crash there instead of checking.
+    homes = [Path("runs/phase2"), Path("showcase")]
+    runs = [d for home in homes if home.is_dir() for d in home.iterdir()
             if (d / "events.jsonl").exists()
             and (d / "events.jsonl").stat().st_size > 10_000
             and (d / "checkpoint.json").exists()]

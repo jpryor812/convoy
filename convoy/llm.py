@@ -91,13 +91,19 @@ class LLMPolicy:
     max_completion_tokens: int = MAX_COMPLETION_TOKENS
     requests_per_minute: float = REQUESTS_PER_MINUTE   # 0 disables pacing
     usage: dict[str, Usage] = field(default_factory=dict)
-    # TWO prefixes, not one: before the government leaves and after. Each is
-    # byte-stable for every agent and every hour on its side of the withdrawal,
-    # so a run pays for exactly one cache re-warm at the moment the state exits
-    # instead of losing caching altogether. The 2026-08-21 run was 92% cached
-    # prompt tokens and cost $5.48; rebuilding per call would have made it $50.
-    _prefix: tuple[str, list[dict[str, Any]]] | None = None
-    _prefix_after_withdrawal: tuple[str, list[dict[str, Any]]] | None = None
+    # ONE PREFIX PER (CITY, SIDE OF THE WITHDRAWAL), and no more than that.
+    # Each is byte-stable for every agent of that city on that side, so a run
+    # pays for one cache re-warm per city at the moment the state exits instead
+    # of losing caching altogether. The 2026-08-21 run was 92% cached prompt
+    # tokens and cost $5.48; rebuilding per call would have made it $50.
+    #
+    # A one-city run holds at most two entries here, exactly as before. A
+    # two-city run holds at most four -- twice the cache-warming cost, not
+    # twice the per-call cost, because the population doubles too and each
+    # agent still hits a warm prefix on every decision after its city's first.
+    _prefixes: dict[
+        tuple[str, bool], tuple[str, list[dict[str, Any]]]
+    ] = field(default_factory=dict)
     _last_call_at: float = 0.0
     # The sim clock, stashed for `_fail`. See its docstring.
     _sim_time: float = 0.0
@@ -111,31 +117,37 @@ class LLMPolicy:
                 "OPENROUTER_API_KEY is not set. Export it, pass api_key=, or use "
                 "dry_run=True to build prompts without calling the API."
             )
-        # Built once. Rebuilding per call would still be correct but would risk
-        # byte drift, which is exactly what breaks caching.
-        self._prefix = (O.static_briefing(), S.tool_schemas())
+    def _prefix_for(
+        self, world: World, agent: Agent
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """The briefing and tools THIS AGENT should be described by right now.
 
-    def _prefix_for(self, world: World) -> tuple[str, list[dict[str, Any]]]:
-        """The briefing and tools this world should be described by right now.
+        PER AGENT, NOT PER WORLD, because a citizen of Cinderhold and a citizen
+        of Aldermarch do not live in the same valley: the briefing names their
+        own three stops, their own four spurs, their own government sites and
+        their own rival. Handing both cities one briefing would tell half the
+        population that its market is a place it has never been able to reach --
+        PHASE4 §2, the observation asserting something the code will not honour.
 
         Built lazily so a run that never withdraws the state never pays for the
-        second one, and cached so the bytes are identical on every call after
+        second set, and cached so the bytes are identical on every call after
         the first -- the prefix cache matches on bytes, and a rebuilt-per-call
         briefing would be correct and ruinous.
         """
-        if world.state_withdrawn_at is None:
-            return self._prefix                     # type: ignore[return-value]
-        if self._prefix_after_withdrawal is None:
-            self._prefix_after_withdrawal = (
-                O.static_briefing(state_gone=True), S.tool_schemas(state_gone=True)
+        city = world.city_of(agent)
+        gone = world.state_withdrawn_at is not None
+        key = (city, gone)
+        if key not in self._prefixes:
+            self._prefixes[key] = (
+                O.briefing_for(world, agent), S.tool_schemas(state_gone=gone)
             )
-        return self._prefix_after_withdrawal
+        return self._prefixes[key]
 
     # -- the Policy protocol ----------------------------------------------
 
     def decide(self, world: World, agent: Agent, reason: str) -> None:
         self._sim_time = world.sim_time
-        briefing, tools = self._prefix_for(world)
+        briefing, tools = self._prefix_for(world, agent)
         obs = O.observe(world, self.log, agent, reason, record_delivery=not self.dry_run)
 
         # Which recommendations were in the prompt this agent is about to answer.

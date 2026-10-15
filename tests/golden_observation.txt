@@ -4,7 +4,7 @@ YOU
   id: A0001
   name: Tester
   denari: 500.0
-  net_worth: 1442.0
+  net_worth: 1592.0
   location: Blindfold Draw
   health: 100.0
   hunger: Normal, 0.0h since eating
@@ -50,6 +50,11 @@ WHAT YOU CAN DO FROM HERE
   - Unprotected ground: you can be attacked and robbed here.
   - You are FED for another 12.0h (until hour 32.0). Eating again before then is wasted denari and a wasted decision -- you gain nothing.
   - Carrying 6/100 units.
+
+WHAT NOBODY IN YOUR CITY IS MAKING
+  - NOBODY MAKES Purified Water AND NO REFINERY EXISTS. Founding one costs 450; free ground at Refinery Row, The Hills, Town. You can afford it.
+  - NOBODY MAKES Grain AND NO REFINERY EXISTS. Founding one costs 450; free ground at Refinery Row, The Hills, Town. You can afford it.
+  - NOBODY MAKES Meal AND NO TAVERN / INN EXISTS. Founding one costs 200; free ground at Refinery Row, The Hills, Town. You can afford it.
 
 CURRENT TAX RATES
   sales: 0.05

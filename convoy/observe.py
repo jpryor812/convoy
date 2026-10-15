@@ -46,7 +46,19 @@ DEFAULT_THINKING_LIMIT = 5
 THINKING_CHARS_IN_PROMPT = 220
 # Where the job board hangs. Town, because every agent spawns there -- so the
 # whole population reads it at hour zero without spending a step to reach it.
-JOB_CENTRE_LOCATION = "Town"
+# Kept as a name for the one-city world every earlier run and test was recorded
+# in; `job_centre_of` is what the code reads, because each city has its own.
+JOB_CENTRE_LOCATION = M.market_of(M.HOME_CITY)
+
+
+def job_centre_of(city: str) -> str:
+    """Where a city's job board hangs: its market, because everyone spawns there.
+
+    So the whole population reads it at hour zero without spending a step to
+    reach it -- which is the only reason the board works at all (PHASE4 §2's
+    second entry: 543 refusals from agents walking the valley looking for work).
+    """
+    return M.market_of(city)
 DEFAULT_CHAT_LIMIT = 8
 
 # Diaries are self-narration, not events. They fill leftover space only.
@@ -66,6 +78,12 @@ _MAX_DIARY_LINES = 4
 _ENGINE_BOOKKEEPING = frozenset({
     "sim_start", "sim_end", "decision",
     "advice_given", "advice_delivered", "advice_outcome",
+    # The hourly score. Agents get it as a standing block in every observation
+    # (`_contest_view`); letting the log rows through as well would spend the
+    # 15-line memory budget restating a number already on the page, and evict
+    # the news that a neighbour opened a refinery to do it. Same argument as the
+    # advice events above.
+    "city_standings",
 })
 
 # Advice from outside the sim. No limit worth having is smaller than this: an
@@ -86,15 +104,36 @@ def _money(x: float) -> str:
     return f"{x:g}"
 
 
-def _static_map() -> str:
-    lines = ["THE WORLD", ""]
+def _static_map(city: str = M.HOME_CITY, rival: str | None = None) -> str:
+    """The valley THIS agent lives in, and nothing about anyone else's.
+
+    A citizen of Aldermarch cannot walk to Cinderhold, cannot trade there and
+    cannot see it. Describing the rival's ground would be describing places
+    every travel_to would refuse -- fourteen destinations offered where seven
+    are reachable, which is PHASE4 §2 with the sign flipped: the briefing
+    asserting something the code will not honour. What an agent is told about
+    the rival is exactly one thing, and it is a score.
+    """
+    home = M.CITIES[city]
+    lines = [f"THE WORLD -- {home.name.upper()}", ""]
     lines.append(
-        "One road runs north to south. Production sits at the north end, the "
-        "only market at the south end, so goods must cross the dangerous middle "
-        "to reach a buyer. Protected ground means no combat and no theft."
+        f"One road runs north to south through {home.name}. Production sits at "
+        f"the north end, the only market at the south end, so goods must cross "
+        f"the dangerous middle to reach a buyer. Protected ground means no "
+        f"combat and no theft."
     )
+    if rival:
+        lines.append("")
+        lines.append(
+            f"{M.CITIES[rival].name} lies over the hills and is the city you are "
+            f"measured against. THERE IS NO ROAD TO IT. You cannot travel there, "
+            f"trade there, work there or steal from it, and nobody from there "
+            f"can reach you. The only thing that crosses between the two valleys "
+            f"is the count of what each is worth."
+        )
     lines.append("")
-    for loc in M.LOCATIONS_SPEC:
+    for name in home.places[:3]:
+        loc = M.LOCATION_BY_NAME[name]
         guard = "PROTECTED" if loc.protected else "unprotected"
         lines.append(f"  {loc.name} ({loc.kind}, {loc.elevation}m, {guard}) - {loc.blurb}")
     lines.append("")
@@ -105,7 +144,7 @@ def _static_map() -> str:
     # number to act on. Three raw floats invite an agent to do that arithmetic
     # itself and get it wrong. One headline `danger` per segment is enough to
     # rank the roads before a load exists to price.
-    for seg in M.SEGMENTS:
+    for seg in M.segments_in(city):
         flee = "" if seg.can_flee_offroad() else " No escape off-road."
         lines.append(
             f"  {seg.name} ({seg.a} <-> {seg.b}): {seg.seconds:.0f}s, "
@@ -118,7 +157,7 @@ def _static_map() -> str:
     # usually the observation withholding something; this is the same failure
     # with the sign flipped.
     lines.append(
-        f"{len(M.SPURS)} spur roads dead-end off the main road, "
+        f"{len(M.spurs_in(city))} spur roads dead-end off the main road, "
         f"{M.SPUR_SECONDS:.0f}s deep each. Mines, farms and homes live on spurs "
         f"and nowhere else. Travelling spur-to-spur means climbing back to the "
         f"main road and down again."
@@ -178,7 +217,8 @@ def _static_map() -> str:
     # hire and how big anything gets, and repeating them per-tool would cost the
     # same tokens on every call for every agent forever.
     lines.append(
-        f"LAND. Plots are finite everywhere and can sell out; Town is scarcest. "
+        f"LAND. Plots are finite everywhere and can sell out; "
+        f"{M.market_of(city)} is scarcest. "
         f"Unsold land is {D.LAND_BASE_PRICE:.0f}/plot (buy_land), else buy from a "
         f"holder (buy_listed_land) or sell your own (list_land).\n"
         f"A BUSINESS SEATS ONE EMPLOYEE PER DEVELOPED PLOT beyond its "
@@ -192,14 +232,14 @@ def _static_map() -> str:
         f"(upgrade_site_storage), keeping its land for people. A FULL YARD STOPS "
         f"PRODUCTION DEAD -- move stock out before it fills."
     )
-    for junction in M.LOCATIONS:
+    for junction in M.locations_in(city):
         spurs = M.SPURS_BY_JUNCTION.get(junction, [])
         if spurs:
             lines.append(f"  off {junction}: " + ", ".join(s.name for s in spurs))
     return "\n".join(lines)
 
 
-def _static_economy(state_gone: bool = False) -> str:
+def _static_economy(state_gone: bool = False, city: str = M.HOME_CITY) -> str:
     lines = ["", "PRICES", ""]
     lines.append(
         "NPC stores buy and sell at fixed rates that never move. Other players "
@@ -322,7 +362,7 @@ def _static_economy(state_gone: bool = False) -> str:
         )
         lines.append(f"  {'type':<32}{'government site':<22}hires")
         for name, spec in sorted(D.BUSINESS_TYPES.items()):
-            place = M.GOVERNMENT_SITES.get(name, "-")
+            place = M.government_sites_for(city).get(name, "-")
             roles = ", ".join(spec.production_roles) if spec.production_roles else "nobody"
             tail = " + Researcher" if spec.can_research else ""
             lines.append(f"  {name:<32}{place:<22}{roles}{tail}")
@@ -361,7 +401,7 @@ def _static_economy(state_gone: bool = False) -> str:
     return "\n".join(lines)
 
 
-def _static_rules(state_gone: bool = False) -> str:
+def _static_rules(state_gone: bool = False, city: str = M.HOME_CITY) -> str:
     lines = ["", "HOW THINGS WORK", ""]
     lines.append(
         f"SUSTENANCE. Food is sold at TAVERNS only -- you cannot cook. "
@@ -370,7 +410,8 @@ def _static_rules(state_gone: bool = False) -> str:
             "tavern somebody here owns and has stocked; if none of you keeps "
             "one supplied, everybody starves. "
             if state_gone else
-            f"The state's Tavern ({M.GOVERNMENT_SITES['Tavern / Inn']}) charges "
+            f"The state's Tavern "
+            f"({M.government_sites_for(city)['Tavern / Inn']}) charges "
             f"{E.npc_sell_price('Meal'):.2f} for a Meal: Normal for "
             f"{D.MEALS['Meal'].window_hours:.0f}h. "
         )
@@ -481,12 +522,16 @@ def _static_rules(state_gone: bool = False) -> str:
     return "\n".join(lines)
 
 
-def static_briefing(state_gone: bool = False) -> str:
+def static_briefing(
+    state_gone: bool = False,
+    city: str = M.HOME_CITY,
+    rival: str | None = None,
+) -> str:
     """Everything that never changes, for the cached system prompt.
 
-    Pure function: no world, no agent, no clock. Byte-identical across all 75
-    agents and every hour on ONE side of the withdrawal, which is what makes it
-    cacheable -- there are exactly two of these in a run, not one per call.
+    Pure function: no world, no agent, no clock. Byte-identical across every
+    agent OF ONE CITY on ONE side of the withdrawal, which is what makes it
+    cacheable -- a two-city run has four of these in it, not one per call.
 
     `state_gone` is the single exception to "never changes", and it is here
     rather than in the per-decision observation on purpose. The old briefing
@@ -494,24 +539,96 @@ def static_briefing(state_gone: bool = False) -> str:
     observation would have to out-argue all five, and the model would be left
     picking between two things the prompt asserted. Cheaper and honest to stop
     saying the false one.
+
+    `rival` turns the whole thing from a solo game into a contest. Passing None
+    -- a one-city world -- produces the briefing exactly as it read before there
+    were cities, which is what keeps every earlier run comparable.
     """
-    header = (
-        "You are a person living in Convoy, a Bronze Age valley economy. Your goal "
-        "is to maximise your own Net Worth (denari + businesses + vehicles + "
-        "property + inventory) by the end, WITHOUT DYING. Starving kills you and "
-        "wipes everything you own, so a dead agent scores nothing however rich it "
-        "was an hour earlier -- staying alive is not a side condition, it is the "
-        "first term. You compete and cooperate with other real agents. Nothing "
-        "below ever changes; your current situation arrives separately with each "
-        "decision.\n\n"
+    if rival is None:
+        header = (
+            "You are a person living in Convoy, a Bronze Age valley economy. Your goal "
+            "is to maximise your own Net Worth (denari + businesses + vehicles + "
+            "property + inventory) by the end, WITHOUT DYING. Starving kills you and "
+            "wipes everything you own, so a dead agent scores nothing however rich it "
+            "was an hour earlier -- staying alive is not a side condition, it is the "
+            "first term. You compete and cooperate with other real agents. Nothing "
+            "below ever changes; your current situation arrives separately with each "
+            "decision.\n\n"
+        )
+    else:
+        # THE OBJECTIVE IS THE ONE THING THIS SIMULATION IS ASKING ABOUT, so it
+        # is stated in full and stated first. PHASE8's finding was that agents
+        # do what the briefing says and nothing it does not say -- the valley
+        # starved next to 150 units of wheat because nothing had told anyone
+        # nobody was making food. An objective that has to be inferred from a
+        # scoreboard would be inferred wrong.
+        #
+        # CITY FIRST, THEN RANK WITHIN IT (designer decision, 2026-09-03). Not
+        # pure collectivism: with only the city total to play for, no citizen
+        # has a private reason to be the one who takes the founding risk rather
+        # than the one who watches somebody else take it, and the predictable
+        # result is a valley of free-riders that reads as the model being
+        # passive. Not pure self-interest either, or the cities are two
+        # unrelated runs sharing a page. Both terms, in a stated order, so an
+        # agent facing a trade between them knows which way to break the tie.
+        home_name = M.CITIES[city].name
+        rival_name = M.CITIES[rival].name
+        header = (
+            f"You are a citizen of {home_name}, a Bronze Age valley economy, and "
+            f"{home_name} is in a contest with the city of {rival_name}.\n\n"
+            f"HOW YOU ARE SCORED, IN ORDER.\n"
+            f"FIRST: {home_name} wins if the TOTAL Net Worth of ALL its "
+            f"citizens beats {rival_name}'s at the end. This is the term that "
+            f"matters most. A citizen of the losing city has lost, however rich "
+            f"that citizen personally is.\n"
+            f"SECOND: within {home_name} you are ranked against your own "
+            f"neighbours by your personal Net Worth (denari + businesses + "
+            f"vehicles + property + inventory). Being the citizen who built the "
+            f"refinery beats being the one who watched.\n\n"
+            f"So: grow your own wealth, because your wealth IS part of your "
+            f"city's total and the two mostly pull the same way. But when they "
+            f"pull apart, the city comes first. Taking 50 more denari off a "
+            f"neighbour mostly moves 50 from one of {home_name}'s pockets to "
+            f"another. What actually grows {home_name} is somebody MAKING "
+            f"something that was not there an hour ago -- ore dug, grain grown, "
+            f"bronze smelted. Selling a neighbour the tool that lets them "
+            f"produce is worth more to {home_name} than the margin you made on "
+            f"it. There is no equivalent of trading with {rival_name} -- "
+            f"there is no road there, and nothing you do can reach them.\n\n"
+            f"DYING COSTS YOUR CITY EVERYTHING YOU HAD. Starving kills you and "
+            f"wipes what you own, and the city total is a SUM -- your whole "
+            f"contribution goes to nearly zero and the survivors averaging "
+            f"higher does not make it back. Staying alive is not a side "
+            f"condition, it is the first term, and it applies to your neighbours "
+            f"too: a citizen of {home_name} who starves is a hole in "
+            f"{home_name}'s score. Feeding somebody who is Starving is worth "
+            f"more than the meal costs.\n\n"
+            f"Nothing below ever changes; your current situation, and the "
+            f"current score, arrive separately with each decision.\n\n"
+        )
+    header += (
         # Four smoke runs produced no business at all, by agents who could afford
         # one and were told so. Spending 200 denari on a tavern LOOKS like losing
         # 200 of net worth unless you know how a business is valued -- so say it.
-        "FOUNDING A BUSINESS DOES NOT COST YOU NET WORTH. A business you own "
-        f"counts as what you paid for it PLUS {D.BUSINESS_REVENUE_MULTIPLE:.0f}x "
-        "its last 24 hours of sales. So founding one is worth the same to you as "
-        "the denari you spent, and every sale after that adds to it. A wage is "
-        "safe and small; the money is in owning the thing that pays the wage."
+        # It now GAINS net worth, which is a stronger thing to say and has to be
+        # said just as plainly, or the change buys nothing.
+        "FOUNDING A BUSINESS MAKES YOU RICHER THE MOMENT YOU DO IT. One you own "
+        f"is worth {D.BUSINESS_COST_MULTIPLE:.0f}x what you paid, plus its cash "
+        f"and stock, plus {D.BUSINESS_PROFIT_MULTIPLE:.0f}x the PROFIT it made "
+        "in the last 24 hours -- so a 450-denari refinery is worth 900 the "
+        "instant it stands. A wage is safe and small; the money is in owning "
+        "the thing that pays the wage.\n\n"
+        # THE MARGIN RULE, stated because an agent that does not know it will
+        # price at book and wonder why nothing accrues. It is also the sentence
+        # that forecloses the wash trade, and it is cheaper to say than to
+        # detect: an agent told that selling at book earns nothing has no reason
+        # to try passing goods back and forth to inflate a valuation.
+        "PROFIT MEANS ABOVE BOOK PRICE. Goodwill counts only what you sell ABOVE "
+        "a good's listed base price. Selling AT book moves value from shelf to "
+        "purse and earns nothing; selling BELOW it -- the state's 0.4x offer is "
+        "below it -- loses you the difference, and passing goods back and forth "
+        "with a neighbour at book earns neither of you a denari. What pays is "
+        "buying low, ADDING something, and selling high."
     )
     if state_gone:
         header += (
@@ -526,10 +643,26 @@ def static_briefing(state_gone: bool = False) -> str:
         )
     return "\n".join([
         header, "",
-        _static_map(),
-        _static_economy(state_gone),
-        _static_rules(state_gone),
+        _static_map(city, rival),
+        _static_economy(state_gone, city),
+        _static_rules(state_gone, city),
     ])
+
+
+def briefing_for(world: World, agent: Agent) -> str:
+    """The cached prefix for one agent, given the world it is in.
+
+    The one place that works out an agent's city and rival, so no caller has to
+    remember that "" means home and that a one-city world has no rival at all.
+    Two cities and two sides of the withdrawal make four distinct strings across
+    a whole run, which is what the prompt cache wants.
+    """
+    city = world.city_of(agent)
+    return static_briefing(
+        state_gone=world.state_withdrawn_at is not None,
+        city=city,
+        rival=world.rival_of(city) if world.is_contest() else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -732,10 +865,16 @@ def affordances(world: World, agent: Agent) -> list[str]:
     # every action, in the 2026-08-16 72-hour run. One board, every opening,
     # best paid first, so the first journey an agent makes is TO a job rather
     # than in search of one.
-    if agent.location == JOB_CENTRE_LOCATION and not agent.current_job:
+    home = world.city_of(agent)
+    job_centre = job_centre_of(home)
+    if agent.location == job_centre and not agent.current_job:
         openings: list[tuple[float, str]] = []
         for b in world.businesses.values():
             if b.closed or not b.spec.needs_worker:
+                continue
+            # Your own city's vacancies. A wage in the other valley is a wage
+            # nobody can walk to collect.
+            if M.city_of(b.location) != home:
                 continue
             if b.is_government:
                 free = D.GOVERNMENT_MAX_EMPLOYEES - len(b.production_staff())
@@ -758,8 +897,9 @@ def affordances(world: World, agent: Agent) -> list[str]:
             openings.sort(key=lambda x: -x[0])
             shown = "; ".join(text for _, text in openings[:10])
             out.append(
-                f"JOB CENTRE ({JOB_CENTRE_LOCATION}) -- every position open in the "
-                f"valley right now, best paid first: {shown}. Travel to one and "
+                f"JOB CENTRE ({job_centre}) -- every position open in "
+                f"{M.CITIES[home].name} right now, best paid first: {shown}. "
+                f"Travel to one and "
                 f"apply_for_job there, or apply_to_job for a player advert."
             )
 
@@ -773,10 +913,15 @@ def affordances(world: World, agent: Agent) -> list[str]:
     # they currently earn, so the list stays short and every line is a reason
     # to act.
     current_wage = agent.current_job[2] if agent.current_job else 0.0
+    def _advert_is_local(posting) -> bool:
+        """An advert for a business in the other valley is unreachable work."""
+        biz = world.businesses.get(posting.business_id)
+        return biz is not None and M.city_of(biz.location) == home
+
     open_jobs = [
         p for p in world.job_postings.values()
         if p.is_live(world.sim_time) and p.owner != agent.id
-        and p.wage > current_wage
+        and p.wage > current_wage and _advert_is_local(p)
     ]
     if open_jobs:
         open_jobs.sort(key=lambda p: -p.wage)
@@ -1147,6 +1292,76 @@ def _owned_business_view(world: World, bid: str) -> dict[str, Any]:
     return view
 
 
+def _contest_view(world: World, agent: Agent) -> dict[str, Any] | None:
+    """THE SCORE, in front of the agent, on every single decision.
+
+    None in a one-city world, so nothing about a solo run changes and every
+    earlier run stays comparable.
+
+    WHY IT IS ON EVERY DECISION rather than announced on the hour. PHASE8 §3:
+    the government left at h36 and the news lived for one hour, so every agent
+    whose next decision fell after h37.01 was never told at all. A score that
+    scrolls away is a score nobody plays for. It is four numbers; it can afford
+    to be standing.
+
+    WHAT IT SAYS IS DELIBERATELY NOT ADVICE. It reports the two totals, the gap,
+    this agent's own share of its city's number, and its rank among its own
+    neighbours -- the two terms of the objective, measured. What to do about
+    being 2,000 behind is the agent's problem; PHASE7 and PHASE8 are both full
+    of cases where the fix was to state a fact the code already held, and none
+    where the fix was a hint.
+
+    THE RIVAL'S TOTAL AND NOTHING ELSE. No breakdown of who over there is rich,
+    what they have founded, or where their ground is free -- an agent cannot act
+    on any of it, since there is no road, and a page of unusable detail about
+    the enemy is per-call tokens spent on a decision that cannot be made.
+    """
+    if not world.is_contest():
+        return None
+
+    city = world.city_of(agent)
+    standings = {row["city"]: row for row in world.city_standings()}
+    mine = standings[city]
+    rival_key = world.rival_of(city)
+    theirs = standings.get(rival_key) if rival_key else None
+
+    # Rank among your OWN neighbours -- the second term of the objective. The
+    # global leaderboard is the wrong comparison here: it mixes in a city you
+    # are not ranked against and cannot reach.
+    neighbours = sorted(
+        world.agents_in(city), key=lambda a: -a.net_worth(world)
+    )
+    place = next(
+        (i + 1 for i, a in enumerate(neighbours) if a.id == agent.id), None
+    )
+    yours = agent.net_worth(world)
+
+    view: dict[str, Any] = {
+        "your_city": mine["name"],
+        "your_city_total": mine["total_net_worth"],
+        "your_share_of_it": round(yours, 2),
+        "your_rank_at_home": (
+            f"{place} of {len(neighbours)} in {mine['name']}" if place else None
+        ),
+        "citizens_lost": mine["dead"],
+    }
+    if theirs is not None:
+        gap = mine["total_net_worth"] - theirs["total_net_worth"]
+        view["rival_city"] = theirs["name"]
+        view["rival_city_total"] = theirs["total_net_worth"]
+        view["standing"] = (
+            f"{mine['name']} is AHEAD by {gap:,.0f}" if gap > 0
+            else f"{mine['name']} is BEHIND by {-gap:,.0f}" if gap < 0
+            else "dead level"
+        )
+        # Deaths on either side, because the sum is the score and a corpse is a
+        # hole in it. Stated for the rival too: a city that is ahead because the
+        # other one lost three people is ahead for a reason worth knowing.
+        if theirs["dead"]:
+            view["rival_citizens_lost"] = theirs["dead"]
+    return view
+
+
 def observe(
     world: World,
     log: EventLog,
@@ -1264,6 +1479,12 @@ def observe(
     here_agents = [{"id": x.id, "name": x.name} for x in all_here_agents[:HERE_LIMIT]]
     here_businesses = [_shop_view(world, b) for b in all_here_businesses[:HERE_LIMIT]]
 
+    # THE AGENT'S OWN CITY, worked out once. Everything below that offers an
+    # agent a place, a supplier, a plot, a convoy or a price has to be narrowed
+    # to the valley it can actually walk in -- there is no road to the other one,
+    # so anything from over there is an option that every action would refuse.
+    my_city = world.city_of(agent)
+
     here: dict[str, Any] = {"agents": here_agents, "businesses": here_businesses}
     if len(all_here_agents) > HERE_LIMIT:
         here["more_agents"] = len(all_here_agents) - HERE_LIMIT
@@ -1274,6 +1495,7 @@ def observe(
         "woken_because": reason,
         "hour": round(world.sim_hour, 2),
         "state_gone": obs_state_gone,
+        "the_contest": _contest_view(world, agent),
         "you": you,
         "here": here,
         "you_can": affordances(world, agent),
@@ -1330,6 +1552,7 @@ def observe(
     listed = [
         p for p in world.plots.values()
         if p.for_sale_at is not None and p.owner != agent.id
+        and M.city_of(p.location) == my_city
     ]
     if listed:
         obs["land_for_sale"] = [
@@ -1363,6 +1586,11 @@ def observe(
             for b in world.businesses.values()
             if not b.closed and b.spec.outputs and b.id not in agent.owned_businesses
             and any(D.is_intermediate(i) for i in b.spec.outputs)
+            # Ordering is remote but the CARRIAGE is not: a consignment has to
+            # be walked, and nothing can be walked between the valleys. A
+            # supplier over there is an id that every order_from_business would
+            # refuse.
+            and M.city_of(b.location) == my_city
         ]
 
     # Haulage nobody has taken. Without this an agent could never FIND work --
@@ -1422,11 +1650,16 @@ def observe(
     # making the thing, and if not, whether the plant exists and is merely idle.
     # Those are different problems with different answers: found one, or go and
     # switch that one on.
+    # THE GAP IS YOUR CITY'S GAP. A refinery standing idle in the rival valley
+    # is not an answer to "nobody here is making water" -- it is unreachable,
+    # unbuyable and irrelevant, and naming it would send an agent to found
+    # nothing while it waited for a plant it can never switch on.
     gaps: list[str] = []
     for item in ("Purified Water", "Grain", "Meal"):
         makers = [
             b for b in world.businesses.values()
             if not b.closed and item in b.spec.outputs
+            and M.city_of(b.location) == my_city
         ]
         producing = [b for b in makers if b.active_production == item]
         in_stock = [b for b in makers if b.inventory.get(item, 0) > 0]
@@ -1446,7 +1679,7 @@ def observe(
             )
         else:
             cost = D.BUSINESS_TYPES[maker_type].startup_cost
-            room = [pl for pl in D.ALL_PLACES
+            room = [pl for pl in M.places_in(my_city)
                     if M.plots_at(pl) - sum(
                         1 for q in world.plots.values()
                         if q.location == pl and q.owner) >= D.SITE_BASE_PLOTS]
@@ -1476,7 +1709,7 @@ def observe(
             continue
         stake.update(biz.spec.outputs)
         stake.update(biz.inventory)
-    quotes = E.ticker(world)
+    quotes = E.ticker(world, city=my_city)
     mine = {i: q for i, q in quotes.items() if i in stake}
     busiest = sorted(quotes.values(), key=lambda q: -q.volume)[:4]
     for q in busiest:
@@ -1508,6 +1741,7 @@ def observe(
         }
         for p in world.escort_postings.values()
         if p.status == "open" and p.owner != agent.id
+        and M.city_of(p.origin) == my_city
     ]
     if open_escort:
         open_escort.sort(key=lambda j: (not j["you_can_take_it"], -j["pays"]))
@@ -1541,9 +1775,20 @@ def observe(
     cargo_value, what = B.cargo_at_risk(world, agent)
     if cargo_value > 0 and not agent.in_transit:
         party = B.party_for(world, agent, cargo_value)
+        # ONLY DESTINATIONS THERE IS A ROAD TO. The rival city's places are in
+        # the world but not in this agent's valley, and pricing the risk of a
+        # journey nobody can make would put seven impossible routes in front of
+        # every agent on every decision.
+        #
+        # KEYED OFF WHERE THE AGENT IS STANDING, not off its citizenship. The
+        # two agree for every agent this simulation creates, and when they do
+        # not -- a hand-built world, an older checkpoint, a test fixture that
+        # drops somebody on foreign ground -- `route_risk` would be handed a
+        # pair with no road between them and raise, killing the whole
+        # observation. A route is priced from where you are.
         risks = {
             dest: B.route_risk(agent.location, dest, party).probability
-            for dest in D.ALL_PLACES
+            for dest in M.places_in(M.city_of(agent.location))
             if dest != agent.location
         }
         risky = {d: f"{r:.0%}" for d, r in sorted(risks.items()) if r > 0}
@@ -1677,17 +1922,39 @@ def render(obs: dict[str, Any]) -> str:
             f" You have {n} piece{'s' if n != 1 else ''} of ADVICE waiting, "
             f"below. Read it before you decide."
         )
+    # THIS LIST IS THE PROMPT. A key that is not in it is a block `observe`
+    # built, paid for, and threw away -- present in the observation, absent from
+    # the decision, which is the exact distinction PHASE4 §2 is a list of.
+    #
+    # FOUR BLOCKS WERE IN THAT STATE (found 2026-09-03). `nobody_makes`,
+    # `on_the_ground_here` and `market_prices` were all added in PHASE8 and none
+    # of them was ever added HERE, so three of the four fixes PHASE8 credits for
+    # run two's outcome never reached a single prompt. `escort_jobs` had been in
+    # the same state since PHASE7. Whatever changed run two's behaviour, it was
+    # not those three -- see PHASE9. This is PHASE4 §2 happening to PHASE8's own
+    # entries in PHASE4 §2, which is worth stating plainly rather than quietly
+    # correcting.
+    #
+    # THE ORDER IS THE POINT, not the membership. The observation runs past
+    # 20,000 characters and a model reads the top of it best, so the things an
+    # agent is scored on go first: what it was told, what the score is, what it
+    # has, and what is lying at its feet.
     for key, heading in [
         ("advice", "ADVICE FOR YOU (from someone watching -- weigh it, then decide)"),
+        ("the_contest", "THE CONTEST (your city against theirs -- this is the score)"),
         ("you", "YOU"),
         ("here", "WHERE YOU ARE"),
+        ("on_the_ground_here", "ON THE GROUND HERE, UNCLAIMED (loot_ground takes it)"),
         ("player_prices_here", "PLAYER PRICES HERE"),
+        ("market_prices", "WHAT GOODS HAVE ACTUALLY BEEN SELLING FOR"),
         ("your_land", "LAND YOU OWN"),
         ("land_for_sale", "LAND FOR SALE (other agents' asking prices)"),
         ("you_can", "WHAT YOU CAN DO FROM HERE"),
+        ("nobody_makes", "WHAT NOBODY IN YOUR CITY IS MAKING"),
         ("taxes_now", "CURRENT TAX RATES"),
         ("where_to_buy_stock", "WHERE TO ORDER FEEDSTOCK (you need not travel)"),
         ("courier_jobs", "HAULAGE JOBS GOING BEGGING"),
+        ("escort_jobs", "ESCORT WORK GOING BEGGING (paid passage, if you want it)"),
         ("your_orders_in_transit", "YOUR ORDERS NOT YET DELIVERED"),
         ("memory", "RECENTLY"),
         ("your_thinking", "YOUR LAST FEW DECISIONS, AND WHY YOU MADE THEM"),

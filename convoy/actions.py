@@ -47,10 +47,22 @@ Result = tuple[bool, str]
 # ---------------------------------------------------------------------------
 
 def travel_to(world: World, log: EventLog, agent: Agent, destination: str) -> Result:
-    if destination not in D.ALL_PLACES:
+    if destination not in world_map.EVERY_PLACE:
         return False, f"unknown location {destination!r}"
     if agent.location == destination and not agent.in_transit:
         return False, "already there"
+    # TWO DIFFERENT REFUSALS, because they are two different facts. "Unknown
+    # location" for a name that does not exist; this for a name that does exist
+    # and has no road to it. Collapsing them into one message would teach an
+    # agent that the rival city is imaginary, and it would go on naming it.
+    if not world_map.same_city(agent.location, destination):
+        here = world_map.CITIES[world_map.city_of(agent.location)]
+        there = world_map.CITIES[world_map.city_of(destination)]
+        return False, (
+            f"{destination} is in {there.name} and you are in {here.name}. "
+            f"There is no road between the two valleys and there never will be. "
+            f"You cannot go there, trade there or work there."
+        )
 
     vehicle_type = None
     if agent.mounted_vehicle:
@@ -202,8 +214,10 @@ def post_escort_job(
     """
     if role not in D.CONVOY_PAY:
         return False, f"role must be one of {', '.join(D.CONVOY_PAY)}"
-    if destination not in D.ALL_PLACES or destination == agent.location:
+    if destination not in world_map.EVERY_PLACE or destination == agent.location:
         return False, "name somewhere else to travel to"
+    if not world_map.same_city(agent.location, destination):
+        return False, f"there is no road from {agent.location} to {destination}"
     if agent.in_transit:
         return False, "already on the road"
     if fee <= 0:
@@ -312,7 +326,10 @@ def _risk_comparison(world: World, agent: Agent, bare: "B.Party", party: "B.Part
     Named against a REAL destination rather than an abstract average, because
     "12% safer in general" is not something anyone can act on.
     """
-    reachable = [p for p in D.ALL_PLACES if p != agent.location]
+    reachable = [
+        p for p in world_map.places_in(world_map.city_of(agent.location))
+        if p != agent.location
+    ]
     worst, best_delta = None, 0.0
     for dest in reachable:
         before = B.route_risk(agent.location, dest, bare).probability
@@ -645,7 +662,8 @@ def buy_from_business(
         biz.remove_item(item, qty)
         biz.cash += subtotal - tax            # the seller remits the revenue tax
     world.government.collect(tax)
-    world.market.record(Transaction(world.sim_time, item, qty, unit, biz.id, agent.id))
+    world.market.record(Transaction(world.sim_time, item, qty, unit, biz.id, agent.id,
+                                    city=world.city_of(agent)))
     log.emit(
         world.sim_time, "trade", actor=agent.id, subject=business_id, location=biz.location,
         direction="buy", item=item, qty=qty, unit=round(unit, 2), tax=round(tax, 2),
@@ -687,7 +705,8 @@ def sell_to_business(
 
     agent.remove_item(item, qty)
     agent.denari += proceeds
-    world.market.record(Transaction(world.sim_time, item, qty, unit, agent.id, biz.id))
+    world.market.record(Transaction(world.sim_time, item, qty, unit, agent.id, biz.id,
+                                    city=world.city_of(agent)))
     log.emit(
         world.sim_time, "trade", actor=agent.id, subject=business_id, location=biz.location,
         direction="sell", item=item, qty=qty, unit=round(unit, 2),
@@ -1063,7 +1082,7 @@ def post_job(
     )
     world.chat.append(ChatMessage(
         sim_time=world.sim_time, channel="world", sender=agent.id,
-        sender_name=agent.name, text=text,
+        sender_name=agent.name, sender_city=agent.city, text=text,
     ))
     log.emit(
         world.sim_time, "job_posted", actor=agent.id, subject=business_id,
@@ -1652,7 +1671,8 @@ def buy_meal(world: World, log: EventLog, agent: Agent, business_id: str | None 
 
     agent.denari -= price
     world.government.collect(tax)
-    world.market.record(Transaction(world.sim_time, meal, 1, price, tavern.id, agent.id))
+    world.market.record(Transaction(world.sim_time, meal, 1, price, tavern.id, agent.id,
+                                    city=world.city_of(agent)))
     return _apply_meal(world, log, agent, meal, E.meal_window(meal), price, tavern.name)
 
 
@@ -1698,7 +1718,8 @@ def _post(world: World, log: EventLog, agent: Agent, channel: str, text: str,
         text = text[:MAX_CHAT_CHARS]
     msg = ChatMessage(
         sim_time=world.sim_time, channel=channel, sender=agent.id,
-        sender_name=agent.name, text=text, guild_id=guild_id, recipient=recipient,
+        sender_name=agent.name, sender_city=agent.city, text=text,
+        guild_id=guild_id, recipient=recipient,
     )
     world.chat.append(msg)
     log.emit(
@@ -1709,7 +1730,14 @@ def _post(world: World, log: EventLog, agent: Agent, channel: str, text: str,
 
 
 def post_world_chat(world: World, log: EventLog, agent: Agent, text: str) -> Result:
-    """Open-world chat -- every living agent can read this."""
+    """Open chat -- every living agent OF YOUR OWN CITY can read this.
+
+    Not the whole world any more. The valleys have no road between them, and a
+    board that carried a rival city's prices and wages would both be a thing no
+    reader could act on and a channel through which two populations that are
+    supposed to be running the same experiment separately would learn from each
+    other. See `ChatMessage.sender_city`.
+    """
     return _post(world, log, agent, "world", text)
 
 
@@ -1986,7 +2014,7 @@ def accept_trade(world: World, log: EventLog, agent: Agent, offer_id: str) -> Re
     for item, qty in offer.items.items():
         world.market.record(
             Transaction(world.sim_time, item, qty, offer.price / max(units, 1),
-                        seller.id, agent.id)
+                        seller.id, agent.id, city=world.city_of(agent))
         )
     log.emit(
         world.sim_time, "trade_accepted", actor=agent.id, subject=offer.id,
@@ -2222,6 +2250,18 @@ def order_from_business(
         return False, "no such seller"
     if seller.id == buyer.id:
         return False, "a business cannot buy from itself"
+    # THE ONLY PLACE A CROSS-CITY CONSIGNMENT COULD BE CREATED. Ordering is
+    # remote but carriage is not, so a load bought from the rival valley would
+    # be a load with no road to travel -- and the first thing that touched it
+    # (`suggested_courier_fee`) would raise rather than refuse. The observation
+    # never offers a rival seller's id, so this is a guard rather than a rule
+    # anybody will meet; it is here because the failure mode is a dead tick.
+    if not world_map.same_city(seller.location, buyer.location):
+        return False, (
+            f"{seller.name} is in "
+            f"{world_map.CITIES[world_map.city_of(seller.location)].name} and "
+            f"there is no road from there to {buyer.location}"
+        )
     allowed, why = _may_buy_from(buyer, seller)
     if not allowed:
         return False, why
@@ -2251,7 +2291,8 @@ def order_from_business(
         seller.remove_item(item, qty)
         seller.cash += goods - tax
     world.government.collect(tax)
-    world.market.record(Transaction(world.sim_time, item, qty, unit, seller.id, buyer.id))
+    world.market.record(Transaction(world.sim_time, item, qty, unit, seller.id, buyer.id,
+                                    city=world_map.city_of(seller.location)))
 
     if seller.location == buyer.location:
         buyer.add_item(item, qty)
@@ -2409,7 +2450,7 @@ def post_delivery_job(
     # rest, and the job board is meant to clear work, not to auction it.
     world.chat.append(ChatMessage(
         sim_time=world.sim_time, channel="world", sender=agent.id,
-        sender_name=agent.name,
+        sender_name=agent.name, sender_city=agent.city,
         text=(
             f"CARRIAGE WANTED: a load from {biz.location} to {dest.location}, "
             f"pays {fee:.2f}. {carried} "
@@ -2685,8 +2726,14 @@ def open_courier_jobs(world: World, agent: Agent, limit: int = 8) -> list[dict[s
     job lends, and reveals no quantity.
     """
     out: list[dict[str, Any]] = []
+    home = world.city_of(agent)
     for con in world.consignments.values():
         if con.status != "awaiting_courier" or con.courier_fee <= 0:
+            continue
+        # A load in the other valley cannot be collected, because there is no
+        # road to walk there. Publishing it would be publishing a job every
+        # accept_courier_job would refuse.
+        if world_map.city_of(con.origin) != home:
             continue
         lent = world.vehicles.get(con.lent_vehicle) if con.lent_vehicle else None
         capacity = (
