@@ -424,6 +424,58 @@ class _Idle:
         return None
 
 
+class _Idle:
+    def decide(self, world, agent, reason):
+        return None
+
+
+def test_the_state_can_leave_one_city_and_stay_in_the_other() -> None:
+    """The one-city withdrawal is the controlled experiment: Cinderhold loses
+    its government at the hour, Aldermarch keeps its government for the whole
+    run -- and nobody in Aldermarch is told anything happened, because the
+    cities do not see each other's play."""
+    world, log = contest()
+    gov_here = [b for b in world.businesses.values()
+                if b.is_government and M.city_of(b.location) == HOME]
+    gov_there = [b.id for b in world.businesses.values()
+                 if b.is_government and M.city_of(b.location) == OTHER]
+    ok("both cities start with a government", gov_here and gov_there)
+    plots_there = [p for p in world.plots.values()
+                   if M.city_of(p.location) == OTHER and p.owner == "Government"]
+    plots_here = [p.id for p in world.plots.values()
+                  if M.city_of(p.location) == HOME and p.owner == "Government"]
+
+    eng = Engine(world, log, _Idle(), EngineConfig(
+        duration_hours=0.2, speed=1e9, checkpoint_every_hours=1e9,
+        banditry=False, state_exits_at=0.05, state_exits_city=OTHER,
+    ))
+    eng.step_until(world.sim_time + 1800.0)
+
+    ok("its government is gone from the city named",
+       not any(bid in world.businesses for bid in gov_there))
+    ok("and untouched in the other",
+       all(b.id in world.businesses and not b.closed for b in gov_here))
+    ok("only the named city's state land went back on the market",
+       all(p.owner is None for p in plots_there)
+       and all(world.plots[pid].owner == "Government" for pid in plots_here))
+    check("the record is per city", world.state_gone_at(HOME), None)
+    ok("...and says when, for the city it left", world.state_gone_at(OTHER) is not None)
+    check("and is not a withdrawal from everywhere", world.state_withdrawn_at, None)
+
+    here, there = citizen(world, HOME), citizen(world, OTHER)
+    gone_text = "IS NOT COMING BACK"
+    ok("the city it left is told, in the observation",
+       gone_text in O.render(O.observe(world, log, there, "reevaluation")))
+    ok("the city it stayed in is not",
+       gone_text not in O.render(O.observe(world, log, here, "reevaluation")))
+    ok("and the two briefings disagree about the state, as they must",
+       O.briefing_for(world, here) != O.static_briefing(
+           state_gone=True, city=HOME, rival=OTHER))
+    withdrew = [e for e in log.events if e.type == "state_withdrew"]
+    check("announced once", len(withdrew), 1)
+    check("naming the city", withdrew[0].detail.get("city") if withdrew else None, OTHER)
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in tests:

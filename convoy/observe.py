@@ -659,7 +659,7 @@ def briefing_for(world: World, agent: Agent) -> str:
     """
     city = world.city_of(agent)
     return static_briefing(
-        state_gone=world.state_withdrawn_at is not None,
+        state_gone=world.state_gone_at(city) is not None,
         city=city,
         rival=world.rival_of(city) if world.is_contest() else None,
     )
@@ -1388,10 +1388,11 @@ def observe(
     # gone at all -- one cryptic key=value row, then silence, against a briefing
     # that went on describing the state for another thirty-five hours. This says
     # it at the top of every observation for the rest of the run.
-    if world.state_withdrawn_at is not None:
+    gone_at = world.state_gone_at(world.city_of(agent))
+    if gone_at is not None:
         obs_state_gone = (
             f"The government left the valley at hour "
-            f"{world.state_withdrawn_at:.0f} and IS NOT COMING BACK. Its "
+            f"{gone_at:.0f} and IS NOT COMING BACK. Its "
             f"businesses are demolished, its land is back on the market, and "
             f"nothing buys or sells at a fixed price any more. Nobody is going "
             f"to reopen anything for you."

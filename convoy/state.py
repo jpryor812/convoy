@@ -1220,6 +1220,11 @@ class World:
     # the single fact everything else keys off. Checkpointable, so a resumed
     # world does not forget that the state is gone.
     state_withdrawn_at: float | None = None
+    # PER CITY, when the state leaves one valley and stays in the other
+    # (`EngineConfig.state_exits_city`). `state_withdrawn_at` stays the record of
+    # a withdrawal from EVERYWHERE, so every run before this field existed reads
+    # exactly as it did. Ask `state_gone_at(city)`, never either field directly.
+    state_withdrawn_in: dict[str, float] = field(default_factory=dict)
     next_property_tax_at: float = D.PROPERTY_TAX_PERIOD_HOURS * 3600.0
     next_road_tax_at: float = D.ROAD_TAX_PERIOD_HOURS * 3600.0
     _seq: int = 0
@@ -1268,6 +1273,19 @@ class World:
                 return self.cities[0]
             agent = found
         return agent.city or self.cities[0]
+
+    def state_gone_at(self, city: str) -> float | None:
+        """The hour the government left THIS city, or None if it is still here.
+
+        The single question the briefing, the tool schemas, the refusals and the
+        observation all ask. Asking it per city is the whole of the one-city
+        experiment: with the state gone from Cinderhold only, an Aldermarcher
+        must go on being told about -- and offered -- a government that still
+        exists for them, and a Cinderholder must not.
+        """
+        if city in self.state_withdrawn_in:
+            return self.state_withdrawn_in[city]
+        return self.state_withdrawn_at
 
     def agents_in(self, city: str) -> list["Agent"]:
         return [a for a in self.agents.values() if self.city_of(a) == city]

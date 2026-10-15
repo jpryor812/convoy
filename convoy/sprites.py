@@ -71,6 +71,7 @@ def unit(faction: str = "blue", pose: str = "villager") -> Path:
 FACTION_FOR_MODEL = {
     "openai/gpt-5.6-terra": "blue",
     "openai/gpt-5.6-luna": "green",
+    "openai/gpt-6-luna": "green",
     "deepseek/deepseek-v4-flash-0731": "red",
     "x-ai/grok-4.3": "grey",
     "inclusionai/ling-3.0-flash": "blue",
@@ -89,6 +90,7 @@ BASE_POSE_FOR_MODEL = {
     "deepseek/deepseek-v4-flash-0731": "villager",
     "x-ai/grok-4.3": "villager",
     "openai/gpt-5.6-luna": "villager",
+    "openai/gpt-6-luna": "villager",
 }
 
 # Role -> pose. Ordered: the FIRST match wins, so an owner reads as an owner even
@@ -123,6 +125,7 @@ PERSON_FOR_MODEL = {
     "openai/gpt-5.6-terra": "luke",
     "deepseek/deepseek-v4-flash-0731": "salley",
     "openai/gpt-5.6-luna": "child-1",
+    "openai/gpt-6-luna": "child-1",
     "x-ai/grok-4.3": "zack",
     "inclusionai/ling-3.0-flash": "noah",
 }
@@ -148,6 +151,7 @@ CHARACTER_FOR_MODEL = {
     "openai/gpt-5.6-terra": 1,
     "deepseek/deepseek-v4-flash-0731": 2,
     "openai/gpt-5.6-luna": 3,
+    "openai/gpt-6-luna": 3,
     "x-ai/grok-4.3": 4,
     "inclusionai/ling-3.0-flash": 5,
 }

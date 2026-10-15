@@ -497,7 +497,7 @@ def answer(
     question: str,
     *,
     policy: Any = None,
-    model: str = "openai/gpt-5.6-luna",
+    model: str = "openai/gpt-6-luna",
     force_synthesis: bool = False,
     history: list[Any] | None = None,
     present: str | None = None,

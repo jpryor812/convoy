@@ -1685,7 +1685,7 @@ def eat_best_available(world: World, log: EventLog, agent: Agent) -> Result:
     # the state's Tavern by a map constant, so after a withdrawal it named a
     # building that had been demolished hours earlier -- the most expensive
     # possible moment to be wrong, since the agent reading it is out of food.
-    if world.state_withdrawn_at is not None:
+    if world.state_gone_at(world.city_of(agent)) is not None:
         return False, (
             f"{msg}. Food is served at Taverns only -- travel to one to eat. "
             f"The government is gone and its Tavern with it: the only meals in "

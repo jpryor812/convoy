@@ -190,7 +190,7 @@ overlap the moment a fifth was added.
 ## 5. Running it
 
 ```
-python3 run_phase2.py --cities 2 --agents 20 --decisions 400 --hours 72
+python3 run_phase2.py --cities 2 --agents 20 --decisions 800 --hours 72
 ```
 
 `--agents` is **per city**, so that is forty agents. `--cities 1` is the default
@@ -234,10 +234,10 @@ all still apply, and they now apply to a run that costs twice as much to lose.
   does not matter -- archetypes are unused from Phase 2 on -- but it means the
   16-hour smoke run's near-tie (2,518 vs 2,491) is a weaker fairness signal than
   it looks.
-* **The state still withdraws from both cities at once**, which is correct for a
-  fair contest and forecloses the more interesting experiment: withdrawing from
-  ONE city and watching the other carry on. That is one `if` in
-  `Engine._withdraw_state` and it is the obvious next run.
+* ~~The state still withdraws from both cities at once~~ -- **done 2026-10-14**:
+  `--state-exits-city cinderhold` (with `--state-exits-at`) withdraws the state
+  from that city only. Per-city record in `World.state_withdrawn_in`; every
+  reader asks `world.state_gone_at(city)`. See §10.
 * **A third city would work**, structurally -- `CITIES` is a dict and everything
   reads it -- but nothing has drawn three valleys and `rival_of` assumes exactly
   one rival.
@@ -319,3 +319,37 @@ What it does is give twenty agents a shared reason to care what the other
 nineteen are doing. Whether "your neighbour starving costs you" produces
 anything that looks like a society -- or twenty individualists with a shared
 scoreboard they ignore -- is the thing the first real run is for.
+
+---
+
+## 10. The next run, set up 2026-10-14
+
+    caffeinate -ims python3 run_phase2.py --cities 2 --agents 20 --hours 72 \
+        --decisions 800 --state-exits-at 36 --state-exits-city cinderhold
+
+**The government leaves Cinderhold at hour 36 and stays in Aldermarch.** A
+controlled experiment: identical valleys, identical rules, one variable.
+Aldermarchers are never told; the cities see only each other's score.
+
+**GPT-6 Luna** replaced GPT-5.6 Luna everywhere, at the same "medium" effort:
+$0.10 / $0.50 per Mtok against $0.20 / $1.20. It writes about twice the output
+tokens per decision, so the real saving is about half, not more: the smoke test
+measured $0.00057 a call against $0.00099. Budget about $9 for the run.
+
+**The decision cap is 800**, up from 400. The smoke test measured 5.4 decisions
+per agent-hour, which is ~390 over 72 hours -- right at the old cap, and an agent
+at its cap stops deciding for the rest of the run.
+
+**The map stacks the cities north and south with a river between them** (world
+x is screen y, so `VALLEY_PITCH` was already a vertical separation; what was
+missing was anything saying so). `layout.border_rivers` centres the water in
+the measured gap, and `check()` proves nothing of either city stands in it.
+
+**Smoke tests go to `--runs-dir runs/smoke`.** The public server follows the
+newest run under `runs/phase2`; a smoke test there is shown to the world as the
+live simulation.
+
+Smoke test (2 cities x 4 agents, 3 hours, state out of Cinderhold at 1.5): 129
+calls, 0 errors, $0.07; all 9 of Cinderhold's government buildings gone at
+h1.50, all 9 of Aldermarch's still standing at h3; one of 33 post-withdrawal
+thoughts mentioned the government, none expected it back.

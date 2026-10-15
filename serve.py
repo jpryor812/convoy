@@ -777,7 +777,7 @@ def main() -> int:
     ap.add_argument("--trust-proxy", action="store_true",
                     help="read the visitor's address from CF-Connecting-IP / "
                          "X-Forwarded-For (behind cloudflared, Caddy, nginx)")
-    ap.add_argument("--model", default="openai/gpt-5.6-luna")
+    ap.add_argument("--model", default="openai/gpt-6-luna")
     ap.add_argument(
         "--no-model", action="store_true",
         help="never call a model. Every lookup still works; synthesis questions "

@@ -34,7 +34,7 @@ from pathlib import Path
 from .events import EventLog
 from .state import World
 
-NARRATOR_MODEL = "openai/gpt-5.6-luna"
+NARRATOR_MODEL = "openai/gpt-6-luna"
 NARRATOR_MAX_TOKENS = 1400
 NARRATOR_TIMEOUT_S = 120.0
 

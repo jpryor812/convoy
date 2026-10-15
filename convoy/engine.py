@@ -74,6 +74,10 @@ class EngineConfig:
     # changed prompt halfway through -- which is what made the first attempt two
     # experiments instead of one.
     state_exits_at: float | None = None
+    # Which city the state leaves at `state_exits_at`. None: every city at once,
+    # as before. A city key: that city only, and the other keeps its government
+    # for the whole run -- the controlled experiment a contest makes possible.
+    state_exits_city: str | None = None
 
 
 class Engine:
@@ -93,8 +97,14 @@ class Engine:
         self._rng = random.Random(self.config.banditry_seed)
         # A resumed world may already be past the withdrawal hour; the state is
         # gone if there is no open government business left to close.
-        self._state_gone = world.state_withdrawn_at is not None or not any(
-            b.is_government and not b.closed for b in world.businesses.values()
+        target = self.config.state_exits_city
+        self._state_gone = (
+            (world.state_gone_at(target) is not None) if target
+            else world.state_withdrawn_at is not None
+        ) or not any(
+            b.is_government and not b.closed
+            and (target is None or M.city_of(b.location) == target)
+            for b in world.businesses.values()
         )
         # Relative to where the WORLD is, not to zero. Identical for a fresh
         # world, and the difference between working and not for a resumed one: a
@@ -193,7 +203,7 @@ class Engine:
         exit_at = self.config.state_exits_at
         if exit_at is not None and not self._state_gone and w.sim_hour >= exit_at:
             self._state_gone = True
-            self._withdraw_the_state()
+            self._withdraw_the_state(self.config.state_exits_city)
 
         self._advance_travel(dt)
         self._finish_developments()
@@ -212,7 +222,7 @@ class Engine:
 
     # -- continuous processes ---------------------------------------------
 
-    def _withdraw_the_state(self) -> None:
+    def _withdraw_the_state(self, city: str | None = None) -> None:
         """Delete every government business and spill its stores onto the ground.
 
         DELETED, not merely closed. A closed business is still an object in
@@ -236,7 +246,12 @@ class Engine:
         """
         w = self.world
         closed = fired = 0
-        doomed = [b for b in w.businesses.values() if b.is_government and not b.closed]
+        # ONE CITY OR ALL. With a city named, only its branches go; the other
+        # valley's government is untouched and never hears of it.
+        def here(location: str) -> bool:
+            return city is None or M.city_of(location) == city
+        doomed = [b for b in w.businesses.values()
+                  if b.is_government and not b.closed and here(b.location)]
         for biz in doomed:
             for emp in list(biz.roster):
                 worker = w.agents.get(emp.agent_id)
@@ -292,6 +307,8 @@ class Engine:
         # a market rather than hand somebody a free building.
         freed = 0
         for plot in w.plots.values():
+            if not here(plot.location):
+                continue
             biz = w.businesses.get(plot.business) if plot.business else None
             if plot.owner == "Government" or (biz is not None and biz.is_government):
                 plot.owner = None
@@ -300,12 +317,17 @@ class Engine:
                 plot.for_sale_at = None
                 freed += 1
 
-        w.state_withdrawn_at = w.sim_hour
+        if city is None:
+            w.state_withdrawn_at = w.sim_hour
+        else:
+            w.state_withdrawn_in[city] = w.sim_hour
         self.log.emit(
             w.sim_time, "state_withdrew", location=None,
             businesses_closed=closed, workers_released=fired,
-            plots_released=freed,
-            note="the government has left the valley for good; it will not reopen",
+            plots_released=freed, city=city or "all",
+            note=(f"the government has left {M.CITIES[city].name} for good; "
+                  f"it will not reopen" if city else
+                  "the government has left the valley for good; it will not reopen"),
             significance=Significance.HIGH,
         )
 
