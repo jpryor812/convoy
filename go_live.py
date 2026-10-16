@@ -2,7 +2,7 @@
 """Open the public site's live side, and close it again on Ctrl-C.
 
     python3 go_live.py
-    python3 go_live.py --showcase runs/phase2/20260821-232951 --port 8000
+    python3 go_live.py --showcase showcase/20261015-001645 --port 8000
 
 Three things, in order:
 
@@ -119,7 +119,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8000)
-    ap.add_argument("--showcase", default="showcase/20260821-232951",
+    ap.add_argument("--showcase", default="showcase/20261015-001645",
                     help="the past run to show when nothing is live")
     ap.add_argument("--no-publish", action="store_true",
                     help="start the server and tunnel but do not touch live.json")
