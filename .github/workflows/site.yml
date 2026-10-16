@@ -42,7 +42,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Build the front door
-        run: python3 preview_world.py --run showcase/20260821-232951 --site _site
+        run: python3 preview_world.py --run showcase/20261015-001645 --site _site
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

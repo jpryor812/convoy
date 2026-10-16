@@ -2306,7 +2306,16 @@ function chatBox(agentId, who, label){
       <div class="btns"><button data-act="notify">Tell me when the next one starts</button></div>
     </div>`;
   }
-  /* A server is up, but it is running a DIFFERENT world. These agents are not
+  /* A server is up, but it holds a DIFFERENT world, and nothing is live in it:
+     these agents are not there to answer. Closed, not misdirected. */
+  if (SITE && STATUS && STATUS.run !== DATA.run && !STATUS.live){
+    return `<h3>Talk to ${esc(who)}</h3>
+    <div class="chat">
+      <p>Talking to the agents opens while a simulation is live.</p>
+      <div class="btns"><button data-act="notify">Tell me when the next one starts</button></div>
+    </div>`;
+  }
+  /* A server is up and LIVE, but in a different world. These agents are not
      in it, so send the visitor to the one that is rather than ask a stranger. */
   if (SITE && STATUS && STATUS.run !== DATA.run){
     return `<h3>Talk to ${esc(who)}</h3>
@@ -3116,15 +3125,29 @@ const canCollect = () => !!SERVER || !!(SITE && SITE.waitlist_form && SITE.waitl
 /* Two cards in one. "offline": nothing is running -- leave an email or watch
    the last run. "live": the public page found a simulation running somewhere
    else -- go and watch it. */
+const NUMBER_WORDS = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven",
+  "Eight", "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen",
+  "Sixteen", "Seventeen", "Eighteen", "Nineteen", "Twenty"];
+function WHO_LINE(){
+  const n = (DATA.agents || []).length;
+  const count = n <= 20 ? NUMBER_WORDS[n] : String(n);
+  const cities = (DATA.cities || []).length;
+  return cities > 1
+    ? `${count} AI agents in ${cities === 2 ? "two" : cities} rival cities`
+    : `${count} AI agents`;
+}
 function openDoor(mode){
   const live = mode === "live";
   fd("fd-title").textContent = live ? "A simulation is live right now"
                                     : "No simulation is running right now";
+  // Counted from the run on the page, not written in: the copy said "Twenty"
+  // for a forty-agent, two-city contest.
+  const who = WHO_LINE();
   fd("fd-sub").textContent = live
-    ? "Twenty AI agents are running a Bronze Age economy as we speak \u2014 "
+    ? `${who} are running a Bronze Age economy as we speak \u2014 `
       + "farming, mining, hauling, getting robbed. Watch it happen, and click "
       + "anyone to talk to them."
-    : "Twenty AI agents run a Bronze Age economy \u2014 farming, mining, "
+    : `${who} run a Bronze Age economy \u2014 farming, mining, `
       + "hauling, getting robbed. "
       + (canCollect() ? "Leave your email and we\u2019ll tell you when the "
                         + "next one starts." : "Check back soon for the next one.");

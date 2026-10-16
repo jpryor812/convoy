@@ -8,7 +8,7 @@
     # THE PUBLIC FRONT DOOR: follow whatever is running, fall back to a chosen
     # past run when nothing is, take emails, and cap what strangers can spend.
     python3 serve.py --public --host 0.0.0.0 --port 8000 \
-        --showcase runs/phase2/20260821-232951
+        --showcase showcase/20261015-001645
 
     GET  /                           the map itself, talking back to this server
     GET  /status                     is a simulation running right now?
