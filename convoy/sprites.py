@@ -369,7 +369,7 @@ def ui_glyph(name: str) -> Path:
 ACTION_FAMILY = {
     "coin": (
         "buy_from_business", "sell_to_business", "order_from_business", "buy_meal",
-        "buy_vehicle", "buy_property", "buy_insurance", "deposit", "withdraw",
+        "buy_vehicle", "buy_property", "buy_insurance", "deposit", "withdraw", "pay",
         # Land is bought and sold like anything else; developing it is building.
         "buy_land", "buy_listed_land", "list_land",
         "post_delivery_job",   # paying to move goods is commerce
@@ -378,16 +378,18 @@ ACTION_FAMILY = {
         "collect_business_inventory", "stock_business_inventory", "store_at_home",
     ),
     "travel": (
-        "travel_to", "mount", "dismount", "accept_courier_job",
+        "travel_to", "mount", "dismount", "accept_courier_job", "drop_courier_job",
+        "plan_raid", "join_raid", "abandon_raid",
         "deliver_consignment", "collect_consignment", "cancel_consignment",
     ),
     "work": (
-        "start_shift", "end_shift", "set_production", "equip_tools",
+        "start_shift", "end_shift", "set_production", "equip_tools", "equip",
         "allocate_research", "collect_from_safehouse", "stash_in_safehouse",
         "loot_ground",
     ),
     "hire": (
         "apply_for_job", "apply_to_job", "post_job", "close_job", "hire_applicant",
+        "offer_job", "accept_job_offer",
         "hire_npc_employee", "quit_job", "set_wage",
         "hire_escort", "post_escort_job", "accept_escort_job",
     ),

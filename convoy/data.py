@@ -38,6 +38,10 @@ CURRENCY_NAME = "Denari"
 # 300 clears the Camel (225) with something left to eat on, and leaves the
 # Donkey Cart (600) as a thing to work towards rather than a wall.
 STARTING_DENARI = 300.0
+# With no government there is no tavern at hour zero, so everyone starts fed for
+# a day: long enough to found the farm, refinery and tavern that feed the next
+# one, short enough that somebody has to (designer decision, 2026-10-16).
+START_FED_HOURS_NO_STATE = 24.0
 
 NPC_BUY_PCT_RAW = 0.40          # Trading Post pays this % of base when buying from players
 # 1.60 -> 1.40 (designer decision, 2026-08-16). The chain's own rules compound:
@@ -89,7 +93,21 @@ GOVERNMENT_MAX_EMPLOYEES = 2
 # 2.0 the act of founding CREATES value: spend 450 on a refinery and hold 900.
 # That is a deliberate thumb on the scale for the behaviour these runs exist to
 # observe, and it is bounded by land, which is finite (see `plots_free`).
-BUSINESS_COST_MULTIPLE = 2.0
+#
+# BACK TO 1.0 on 2026-10-16 (designer decision). At 2.0 the 2026-10-15 run's
+# richest agent was worth 7,283 holding 0.2 denari, and the city that "won"
+# did so on idle buildings and unsold ore counted at full price. With no
+# government there is no wage to fall back on, so the push to found comes from
+# needing an income at all -- and what makes an owner rich is now PROFIT, at
+# three times a day's worth, which a working business earns far faster than a
+# wage does.
+BUSINESS_COST_MULTIPLE = 1.0
+
+# Stock is valued at what it would SELL for, not at book: the city's recent
+# trading price, else any city's, else this fraction of book as scrap. Ore with
+# no buyer is not worth its book price, whatever the book says.
+SCRAP_VALUE_PCT = 0.40
+REALIZABLE_WINDOW_HOURS = 24.0
 
 # THE PROFIT MULTIPLE capitalises what a business EARNS, and it is profit
 # rather than revenue for one specific reason.

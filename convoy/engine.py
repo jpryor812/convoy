@@ -15,15 +15,20 @@ for an OpenRouter call behind the same interface.
 from __future__ import annotations
 
 import random
+import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
 from . import banditry as B
+from . import raids as R
 from . import data as D
 from . import economy as E
 from . import world_map as M
 from .events import EventLog, Significance
+from . import digest as DG
+from . import reflexes as RX
 from .state import Activity, Agent, Business, World
 
 TICK_SECONDS = 60.0     # one simulated minute of continuous processes
@@ -53,6 +58,10 @@ def _share_of(total: int, fraction: float) -> int:
     return max(1, min(round(total * fraction), total))
 
 
+# See `Engine._stagger_opening`.
+OPENING_WINDOW_MINUTES = 45.0
+
+
 @dataclass
 class EngineConfig:
     duration_hours: float = D.SIM_DURATION_HOURS
@@ -78,6 +87,25 @@ class EngineConfig:
     # as before. A city key: that city only, and the other keeps its government
     # for the whole run -- the controlled experiment a contest makes possible.
     state_exits_city: str | None = None
+    # AGENTS DECIDING IN PARALLEL. 1 is the original behaviour, exactly: each
+    # decision runs to completion inside the tick that asked for it, and the
+    # clock waits. Above 1, a decision runs on a worker thread while the world
+    # goes on; the agent acts when its answer arrives, the way a person who
+    # stops to think does. Every test and scripted run uses 1, so nothing that
+    # depends on order changes for them.
+    #
+    # Why it matters: the 2026-10-15 run took 31 wall hours for 60 simulated,
+    # almost all of it one agent waiting on the model while 39 others waited on
+    # that agent. A person playing alongside 59 agents cannot wait like that.
+    decision_workers: int = 1
+    # Make the one-answer moves (eat, load and go, keep working, keep waiting)
+    # without asking the model. See `convoy/reflexes.py`. Off by default so
+    # scripted policies and their tests see every wake; model runs turn it on.
+    reflexes: bool = False
+    # How far the clock may run ahead of the oldest decision still being
+    # thought about, in simulated minutes. Small, so a decision lands close to
+    # the moment it was asked for; large enough that many agents think at once.
+    max_decision_lag_minutes: float = 5.0
 
 
 class Engine:
@@ -94,6 +122,18 @@ class Engine:
         self.policy = policy
         self.config = config or EngineConfig()
         self.on_checkpoint = on_checkpoint
+        # One lock over the world. The engine holds it for every tick; a worker
+        # takes it to build an observation or to act, and lets go while it
+        # waits for the model. See `EngineConfig.decision_workers`.
+        self.world_lock = threading.RLock()
+        self._pool: ThreadPoolExecutor | None = None
+        self._pending: dict[str, tuple[Future, float]] = {}
+        if self.config.decision_workers > 1:
+            self._pool = ThreadPoolExecutor(
+                max_workers=self.config.decision_workers, thread_name_prefix="decide"
+            )
+            if hasattr(self.policy, "world_lock"):
+                self.policy.world_lock = self.world_lock
         self._rng = random.Random(self.config.banditry_seed)
         # A resumed world may already be past the withdrawal hour; the state is
         # gone if there is no open government business left to close.
@@ -124,14 +164,54 @@ class Engine:
             w.sim_time, "sim_start",
             agents=len(w.agents), businesses=len(w.businesses),
             duration_hours=cfg.duration_hours,
+            # Which cities this run contains, on line one of the log, so a
+            # page drawing a run before its first save knows the map to draw.
+            cities=list(w.cities), no_state=w.no_state,
         )
+        if w.sim_time == 0.0:
+            self._stagger_opening()
         self.step_until(cfg.duration_hours * 3600.0)
+        self.drain()
         self.log.emit(
             w.sim_time, "sim_end",
             leaderboard=[(n, round(v, 1)) for n, v in w.leaderboard()[:10]],
             treasury=round(w.government.treasury, 1),
         )
         self.log.flush()
+
+    def _stagger_opening(self) -> None:
+        """Wake each city's citizens one after another at hour zero, not all at once.
+
+        THE FIRST NO-STATE SMOKE (2026-10-16): twelve agents, four to a city,
+        all asked at minute zero in parallel, all looking at the same empty
+        valley -- and all twelve founded a Tavern, each announcing it as the
+        city's first. None could see the others' choice, because none had been
+        made yet. After that no one had the cash for the Refinery between farm
+        and tavern, and nobody ate.
+
+        So within a city the opening decisions are spaced further apart than
+        the clock may run ahead of a pending decision (`max_decision_lag_
+        minutes`): each citizen's first decision cannot start until the one
+        before it has acted, so they see what has been founded and what has
+        been said in chat. Cities open side by side; a citizen of one is no
+        rival for the other's first tavern. With one decider at a time there is
+        no overlap to space out.
+
+        The whole opening is capped at `OPENING_WINDOW_MINUTES`, though: at the
+        full gap the twentieth citizen of a city would wait nearly two hours of
+        a twenty-four-hour ration for a first turn. A crowded city's gaps
+        shrink, so two or three neighbours may overlap; the briefing's "say
+        what you are founding before you found it" covers that.
+        """
+        if self.config.decision_workers <= 1:
+            return
+        full = (self.config.max_decision_lag_minutes + 1.0) * 60.0
+        for city in self.world.cities:
+            citizens = self.world.agents_in(city)
+            gap = min(full, OPENING_WINDOW_MINUTES * 60.0 / max(1, len(citizens) - 1))
+            for k, agent in enumerate(citizens):
+                agent.activity = Activity("idle", k * gap)
+                agent.next_reeval_at = k * gap
 
     def step_until(
         self, end_sim_time: float, *, wall_budget_s: float | None = None
@@ -164,7 +244,9 @@ class Engine:
         base_sim = w.sim_time
 
         while w.sim_time < end_sim_time:
-            self.tick(TICK_SECONDS)
+            with self.world_lock:
+                self.tick(TICK_SECONDS)
+            self._keep_up()
 
             if cfg.speed < 1000:  # real-time or near-real-time: pace to the clock
                 drift = (
@@ -174,12 +256,18 @@ class Engine:
                 if drift > 0:
                     time.sleep(drift)
 
+            if (w.digest_at < 0.0
+                    or w.sim_time >= w.digest_at + DG.DIGEST_EVERY_HOURS * 3600.0 - 1e-6):
+                with self.world_lock:
+                    self._publish_digest()
+
             if w.sim_time >= self._next_checkpoint:
-                self._next_checkpoint += cfg.checkpoint_every_hours * 3600.0
-                self._record_standings()
-                self.log.flush()
-                if self.on_checkpoint:
-                    self.on_checkpoint(w)
+                with self.world_lock:
+                    self._next_checkpoint += cfg.checkpoint_every_hours * 3600.0
+                    self._record_standings()
+                    self.log.flush()
+                    if self.on_checkpoint:
+                        self.on_checkpoint(w)
 
             if (
                 wall_budget_s is not None
@@ -340,7 +428,7 @@ class Engine:
         so there is exactly one place in the codebase that knows the odds.
         """
         w = self.world
-        if not self.config.banditry:
+        if not self.config.banditry or not w.npc_bandits:
             return
         cargo_value, what = B.cargo_at_risk(w, agent)
         if cargo_value <= 0:
@@ -375,6 +463,157 @@ class Engine:
             risk=round(risk.probability, 3), fraction=round(fraction, 3),
             value_lost=round(lost_value, 2), escorts=len(agent.escorts),
             vehicle=party.vehicle, cargo=what, borne_by=bearer,
+        )
+
+    def _resolve_raids(self, agent: Agent, origin: str, destination: str) -> None:
+        """Did anybody lie in wait on the road just travelled? See `raids`.
+
+        One ambush per journey: the first road on the route with raiders on it,
+        and the oldest raid there. Raiders never rob themselves or the convoy's
+        own escorts, and a raid with a named target lets everyone else pass.
+        """
+        w = self.world
+        if not w.raids:
+            return
+        cargo_value, what = B.cargo_at_risk(w, agent)
+        if cargo_value <= 0:
+            return                            # nothing worth taking
+        try:
+            _s, path = M.travel_path(origin, destination, w.cities)
+        except M.NoRoadThere:
+            return
+        guards = {m.agent_id for m in agent.escorts}
+        for seg in path:
+            for raid in R.waiting_on(w, seg.name):
+                if raid.target and raid.target != agent.id:
+                    continue
+                if agent.id in raid.members:
+                    continue                  # a crew does not rob its own
+                members = [m for m in R.live_members(w, raid)
+                           if m != agent.id and m not in guards]
+                if members:
+                    self._raid(raid, members, agent, seg, cargo_value, what,
+                               origin, destination)
+                    return
+
+    def _raid(self, raid, members: list[str], agent: Agent, seg, cargo_value: float,
+              what: str, origin: str, destination: str) -> None:
+        w, rng = self.world, self._rng
+        party = B.party_for(w, agent, cargo_value)
+        strength = R.raid_strength(w, members, seg)
+        names = [w.agents[m].name for m in members]
+        common = dict(raid=raid.id, segment=seg.name, raiders=names,
+                      raid_strength=round(strength, 2),
+                      convoy_strength=round(party.strength, 2),
+                      vehicle=party.vehicle, escorts=len(agent.escorts))
+
+        if rng.random() < R.p_spotted(seg, party):
+            self.log.emit(w.sim_time, "raid_spotted", actor=agent.id,
+                          location=destination, significance=Significance.MEDIUM, **common)
+            return
+        if rng.random() >= R.p_raiders_win(strength, party):
+            # BEATEN OFF. Each raider may die; the survivors scatter.
+            killed = [m for m in members if rng.random() < R.p_death(strength, party)]
+            for m in killed:
+                self._raid_death(w.agents[m], seg)
+            for m in members:
+                a = w.agents[m]
+                if a.alive and a.activity.kind == "raid":
+                    a.activity = Activity("idle", w.sim_time)
+            raid.status = "over"
+            self.log.emit(w.sim_time, "raid_repelled", actor=agent.id,
+                          location=destination, significance=Significance.HIGH,
+                          killed=[w.agents[m].name for m in killed], **common)
+            return
+        if rng.random() < B.p_escape(seg, party):
+            self.log.emit(w.sim_time, "raid_outrun", actor=agent.id,
+                          location=destination, significance=Significance.MEDIUM, **common)
+            return
+
+        # ROBBED. The goods go to the raiders, as stolen goods, as far as they
+        # can carry them; the rest is left in the road for anyone to pick up.
+        fraction = rng.uniform(B.LOOT_FRACTION_MIN, B.LOOT_FRACTION_MAX)
+        taken: dict[str, int] = {}
+        lost_value, bearer = 0.0, None
+        if agent.hauling and agent.hauling in w.consignments:
+            value, bearer = self._rob_consignment(agent, fraction, taken)
+            lost_value += value
+        lost_value += self._rob_inventory(agent, fraction, taken)
+        if lost_value <= 0:
+            return
+        left = self._share_loot(members, taken)
+        if left:
+            w.drop_loot(seg.a, left, 0.0)
+        raid.takings += lost_value
+        self.log.emit(
+            w.sim_time, "robbed", actor=agent.id, location=destination,
+            origin=origin, destination=destination, segment=seg.name,
+            risk=round(R.p_raiders_win(strength, party), 3),
+            fraction=round(fraction, 3), value_lost=round(lost_value, 2),
+            escorts=len(agent.escorts), vehicle=party.vehicle, cargo=what,
+            borne_by=bearer, raiders=names, raid=raid.id, items=taken,
+            significance=Significance.HIGH,
+        )
+
+    def _share_loot(self, members: list[str], taken: dict[str, int]) -> dict[str, int]:
+        """Deal the take round the raiders as stolen goods, one unit at a time,
+        to whoever still has room. Returns what nobody could carry."""
+        w = self.world
+        room = {m: max(0, w.agents[m].carry_capacity(w) - w.agents[m].carried_units())
+                for m in members}
+        left: dict[str, int] = {}
+        i = 0
+        for item, qty in taken.items():
+            for _ in range(qty):
+                placed = False
+                for k in range(len(members)):
+                    m = members[(i + k) % len(members)]
+                    if room[m] > 0:
+                        w.agents[m].add_stolen(item, 1)
+                        room[m] -= 1
+                        i = (i + k + 1) % len(members)
+                        placed = True
+                        break
+                if not placed:
+                    left[item] = left.get(item, 0) + 1
+        return left
+
+    def _raid_death(self, agent: Agent, seg) -> None:
+        """Killed in a failed raid. You lose what was ON you -- cargo, stolen
+        goods, the cart you rode, your weapons and armour -- dropped where you
+        fell. Cash, businesses, land and your other vehicles are kept."""
+        w = self.world
+        items = dict(agent.inventory)
+        for k, q in agent.stolen.items():
+            items[k] = items.get(k, 0) + q
+        agent.inventory.clear()
+        agent.stolen.clear()
+        lost_vehicle = None
+        if agent.mounted_vehicle:
+            lost_vehicle = agent.mounted_vehicle
+            veh = w.vehicles.pop(lost_vehicle, None)
+            if lost_vehicle in agent.owned_vehicles:
+                agent.owned_vehicles.remove(lost_vehicle)
+            agent.mounted_vehicle = None
+            lost_vehicle = veh.type if veh else lost_vehicle
+        weapon = agent.equipped_weapon
+        armor = {k: v for k, v in agent.equipped_armor.items() if v}
+        for v in armor.values():
+            items[v] = items.get(v, 0) + 1
+        if weapon and weapon in D.WEAPONS:
+            items[weapon] = items.get(weapon, 0) + 1
+        agent.equipped_weapon = ""
+        agent.equipped_armor = {k: None for k in agent.equipped_armor}
+        if items:
+            w.drop_loot(seg.a, items, 0.0)
+        agent.alive = False
+        agent.health = 0.0
+        agent.respawn_at = w.sim_time + D.RESPAWN_SECONDS
+        agent.activity = Activity("dead", agent.respawn_at)
+        self.log.emit(
+            w.sim_time, "agent_died", actor=agent.id, location=seg.a,
+            cause="killed in a raid", segment=seg.name, lost_items=items,
+            lost_vehicle=lost_vehicle, significance=Significance.HIGH,
         )
 
     def _convoy_destination(self, agent: Agent) -> str:
@@ -427,7 +666,8 @@ class Engine:
                     )
         agent.escorts.clear()
 
-    def _rob_inventory(self, agent: Agent, fraction: float) -> float:
+    def _rob_inventory(self, agent: Agent, fraction: float,
+                       taken_out: dict[str, int] | None = None) -> float:
         """Take a share of what the agent owns, counted across the whole load.
 
         A SHARE OF THE LOAD, NOT A SHARE OF EACH STACK. Rounding per item took
@@ -460,9 +700,12 @@ class Engine:
                 del agent.inventory[item]
             taking -= take
             lost_value += D.base_price(item) * take
+            if taken_out is not None:
+                taken_out[item] = taken_out.get(item, 0) + take
         return lost_value
 
-    def _rob_consignment(self, agent: Agent, fraction: float) -> float:
+    def _rob_consignment(self, agent: Agent, fraction: float,
+                         taken_out: dict[str, int] | None = None) -> float:
         """Take a share of a load being hauled for somebody else.
 
         The goods belong to the buyer, who has already paid for them -- so
@@ -476,6 +719,8 @@ class Engine:
         con = w.consignments[agent.hauling]
         taken = _share_of(con.qty, fraction)
         con.qty -= taken
+        if taken_out is not None and taken:
+            taken_out[con.item] = taken_out.get(con.item, 0) + taken
         agent.hauling_units = max(0, agent.hauling_units - taken)
         unit = con.goods_price / max(1, con.qty + taken)
         refund = unit * taken
@@ -1280,6 +1525,26 @@ class Engine:
                     agent.location = M.market_of(w.city_of(agent))
                 agent.activity = Activity("idle", w.sim_time)
 
+    def _publish_digest(self) -> None:
+        """The periodic "what's working" summary. See `convoy/digest.py`.
+
+        The very first call only takes the baseline, at hour zero: there is no
+        period behind it to report on. After that, every `DIGEST_EVERY_HOURS`.
+        Reading it is left to each agent's next observation -- idle agents are
+        asked every few minutes anyway, and pulling everyone off a shift to
+        read a report would cost a decision each for no new choice.
+        """
+        w = self.world
+        since = max(0.0, w.digest_at)
+        if w.digest_at >= 0.0:
+            w.digest = DG.build(w, self.log, since, w.digest_baseline)
+            self.log.emit(
+                w.sim_time, "digest", text=w.digest,
+                since_hour=round(since / 3600.0, 2), significance=Significance.LOW,
+            )
+        w.digest_at = w.sim_time
+        w.digest_baseline = DG.snapshot(w)
+
     def _record_standings(self) -> None:
         """The score, on the hour, into the log.
 
@@ -1333,6 +1598,7 @@ class Engine:
                 # observation the agent wakes to already shows the empty cart
                 # rather than telling it about the robbery an hour later.
                 self._resolve_banditry(agent, origin, dest)
+                self._resolve_raids(agent, origin, dest)
                 agent.location = dest
                 agent.in_transit = None
                 if agent.mounted_vehicle:
@@ -1386,7 +1652,7 @@ class Engine:
                 # all actions in the 2026-08-15 smoke were an agent reporting it
                 # was still busy.
                 busy = (
-                    agent.activity.kind in ("work", "travel")
+                    agent.activity.kind in ("work", "travel", "raid")
                     and agent.activity.ends_at > w.sim_time
                 )
                 unheard = any(
@@ -1402,7 +1668,85 @@ class Engine:
         agent.next_reeval_at = max(
             agent.next_reeval_at, self.world.sim_time + self.config.reeval_minutes * 60.0
         )
-        self.policy.decide(self.world, agent, reason)
+        # Already thinking: the wake is not lost, it is simply answered by the
+        # decision in flight, which will see the world as it is when it acts.
+        if agent.id in self._pending:
+            return
+        # The moves with one sensible answer are made here, without the model.
+        # See `convoy/reflexes.py`.
+        if self.config.reflexes and RX.handle(self.world, self.log, agent, reason):
+            if agent.activity.kind == "idle" and agent.activity.ends_at <= self.world.sim_time:
+                agent.activity = Activity("idle", agent.next_reeval_at)
+            return
+        agent.last_thought_at = self.world.sim_time
+        if self._pool is None:
+            self.policy.decide(self.world, agent, reason)
+            self._after_thought(agent)
+            return
+        self._pending[agent.id] = (
+            self._pool.submit(self._decide_safely, agent, reason),
+            self.world.sim_time,
+        )
+
+    def _decide_safely(self, agent: Agent, reason: str) -> None:
+        """A worker's whole job. Never lets an exception kill the thread pool
+        silently: it is logged against the agent, at the hour, and the run goes
+        on -- the same promise `schemas.dispatch` makes for a bad tool call."""
+        try:
+            self.policy.decide(self.world, agent, reason)
+        except Exception as exc:                      # noqa: BLE001
+            with self.world_lock:
+                self.log.emit(
+                    self.world.sim_time, "decision_error", actor=agent.id,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+        with self.world_lock:
+            self._after_thought(agent)
+
+    def _after_thought(self, agent: Agent) -> None:
+        """What the agent knows of its own state, taken AFTER it acted.
+
+        Taken before, the agent's own decision looked like news: it paid
+        someone, its cash moved, and the next quiet wake was not quiet. In the
+        first reflex smoke not one "keep waiting" fired in 62 chances. Messages
+        are judged by time instead (`reflexes.news_since`), so one arriving
+        while the model was thinking still counts as unseen.
+        """
+        if self.config.reflexes:
+            agent.thought_fingerprint = RX.fingerprint(self.world, agent)
+
+    def _reap(self) -> None:
+        for aid in [a for a, (f, _) in self._pending.items() if f.done()]:
+            del self._pending[aid]
+
+    def _keep_up(self) -> None:
+        """Hold the clock within `max_decision_lag_minutes` of the oldest
+        decision still being thought about. Without it a fast clock would run
+        hours ahead while an agent was still deciding what to do at dawn."""
+        if self._pool is None:
+            return
+        lag = self.config.max_decision_lag_minutes * 60.0
+        while True:
+            self._reap()
+            oldest = min((t for _, t in self._pending.values()), default=None)
+            if oldest is None or self.world.sim_time - oldest < lag:
+                return
+            time.sleep(0.02)
+
+    def drain(self) -> None:
+        """Wait for every decision in flight to land. Call before saving or
+        ending a run, so nothing an agent decided is lost with the process."""
+        if self._pool is None:
+            return
+        while self._pending:
+            self._reap()
+            time.sleep(0.02)
+
+    def close(self) -> None:
+        self.drain()
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+            self._pool = None
 
     def _diaries(self) -> None:
         """Fixed-cadence hourly reflection, separate from any real decision."""

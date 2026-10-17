@@ -281,6 +281,14 @@ class Agent:
     inbox: list[Recommendation] = field(default_factory=list)
     next_reeval_at: float = 0.0
     next_diary_at: float = 3600.0
+    # When this agent last had the world digest in front of it, so a NEW one
+    # can be flagged on line one. See `convoy/digest.py`.
+    digest_seen_at: float = -1.0
+    # When the model was last asked to decide for this agent, and what was NEWS
+    # to it then. A reflex may stand in for the model only while this has not
+    # moved and not for long. See `convoy/reflexes.py`.
+    last_thought_at: float = -1.0
+    thought_fingerprint: list = field(default_factory=list)
 
     # -- derived ----------------------------------------------------------
 
@@ -438,6 +446,8 @@ class Agent:
             [world.businesses[b].valuation(world) for b in self.owned_businesses],
             [world.vehicles[v].type for v in self.owned_vehicles],
             prop_value,
+            # What it would sell for, here -- the same rule as a business's stock.
+            E.realizable_value(world, self.inventory, world.city_of(self)),
         )
 
     def add_item(self, item: str, qty: int = 1) -> None:
@@ -649,11 +659,15 @@ class Business:
         """
         spec = D.BUSINESS_TYPES.get(self.type)
         base = spec.startup_cost if spec else 0.0
+        # STOCK AT WHAT IT WOULD SELL FOR (2026-10-16). Counted at book, a
+        # warehouse of ore nobody would buy made its owner the richest agent in
+        # the 2026-10-15 run while he begged for a meal. See `realizable_value`.
+        from . import world_map as _M
         return (
             D.BUSINESS_COST_MULTIPLE * base
             + D.BUSINESS_PROFIT_MULTIPLE * max(0.0, self.daily_profit(world))
             + self.cash
-            + E.inventory_value(self.inventory)
+            + E.realizable_value(world, self.inventory, _M.city_of(self.location))
         )
 
     def buy_price_for(self, item: str) -> float:
@@ -879,6 +893,34 @@ class Consignment:
 
 
 @dataclass
+class Raid:
+    """People lying in wait on a road, to rob whoever comes along it.
+
+    THE BANDITS ARE PEOPLE NOW (designer decision, 2026-10-16). Robbery is no
+    longer a dice roll by nobody: an agent plans a raid on a road segment,
+    others join it, and they wait on that road with whatever weapons they own.
+    When a load crosses the road the raiders' strength meets the convoy's --
+    escorts, weapons, armour, the cart's own plating -- and either the load is
+    taken, the convoy outruns them, or the raiders are beaten off and some of
+    them die. Death costs what was on you: cargo, the cart you rode, your
+    weapons and armour. Cash and everything else you own are kept.
+
+    `target` narrows it to one named traveller; empty means anyone with cargo.
+    Members must be standing at one end of the road to join -- you cannot lie
+    in wait from the other side of the map.
+    """
+    id: str
+    organizer: str
+    segment: str
+    created_at: float
+    until: float
+    members: list[str] = field(default_factory=list)
+    target: str | None = None
+    status: str = "waiting"          # waiting | over
+    takings: float = 0.0             # book value stolen so far
+
+
+@dataclass
 class EscortPosting:
     """An owner advertising a place on their next convoy, open to any agent.
 
@@ -1017,6 +1059,10 @@ class JobPosting:
     as_researcher: bool = False
     applicants: list[str] = field(default_factory=list)   # agent ids, in order
     status: str = "open"              # open | filled | closed | expired
+    # A JOB OFFER to one named person rather than an advert to everyone
+    # (`offer_job`). That person can take it outright with `accept_job_offer`
+    # -- including from another employer, which is the point: poaching.
+    invitee: str | None = None
 
     def is_live(self, sim_time: float) -> bool:
         return self.status == "open" and sim_time < self.expires_at
@@ -1052,8 +1098,11 @@ class ChatMessage:
     sender_city: str = ""
 
     def visible_to(self, agent: "Agent") -> bool:
+        # WORLD CHAT REACHES EVERY CITY now that roads join them (2026-10-16):
+        # hiring, recruiting and convoys cross city lines, so talk must too.
+        # The speaker's city is shown on the line, so a reader knows who's who.
         if self.channel == "world":
-            return (self.sender_city or "") == (agent.city or "")
+            return True
         if self.channel == "direct":
             return agent.id in (self.sender, self.recipient)
         if self.channel == "guild":
@@ -1069,7 +1118,11 @@ class ChatMessage:
             tag = f"[guild {self.guild_id}]"
         else:
             tag = f"[dm -> {self.recipient}]"
-        return f"{h:03d}:{m:02d} {tag} {self.sender_name}: {self.text}"
+        # The sender's ID, which is what `pay`, `offer_job` and a DM take. A
+        # name alone left the 2026-10-16 smoke's Cinderhold citizens guessing
+        # it from "A4" in somebody's message -- and paying their refinery
+        # pool to an Aldermarch citizen who was raising one of his own.
+        return f"{h:03d}:{m:02d} {tag} {self.sender_name} ({self.sender}): {self.text}"
 
 
 # ---------------------------------------------------------------------------
@@ -1211,6 +1264,15 @@ class World:
     trade_offers: dict[str, "TradeOffer"] = field(default_factory=dict)
     consignments: dict[str, "Consignment"] = field(default_factory=dict)
     escort_postings: dict[str, "EscortPosting"] = field(default_factory=dict)
+    raids: dict[str, "Raid"] = field(default_factory=dict)
+    # Faceless dice-roll bandits on every road (`engine._resolve_banditry`).
+    # Off for runs since 2026-10-16: robbery is done by people (`Raid`).
+    npc_bandits: bool = True
+    # The latest "what's working" summary, when it was published, and the
+    # numbers the next one measures change against. See `convoy/digest.py`.
+    digest: str = ""
+    digest_at: float = -1.0
+    digest_baseline: dict[str, Any] = field(default_factory=dict)
     job_postings: dict[str, "JobPosting"] = field(default_factory=dict)
     # Items and Denari dropped on death, lootable by anyone at that location.
     ground_loot: dict[str, dict] = field(default_factory=dict)
@@ -1225,6 +1287,11 @@ class World:
     # a withdrawal from EVERYWHERE, so every run before this field existed reads
     # exactly as it did. Ask `state_gone_at(city)`, never either field directly.
     state_withdrawn_in: dict[str, float] = field(default_factory=dict)
+    # NO GOVERNMENT, EVER (designer decision, 2026-10-16). Not a withdrawal: no
+    # state businesses are built, nothing buys or sells at a fixed price, no
+    # wages are paid by anyone but a citizen, and no tax is collected. Every
+    # reader of "is the state gone?" answers yes from hour zero.
+    no_state: bool = False
     next_property_tax_at: float = D.PROPERTY_TAX_PERIOD_HOURS * 3600.0
     next_road_tax_at: float = D.ROAD_TAX_PERIOD_HOURS * 3600.0
     _seq: int = 0
@@ -1283,6 +1350,8 @@ class World:
         must go on being told about -- and offered -- a government that still
         exists for them, and a Cinderholder must not.
         """
+        if self.no_state:
+            return 0.0
         if city in self.state_withdrawn_in:
             return self.state_withdrawn_in[city]
         return self.state_withdrawn_at
@@ -1291,9 +1360,13 @@ class World:
         return [a for a in self.agents.values() if self.city_of(a) == city]
 
     def rival_of(self, city: str) -> str | None:
-        """The city this one is competing with, or None in a one-city world."""
-        others = [c for c in self.cities if c != city]
+        """The FIRST other city, or None in a one-city world. With three cities
+        there is more than one rival; ask `rivals_of` for all of them."""
+        others = self.rivals_of(city)
         return others[0] if others else None
+
+    def rivals_of(self, city: str) -> list[str]:
+        return [c for c in self.cities if c != city]
 
     def is_contest(self) -> bool:
         return len(self.cities) > 1
@@ -1322,7 +1395,32 @@ class World:
         `Business.valuation` is what `Agent.net_worth` already uses. A business
         is not a citizen and has no separate seat at the table.
         """
-        return sum(a.net_worth(self) for a in self.agents_in(city))
+        return self._city_totals().get(city, 0.0)
+
+    def _city_totals(self) -> dict[str, float]:
+        """WHERE WEALTH COUNTS (designer decision, 2026-10-16), now that people
+        can work and build in any city: a citizen's own cash, goods, vehicles
+        and home count for the city they belong to; every business counts for
+        the city it STANDS in, whoever owns it. Build a mine in a rival's
+        valley and you have made the rival richer.
+
+        Business cash is still counted once: a business's valuation is taken
+        out of its owner's personal worth here and added to its city instead.
+        """
+        totals = {c: 0.0 for c in self.cities}
+        for a in self.agents.values():
+            home = self.city_of(a)
+            biz_value = 0.0
+            for bid in a.owned_businesses:
+                b = self.businesses.get(bid)
+                if b is None:
+                    continue
+                v = b.valuation(self)
+                biz_value += v
+                where = M.city_of(b.location)
+                totals[where] = totals.get(where, 0.0) + v
+            totals[home] = totals.get(home, 0.0) + a.net_worth(self) - biz_value
+        return totals
 
     def city_standings(self) -> list[dict[str, Any]]:
         """Every city, richest first, with the numbers behind the number.
@@ -1332,10 +1430,11 @@ class World:
         winning.
         """
         rows = []
+        totals = self._city_totals()
         for city in self.cities:
             people = self.agents_in(city)
             worths = {a.id: a.net_worth(self) for a in people}
-            total = sum(worths.values())
+            total = totals.get(city, 0.0)
             rows.append({
                 "city": city,
                 "name": M.CITIES[city].name if city in M.CITIES else city,

@@ -25,8 +25,10 @@ The simulation continues.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -105,10 +107,23 @@ class LLMPolicy:
         tuple[str, bool], tuple[str, list[dict[str, Any]]]
     ] = field(default_factory=dict)
     _last_call_at: float = 0.0
+    # THE WORLD'S LOCK, handed in by the engine when agents decide in parallel
+    # (`EngineConfig.decision_workers`). Everything that reads or changes the
+    # world -- building the observation, running an action, recording the
+    # decision -- happens under it; waiting for the model does not. One agent
+    # thinking never stops another agent acting. Left as a no-op when nothing
+    # runs in parallel, which is every test and every scripted run.
+    world_lock: Any = field(default_factory=contextlib.nullcontext)
     # The sim clock, stashed for `_fail`. See its docstring.
     _sim_time: float = 0.0
 
     def __post_init__(self) -> None:
+        # Per-thread clock for `_fail` (each worker is deciding for a different
+        # agent at a different moment), and small locks for the shared pace and
+        # the spending books.
+        self._clock = threading.local()
+        self._clock.sim_time = 0.0
+        self._locks = {"pace": threading.Lock(), "books": threading.Lock()}
         if self.api_key is None:
             load_env()          # a .env at the repo root, if there is one
             self.api_key = os.environ.get("OPENROUTER_API_KEY")
@@ -139,26 +154,28 @@ class LLMPolicy:
         key = (city, gone)
         if key not in self._prefixes:
             self._prefixes[key] = (
-                O.briefing_for(world, agent), S.tool_schemas(state_gone=gone)
+                O.briefing_for(world, agent),
+                S.tool_schemas(state_gone=gone, no_state=world.no_state),
             )
         return self._prefixes[key]
 
     # -- the Policy protocol ----------------------------------------------
 
     def decide(self, world: World, agent: Agent, reason: str) -> None:
-        self._sim_time = world.sim_time
-        briefing, tools = self._prefix_for(world, agent)
-        obs = O.observe(world, self.log, agent, reason, record_delivery=not self.dry_run)
+        with self.world_lock:
+            self._clock.sim_time = world.sim_time
+            briefing, tools = self._prefix_for(world, agent)
+            obs = O.observe(world, self.log, agent, reason, record_delivery=not self.dry_run)
 
-        # Which recommendations were in the prompt this agent is about to answer.
-        # Read AFTER `observe`, so it is the same list `observe` just marked as
-        # delivered rather than a second, hopeful guess at what it sent.
-        advised = agent.live_advice(world.sim_hour) if not self.dry_run else []
+            # Which recommendations were in the prompt this agent is about to
+            # answer. Read AFTER `observe`, so it is the same list `observe` just
+            # marked as delivered rather than a second, hopeful guess at it.
+            advised = agent.live_advice(world.sim_hour) if not self.dry_run else []
 
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": briefing},
-            {"role": "user", "content": O.render(obs)},
-        ]
+            messages: list[dict[str, Any]] = [
+                {"role": "system", "content": briefing},
+                {"role": "user", "content": O.render(obs)},
+            ]
 
         if self.dry_run:
             self.log.emit(
@@ -175,6 +192,7 @@ class LLMPolicy:
         acted = 0
         texts: list[str] = []
         did: list[str] = []
+        reasons: list[str] = []
         try:
             for _step in range(self.max_actions):
                 reply = self._call(agent, messages, tools)
@@ -195,10 +213,17 @@ class LLMPolicy:
 
                 for call in calls:
                     name, args = _parse_tool_call(call)
-                    if name is None:
-                        result = (False, "unparseable tool call")
-                    else:
-                        result = S.dispatch(world, self.log, agent, name, args)
+                    why = ""
+                    if isinstance(args, dict):
+                        why = str(args.get("why") or "").strip()
+                    if why:
+                        reasons.append(f"{name}: {why}")
+                    with self.world_lock:
+                        self._clock.sim_time = world.sim_time
+                        if name is None:
+                            result = (False, "unparseable tool call")
+                        else:
+                            result = S.dispatch(world, self.log, agent, name, args)
                     acted += 1
                     if name in A.TERMINAL_ACTIONS:
                         stop = True
@@ -213,7 +238,7 @@ class LLMPolicy:
                     self.log.emit(
                         world.sim_time, "action_call", actor=agent.id,
                         action=name or "<unparseable>", ok=result[0],
-                        detail_text=str(result[1])[:200],
+                        detail_text=str(result[1])[:200], why=why[:300],
                     )
                     # Feed the outcome back: an agent that tried to sell what it
                     # is not carrying should learn why, not silently retry.
@@ -233,7 +258,9 @@ class LLMPolicy:
             # -- still records what the agent said and did up to that point. A
             # decision that half-happened is exactly the kind a student asking
             # "why did you do that?" most needs an answer for.
-            self._remember(world, agent, reason, "\n".join(texts), did, advised=advised)
+            with self.world_lock:
+                self._remember(world, agent, reason, "\n".join(texts), did,
+                               advised=advised, reasons=reasons)
 
     # -- reasoning ---------------------------------------------------------
 
@@ -246,6 +273,7 @@ class LLMPolicy:
         did: list[str],
         *,
         advised: list[Recommendation] | None = None,
+        reasons: list[str] | None = None,
     ) -> None:
         """Store the model's own account of this decision, on the agent and in the log.
 
@@ -259,6 +287,11 @@ class LLMPolicy:
         """
         if not text and not did:
             return
+        reasons = reasons or []
+        # The stated reasons ARE the account when the model kept its thinking
+        # to itself -- which is what "acted without saying why" used to mean.
+        if not text and reasons:
+            text = "\n".join(reasons)
         agent.remember_reasoning(world.sim_hour, reason, text, did)
         self.log.emit(
             world.sim_time, "llm_reasoning", actor=agent.id,
@@ -266,6 +299,8 @@ class LLMPolicy:
             woken_because=reason,
             text=text[:REASONING_CHARS] or "(acted without saying why)",
             did=", ".join(did) or "nothing",
+            # One line per action, in the agent's own words: the `why` field.
+            reasons=[r[:300] for r in reasons],
             # What the agent owned when it decided. Taken AFTER the actions, so
             # it is the position the decision produced rather than the one it
             # started from -- which is the number a reader wants when asking
@@ -361,14 +396,20 @@ class LLMPolicy:
         return None
 
     def _pace(self) -> None:
-        """Hold the request rate under the account's per-model limit."""
+        """Hold the request rate under the account's per-model limit.
+
+        Shared by every worker thread: each takes the next slot in turn, so the
+        rate holds however many agents are thinking at once.
+        """
         if not self.requests_per_minute:
             return
         gap = 60.0 / self.requests_per_minute
-        wait = self._last_call_at + gap - time.monotonic()
+        with self._locks["pace"]:
+            slot = max(time.monotonic(), self._last_call_at + gap)
+            self._last_call_at = slot
+        wait = slot - time.monotonic()
         if wait > 0:
             time.sleep(wait)
-        self._last_call_at = time.monotonic()
 
     # -- accounting --------------------------------------------------------
 
@@ -376,16 +417,18 @@ class LLMPolicy:
         return self.usage.setdefault(model, Usage())
 
     def _record_usage(self, model: str, usage: dict[str, Any]) -> None:
-        slot = self._slot(model)
-        slot.calls += 1
-        slot.prompt_tokens += int(usage.get("prompt_tokens") or 0)
-        slot.completion_tokens += int(usage.get("completion_tokens") or 0)
-        slot.cost += float(usage.get("cost") or 0.0)
-        details = usage.get("prompt_tokens_details") or {}
-        slot.cached_tokens += int(details.get("cached_tokens") or 0)
+        with self._locks["books"]:
+            slot = self._slot(model)
+            slot.calls += 1
+            slot.prompt_tokens += int(usage.get("prompt_tokens") or 0)
+            slot.completion_tokens += int(usage.get("completion_tokens") or 0)
+            slot.cost += float(usage.get("cost") or 0.0)
+            details = usage.get("prompt_tokens_details") or {}
+            slot.cached_tokens += int(details.get("cached_tokens") or 0)
 
     def _record_action(self, agent: Agent) -> None:
-        self._slot(agent.model).actions += 1
+        with self._locks["books"]:
+            self._slot(agent.model).actions += 1
 
     def _fail(self, agent: Agent, detail: str) -> None:
         """Record a transport failure AT THE HOUR IT HAPPENED.
@@ -400,9 +443,10 @@ class LLMPolicy:
         The clock is on the World, which `_fail` had no reference to -- so it is
         stashed by `decide` rather than threaded through every call site.
         """
-        self._slot(agent.model).errors += 1
+        with self._locks["books"]:
+            self._slot(agent.model).errors += 1
         self.log.emit(
-            self._sim_time, "llm_error", actor=agent.id, model=agent.model,
+            getattr(self._clock, "sim_time", 0.0), "llm_error", actor=agent.id, model=agent.model,
             error=detail,
         )
 

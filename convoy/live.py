@@ -225,6 +225,7 @@ class LiveSession:
                 duration_hours=float("inf"),   # a live world has no end
                 speed=speed,
                 checkpoint_every_hours=1.0,
+                reflexes=True,
             ),
             on_checkpoint=lambda w: checkpoint.save(w, source / "checkpoint.json"),
         )

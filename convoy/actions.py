@@ -19,7 +19,9 @@ from . import economy as E
 from . import world_map
 from .events import EventLog, Significance
 from . import banditry as B
+from . import raids as R
 from .state import (
+    Raid,
     Activity,
     Agent,
     Business,
@@ -51,18 +53,11 @@ def travel_to(world: World, log: EventLog, agent: Agent, destination: str) -> Re
         return False, f"unknown location {destination!r}"
     if agent.location == destination and not agent.in_transit:
         return False, "already there"
-    # TWO DIFFERENT REFUSALS, because they are two different facts. "Unknown
-    # location" for a name that does not exist; this for a name that does exist
-    # and has no road to it. Collapsing them into one message would teach an
-    # agent that the rival city is imaginary, and it would go on naming it.
-    if not world_map.same_city(agent.location, destination):
-        here = world_map.CITIES[world_map.city_of(agent.location)]
-        there = world_map.CITIES[world_map.city_of(destination)]
-        return False, (
-            f"{destination} is in {there.name} and you are in {here.name}. "
-            f"There is no road between the two valleys and there never will be. "
-            f"You cannot go there, trade there or work there."
-        )
+    # THE CITIES ARE JOINED BY ROAD now (2026-10-16): go anywhere in this
+    # world. A place in a city this world does not contain is a real name with
+    # no road to it -- a different fact from a name that does not exist.
+    if world_map.city_of(destination) not in world.cities:
+        return False, f"{destination} is not in this world; there is no road to it"
 
     vehicle_type = None
     if agent.mounted_vehicle:
@@ -216,7 +211,7 @@ def post_escort_job(
         return False, f"role must be one of {', '.join(D.CONVOY_PAY)}"
     if destination not in world_map.EVERY_PLACE or destination == agent.location:
         return False, "name somewhere else to travel to"
-    if not world_map.same_city(agent.location, destination):
+    if world_map.city_of(destination) not in world.cities:
         return False, f"there is no road from {agent.location} to {destination}"
     if agent.in_transit:
         return False, "already on the road"
@@ -581,7 +576,8 @@ def start_shift(world: World, log: EventLog, agent: Agent, hours: float = 4.0) -
 
     agent.activity = Activity(
         "work", world.sim_time + hours * 3600.0,
-        {"business": business_id, "role": role},
+        # `hours` so a reflex can start the same shift again. See `reflexes`.
+        {"business": business_id, "role": role, "hours": hours},
     )
     log.emit(
         world.sim_time, "job_started", actor=agent.id, subject=business_id,
@@ -662,8 +658,8 @@ def buy_from_business(
         biz.remove_item(item, qty)
         biz.cash += subtotal - tax            # the seller remits the revenue tax
     world.government.collect(tax)
-    world.market.record(Transaction(world.sim_time, item, qty, unit, biz.id, agent.id,
-                                    city=world.city_of(agent)))
+    _record_trade(world, log, Transaction(world.sim_time, item, qty, unit, biz.id, agent.id,
+                                          city=world.city_of(agent)), "shop", biz.location)
     log.emit(
         world.sim_time, "trade", actor=agent.id, subject=business_id, location=biz.location,
         direction="buy", item=item, qty=qty, unit=round(unit, 2), tax=round(tax, 2),
@@ -705,8 +701,8 @@ def sell_to_business(
 
     agent.remove_item(item, qty)
     agent.denari += proceeds
-    world.market.record(Transaction(world.sim_time, item, qty, unit, agent.id, biz.id,
-                                    city=world.city_of(agent)))
+    _record_trade(world, log, Transaction(world.sim_time, item, qty, unit, agent.id, biz.id,
+                                          city=world.city_of(agent)), "sell", biz.location)
     log.emit(
         world.sim_time, "trade", actor=agent.id, subject=business_id, location=biz.location,
         direction="sell", item=item, qty=qty, unit=round(unit, 2),
@@ -790,9 +786,36 @@ def start_business(
         seed=seed_cash, plots=plots,
         employee_slots=E.employee_slots(world, biz),
     )
+    # THE ID IN THE ANSWER. It used to arrive only in the next observation, so
+    # 46 decisions of the 2026-10-15 run were spent waiting a turn to learn it
+    # before they could set production or hire.
     return True, (
-        f"founded {biz.name} on {plots} plots -- room for "
-        f"{E.employee_slots(world, biz)} employees"
+        f"founded {biz.name} (id {biz.id}) on {plots} plots -- room for "
+        f"{E.employee_slots(world, biz)} employees. Use {biz.id} to set its "
+        f"production, deposit into it, post jobs or hire."
+    )
+
+
+def _record_trade(world: World, log: EventLog, t: Transaction, kind: str,
+                  location: str | None = None) -> None:
+    """Record a sale in the price feed AND in the log, completely.
+
+    Five places in this module sell things, and each logged its own partial
+    event -- a direction and a unit price here, a seller and an offer id there.
+    None said who sold to whom for how much, so a free meal handed to a starving
+    neighbour could not be told from a sale, and nobody could list the trades a
+    run actually made. One `sale` event per transaction, from one place.
+
+    `kind` is how it happened: `shop` (an agent buying from a business), `sell`
+    (an agent selling to one), `meal`, `order` (business to business), `direct`
+    (agent to agent, by offer) or `gift` (a direct trade at no price).
+    """
+    world.market.record(t)
+    log.emit(
+        world.sim_time, "sale", actor=t.buyer, subject=t.seller,
+        location=location, item=t.item, qty=t.qty,
+        unit_price=round(t.unit_price, 2), total=round(t.unit_price * t.qty, 2),
+        seller=t.seller, buyer=t.buyer, city=t.city, kind=kind,
     )
 
 
@@ -1141,6 +1164,12 @@ def hire_applicant(
     hire = world.agents.get(applicant_id)
     if not hire or not hire.alive:
         return False, "that agent is not available"
+    return _take_on(world, log, p, biz, hire, posting_id)
+
+
+def _take_on(world: World, log: EventLog, p, biz, hire: Agent, posting_id: str) -> Result:
+    """Seat `hire` in the job `p` describes, at its wage -- from an advert the
+    owner picked them off, or from an offer they accepted themselves."""
     # Taking a better offer means leaving the old job, not being refused. This
     # used to reject any applicant who was employed, which -- combined with the
     # board being invisible to the employed -- meant nobody could ever change
@@ -1180,9 +1209,80 @@ def hire_applicant(
     )
     poached = f" They left {left} to take it." if left else ""
     return True, (
-        f"hired {hire.name} as {p.role} at {p.wage:.2f}/hr.{poached} They must be "
-        f"AT {biz.location} and on shift to work and to be paid."
+        f"{hire.name} is now {p.role} at {biz.name} for {p.wage:.2f}/hr.{poached} "
+        f"Work happens AT {biz.location}, on shift; that is when wages are paid."
     )
+
+
+def offer_job(
+    world: World, log: EventLog, agent: Agent, business_id: str, agent_id: str,
+    wage: float, role: str = "",
+) -> Result:
+    """Offer one named person a job at your business, at a wage you set.
+
+    POACHING, DONE OPENLY. Anybody may be offered a job -- unemployed, or
+    working for somebody else, in any city -- and if the offer beats what they
+    earn they may simply take it with `accept_job_offer`, leaving their old
+    employer short-handed. That is how wages rise: a worker on 10/hr goes to
+    whoever offers 12 (designer decision, 2026-10-16).
+    """
+    biz = world.businesses.get(business_id)
+    if not biz or biz.closed or biz.owner != agent.id:
+        return False, "not your business"
+    target = world.agents.get(agent_id)
+    if target is None or not target.alive:
+        return False, "no such agent"
+    if target.id == agent.id:
+        return False, "you can work your own business without an offer: apply_for_job there"
+    spec = biz.spec
+    if not role:
+        if not spec.production_roles:
+            return False, f"{biz.type} does not hire production staff"
+        role = spec.production_roles[0]
+    if role not in spec.production_roles:
+        return False, f"{role} is not a role at {biz.type}. It hires: {', '.join(spec.production_roles)}"
+    floor = E.wage_floor(role)
+    if wage < floor:
+        return False, f"below the wage floor for {role} ({floor:.2f})"
+    cap = employee_cap(world, biz)
+    if cap is not None and len(biz.production_staff()) >= cap:
+        return False, (
+            f"no vacancy ({len(biz.production_staff())}/{cap} filled) -- buy_land, "
+            f"then develop_plot, to seat another worker."
+        )
+    pid = world.new_id("J")
+    world.job_postings[pid] = JobPosting(
+        id=pid, business_id=biz.id, owner=agent.id, role=role, wage=round(wage, 2),
+        posted_at=world.sim_time,
+        expires_at=world.sim_time + D.JOB_POSTING_HOURS * 3600.0,
+        invitee=target.id,
+    )
+    now = target.current_job[2] if target.current_job else 0.0
+    world.chat.append(ChatMessage(
+        sim_time=world.sim_time, channel="direct", sender=agent.id,
+        sender_name=agent.name, sender_city=agent.city, recipient=target.id,
+        text=(f"JOB OFFER {pid}: {role} at {biz.name} ({biz.location}) for "
+              f"{wage:.2f}/hr" + (f" -- you earn {now:.2f} now" if target.current_job else "")
+              + f". accept_job_offer(\"{pid}\") to take it."),
+    ))
+    log.emit(
+        world.sim_time, "job_offered", actor=agent.id, subject=biz.id,
+        target=target.id, posting=pid, role=role, wage=round(wage, 2),
+    )
+    return True, f"offered {target.name} {role} at {wage:.2f}/hr ({pid}); they decide"
+
+
+def accept_job_offer(world: World, log: EventLog, agent: Agent, posting_id: str) -> Result:
+    """Take a job you were offered. Leaves any job you hold now."""
+    p = world.job_postings.get(posting_id)
+    if p is None or p.invitee != agent.id:
+        return False, "no such offer to you"
+    if not p.is_live(world.sim_time):
+        return False, f"{posting_id} is {p.status if p.status != 'open' else 'expired'}"
+    biz = world.businesses.get(p.business_id)
+    if not biz or biz.closed:
+        return False, "that business is gone"
+    return _take_on(world, log, p, biz, agent, posting_id)
 
 
 def close_job(world: World, log: EventLog, agent: Agent, posting_id: str) -> Result:
@@ -1212,6 +1312,10 @@ def hire_npc_employee(
     NPC employees cost NPC_WAGE_MULTIPLIER times the smart player wage, which is
     the whole point: convenience at a premium, paid out of business cash.
     """
+    if world.no_state:
+        # A hidden tool can still be named. See `schemas.NO_STATE_HIDDEN`.
+        return False, ("there are no NPC workers here: every worker is a "
+                       "citizen. post_job to advertise, or offer_job to someone")
     biz = world.businesses.get(business_id)
     if not biz or biz.closed or biz.owner != agent.id:
         return False, "not your business"
@@ -1363,6 +1467,45 @@ def withdraw(world: World, log: EventLog, agent: Agent, business_id: str, amount
     biz.cash -= amount
     agent.denari += amount
     return True, f"withdrew {amount:.2f}"
+
+
+def pay(world: World, log: EventLog, agent: Agent, agent_id: str, amount: float,
+        note: str = "") -> Result:
+    """Hand another citizen cash: to pool money for a business nobody can
+    afford alone, repay a debt, settle a deal agreed in chat.
+
+    Added 2026-10-16. With no government, a Refinery cost 450 and everyone
+    started with 300, so the food chain could only exist if two people pooled.
+    There was no way to: the first no-state smoke watched agents invent one-hour
+    "jobs" at their taverns purely to move cash to whoever was nearest the
+    price of a refinery -- and nobody got there in six hours. Like a message, it
+    needs no meeting; unlike a sale, nothing comes back, so it is the payer's
+    word in chat that makes it a loan or a stake.
+    """
+    other = world.agents.get(agent_id)
+    if other is None:
+        return False, "no such citizen"
+    if other.id == agent.id:
+        return False, "cannot pay yourself"
+    if not other.alive:
+        return False, f"{other.name} is dead"
+    if amount <= 0 or agent.denari < amount:
+        return False, f"insufficient funds: you have {agent.denari:.2f}"
+    agent.denari -= amount
+    other.denari += amount
+    log.emit(
+        world.sim_time, "payment", actor=agent.id, subject=other.id,
+        location=agent.location, amount=round(amount, 2), note=note[:200],
+        city=world_map.city_of(agent.location),
+    )
+    away = ""
+    if other.city != agent.city:
+        # Said, not refused: paying across cities can be meant (buying from a
+        # rival's farm). But it is easy to do by mistake, and costs your city.
+        away = (f" NOTE: {other.name} is a citizen of {other.city.title()}, not "
+                f"{agent.city.title()}; this money now counts toward their city.")
+    return True, (f"paid {other.name} {amount:.2f} Denari; you have "
+                  f"{agent.denari:.2f} left.{away}")
 
 
 def collect_business_inventory(
@@ -1671,8 +1814,8 @@ def buy_meal(world: World, log: EventLog, agent: Agent, business_id: str | None 
 
     agent.denari -= price
     world.government.collect(tax)
-    world.market.record(Transaction(world.sim_time, meal, 1, price, tavern.id, agent.id,
-                                    city=world.city_of(agent)))
+    _record_trade(world, log, Transaction(world.sim_time, meal, 1, price, tavern.id, agent.id,
+                                          city=world.city_of(agent)), "meal", tavern.location)
     return _apply_meal(world, log, agent, meal, E.meal_window(meal), price, tavern.name)
 
 
@@ -2012,9 +2155,11 @@ def accept_trade(world: World, log: EventLog, agent: Agent, offer_id: str) -> Re
 
     offer.status = "accepted"
     for item, qty in offer.items.items():
-        world.market.record(
+        _record_trade(
+            world, log,
             Transaction(world.sim_time, item, qty, offer.price / max(units, 1),
-                        seller.id, agent.id, city=world.city_of(agent))
+                        seller.id, agent.id, city=world.city_of(agent)),
+            "gift" if offer.price <= 0 else "direct", agent.location,
         )
     log.emit(
         world.sim_time, "trade_accepted", actor=agent.id, subject=offer.id,
@@ -2250,18 +2395,12 @@ def order_from_business(
         return False, "no such seller"
     if seller.id == buyer.id:
         return False, "a business cannot buy from itself"
-    # THE ONLY PLACE A CROSS-CITY CONSIGNMENT COULD BE CREATED. Ordering is
-    # remote but carriage is not, so a load bought from the rival valley would
-    # be a load with no road to travel -- and the first thing that touched it
-    # (`suggested_courier_fee`) would raise rather than refuse. The observation
-    # never offers a rival seller's id, so this is a guard rather than a rule
-    # anybody will meet; it is here because the failure mode is a dead tick.
-    if not world_map.same_city(seller.location, buyer.location):
-        return False, (
-            f"{seller.name} is in "
-            f"{world_map.CITIES[world_map.city_of(seller.location)].name} and "
-            f"there is no road from there to {buyer.location}"
-        )
+    # BUYING FROM ANOTHER CITY IS TRADE NOW, carried by road like any other
+    # load -- the longest and most exposed haul on the map. Only a city this
+    # world does not contain is out of reach.
+    if (world_map.city_of(seller.location) not in world.cities
+            or world_map.city_of(buyer.location) not in world.cities):
+        return False, f"there is no road from {seller.location} to {buyer.location}"
     allowed, why = _may_buy_from(buyer, seller)
     if not allowed:
         return False, why
@@ -2291,8 +2430,9 @@ def order_from_business(
         seller.remove_item(item, qty)
         seller.cash += goods - tax
     world.government.collect(tax)
-    world.market.record(Transaction(world.sim_time, item, qty, unit, seller.id, buyer.id,
-                                    city=world_map.city_of(seller.location)))
+    _record_trade(world, log, Transaction(world.sim_time, item, qty, unit, seller.id, buyer.id,
+                                          city=world_map.city_of(seller.location)),
+                  "order", seller.location)
 
     if seller.location == buyer.location:
         buyer.add_item(item, qty)
@@ -2443,7 +2583,7 @@ def post_delivery_job(
 
     carried = (
         f"A {vehicle.type} comes with it." if vehicle
-        else "Bring your own transport -- a load moves whole."
+        else "Bring your own transport -- couriers can each take the part they can carry."
     )
     # The advert names a price and a route, not a cargo. Publishing what is in
     # the cart would let couriers pick over the valuable loads and leave the
@@ -2469,8 +2609,21 @@ def post_delivery_job(
     )
 
 
-def accept_courier_job(world: World, log: EventLog, agent: Agent, consignment_id: str) -> Result:
-    """Claim a haulage job. You are not committed until you collect."""
+def accept_courier_job(
+    world: World, log: EventLog, agent: Agent, consignment_id: str, qty: int = 0,
+) -> Result:
+    """Claim a haulage job -- all of it, or the part your vehicle can carry.
+
+    A BIG JOB IS SHARED, NOT REFUSED. A 145-unit load used to be claimable by
+    anyone, then uncollectable by anyone smaller than it, and only the poster
+    could release it: one agent sat on a job its Camel could never carry for
+    twenty simulated hours of the 2026-10-15 run. Now a courier claims what it
+    can carry, the job splits, and the rest stays posted for others -- so four
+    small vehicles can move one large order between them, a caravan.
+
+    `qty` 0 means "as much as I can carry". You are not committed until you
+    collect, and `drop_courier_job` gives an unloaded claim back.
+    """
     con = world.consignments.get(consignment_id)
     if not con:
         return False, "no such consignment"
@@ -2493,16 +2646,96 @@ def accept_courier_job(world: World, log: EventLog, agent: Agent, consignment_id
             f"you already claimed {held.id} ({held.qty}x {held.item}, "
             f"{held.origin} to {held.destination}) -- finish or drop it first"
         )
+    # What this courier can actually move. A lent vehicle comes with the job,
+    # so its load is not limited by what the courier owns.
+    if con.lent_vehicle:
+        room = con.qty
+    else:
+        room = max(0, agent.carry_capacity(world) - agent.carried_units())
+    # THE WHOLE JOB unless you say otherwise -- and you cannot promise what you
+    # cannot carry. Taking a piece is a choice the courier makes out loud with
+    # `qty` (designer decision, 2026-10-16), not something done to it silently.
+    if qty <= 0:
+        if room < con.qty:
+            return False, (
+                f"{con.id} is {con.qty}x {con.item} and you can carry {room} more. "
+                + (f"Claim a piece of it with qty={room}; the rest stays posted "
+                   f"for other couriers." if room > 0 else
+                   "Free up space or get a bigger vehicle first.")
+            )
+        take = con.qty
+    else:
+        take = min(qty, con.qty)
+        if take > room:
+            return False, (
+                f"you can carry {room} more units, not {take}. "
+                + (f"Claim qty={room} or less." if room > 0 else
+                   "Free up space or get a bigger vehicle first.")
+            )
+    if take < con.qty:
+        con = _split_consignment(world, con, take)
     con.status = "claimed"
     con.courier = agent.id
     log.emit(
         world.sim_time, "courier_claimed", actor=agent.id, subject=con.id,
         fee=round(con.courier_fee, 2), origin=con.origin, destination=con.destination,
+        qty=con.qty,
     )
+    rest = ""
+    if consignment_id != con.id:
+        rest = f" The rest of {consignment_id} stays posted for other couriers."
     return True, (
         f"claimed {con.id}: collect {con.qty}x {con.item} at {con.origin}, "
-        f"deliver to {con.destination} for {con.courier_fee:.2f}"
+        f"deliver to {con.destination} for {con.courier_fee:.2f}.{rest}"
     )
+
+
+def _split_consignment(world: World, con: Consignment, take: int) -> Consignment:
+    """Carve `take` units off a posted job into a job of their own.
+
+    Everything that scales with the load is divided pro rata: the goods' price
+    (already paid), the escrowed courier fee, and the loaded-quantity record
+    that pays for partial delivery. Everything else -- who bought, who sold, the
+    split of risk, where it goes -- is the same deal. The remainder keeps the
+    original id and stays posted.
+    """
+    share = take / con.qty
+    part = Consignment(
+        id=world.new_id("C"),
+        seller_business=con.seller_business,
+        buyer_business=con.buyer_business,
+        item=con.item,
+        qty=take,
+        goods_price=round(con.goods_price * share, 2),
+        courier_fee=round(con.courier_fee * share, 2),
+        origin=con.origin,
+        destination=con.destination,
+        created_at=con.created_at,
+        seller_posted=con.seller_posted,
+        seller_share=con.seller_share,
+        qty_posted=take,
+    )
+    con.qty -= take
+    con.goods_price = round(con.goods_price - part.goods_price, 2)
+    con.courier_fee = round(con.courier_fee - part.courier_fee, 2)
+    con.qty_posted = con.qty
+    world.consignments[part.id] = part
+    return part
+
+
+def drop_courier_job(world: World, log: EventLog, agent: Agent, consignment_id: str) -> Result:
+    """Give back a haulage job you claimed but have not loaded."""
+    con = world.consignments.get(consignment_id)
+    if not con:
+        return False, "no such consignment"
+    if con.courier != agent.id or con.status != "claimed":
+        return False, "you have not claimed that job"
+    if agent.hauling == con.id:
+        return False, "it is already loaded -- deliver it"
+    con.status = "awaiting_courier"
+    con.courier = None
+    log.emit(world.sim_time, "courier_dropped", actor=agent.id, subject=con.id)
+    return True, f"dropped {con.id}; it is open to other couriers again"
 
 
 def collect_consignment(world: World, log: EventLog, agent: Agent, consignment_id: str) -> Result:
@@ -2532,7 +2765,7 @@ def collect_consignment(world: World, log: EventLog, agent: Agent, consignment_i
     if free < con.qty:
         return False, (
             f"you can carry {free} more units and this load is {con.qty}. "
-            f"A consignment moves whole -- get a bigger vehicle or drop what you carry."
+            f"Drop what you carry, or drop_courier_job and claim a smaller part."
         )
 
     agent.hauling = con.id
@@ -2730,10 +2963,9 @@ def open_courier_jobs(world: World, agent: Agent, limit: int = 8) -> list[dict[s
     for con in world.consignments.values():
         if con.status != "awaiting_courier" or con.courier_fee <= 0:
             continue
-        # A load in the other valley cannot be collected, because there is no
-        # road to walk there. Publishing it would be publishing a job every
-        # accept_courier_job would refuse.
-        if world_map.city_of(con.origin) != home:
+        # Any city of this world: roads join them now (2026-10-16). Work at
+        # home is listed first; see the sort below.
+        if world_map.city_of(con.origin) not in world.cities:
             continue
         lent = world.vehicles.get(con.lent_vehicle) if con.lent_vehicle else None
         capacity = (
@@ -2762,8 +2994,122 @@ def open_courier_jobs(world: World, agent: Agent, limit: int = 8) -> list[dict[s
             ),
             "vehicle_provided": lent.type if lent is not None else None,
             "you_can_carry_it": capacity - agent.carried_units() >= con.qty,
+            # A job too big to carry whole can still be SHARED: claim the part
+            # you can carry (accept_courier_job with qty) and the rest stays up.
+            "you_can_take_part": capacity - agent.carried_units() > 0,
         })
-    # Best-paying first, but unhaulable jobs last however well they pay: a job
-    # this courier cannot lift is not an opportunity, it is a wasted decision.
-    out.sort(key=lambda j: (not j["you_can_carry_it"], -j["pays"]))
+    # Best-paying first, whole-load jobs before ones this courier can only part.
+    out.sort(key=lambda j: (not j["you_can_take_part"],
+                            world_map.city_of(j["from"]) != home,
+                            not j["you_can_carry_it"], -j["pays"]))
     return out[:limit]
+
+# ---------------------------------------------------------------------------
+# RAIDS -- robbery by people (designer decision, 2026-10-16). See `raids`.
+# ---------------------------------------------------------------------------
+
+def plan_raid(
+    world: World, log: EventLog, agent: Agent, segment: str,
+    hours: float = 4.0, target_id: str = "",
+) -> Result:
+    """Lie in wait on a road to rob whoever comes along it with cargo.
+
+    You must be standing at one end of that road. You wait there for `hours`
+    (and are not asked anything else meanwhile unless you get hungry); others
+    who stand at either end can join with join_raid. Name a `target_id` to let
+    everyone else pass.
+    """
+    seg = R.segment_named(segment)
+    if seg is None:
+        return False, f"no road called {segment!r}"
+    if world_map.city_of(seg.a) not in world.cities or world_map.city_of(seg.b) not in world.cities:
+        return False, f"{segment} is not a road in this world"
+    if agent.location not in (seg.a, seg.b):
+        return False, f"lie in wait from one end of {segment}: {seg.a} or {seg.b}"
+    if agent.in_transit:
+        return False, "you are on the road already"
+    if agent.activity.kind == "raid":
+        return False, "you are already lying in wait -- abandon_raid first"
+    if target_id and target_id not in world.agents:
+        return False, f"no such person {target_id!r}"
+    hours = max(0.5, min(float(hours), R.RAID_MAX_HOURS))
+    rid = world.new_id("R")
+    until = world.sim_time + hours * 3600.0
+    world.raids[rid] = Raid(
+        id=rid, organizer=agent.id, segment=seg.name, created_at=world.sim_time,
+        until=until, members=[agent.id], target=target_id or None,
+    )
+    if agent.current_job:
+        pass                                  # a job waits; a shift does not run
+    agent.activity = Activity("raid", until, {"raid": rid, "segment": seg.name})
+    log.emit(world.sim_time, "raid_planned", actor=agent.id, location=agent.location,
+             raid=rid, segment=seg.name, hours=round(hours, 2),
+             target=target_id or None, significance=Significance.MEDIUM)
+    return True, (
+        f"lying in wait on {seg.name} for {hours:.1f}h as raid {rid}. Anyone you "
+        f"tell can join_raid(\"{rid}\") from {seg.a} or {seg.b} -- more raiders "
+        f"and better weapons beat bigger escorts. Losing the fight can kill you: "
+        f"you would lose what is on you (cargo, cart, weapons), not your cash."
+    )
+
+
+def join_raid(world: World, log: EventLog, agent: Agent, raid_id: str) -> Result:
+    """Join a raid somebody has planned. Stand at one end of its road first."""
+    raid = world.raids.get(raid_id)
+    if raid is None or raid.status != "waiting" or raid.until <= world.sim_time:
+        return False, "no such raid waiting"
+    seg = R.segment_named(raid.segment)
+    if agent.location not in (seg.a, seg.b):
+        return False, f"go to {seg.a} or {seg.b} to join a raid on {seg.name}"
+    if agent.in_transit:
+        return False, "you are on the road already"
+    if agent.id in raid.members and agent.activity.kind == "raid":
+        return False, "you are already in it"
+    if agent.activity.kind == "raid":
+        return False, "you are in another raid -- abandon_raid first"
+    if agent.id not in raid.members:
+        raid.members.append(agent.id)
+    agent.activity = Activity("raid", raid.until, {"raid": raid.id, "segment": raid.segment})
+    log.emit(world.sim_time, "raid_joined", actor=agent.id, location=agent.location,
+             raid=raid.id, segment=raid.segment, significance=Significance.MEDIUM)
+    left = (raid.until - world.sim_time) / 3600.0
+    return True, f"lying in wait on {raid.segment} with raid {raid.id} for {left:.1f}h"
+
+
+def abandon_raid(world: World, log: EventLog, agent: Agent) -> Result:
+    """Stop lying in wait and get up off the road."""
+    if agent.activity.kind != "raid":
+        return False, "you are not lying in wait"
+    rid = agent.activity.detail.get("raid")
+    agent.activity = Activity("idle", world.sim_time)
+    raid = world.raids.get(rid)
+    if raid is not None and not R.live_members(world, raid):
+        raid.status = "over"
+    log.emit(world.sim_time, "raid_abandoned", actor=agent.id, raid=rid)
+    return True, "you leave the road"
+
+
+def equip(world: World, log: EventLog, agent: Agent, item: str) -> Result:
+    """Wield a weapon or wear a piece of armour you are carrying. What it
+    replaces goes back into your pack. Your weapon and armour are what you
+    fight with -- raiding, or defending your own load."""
+    if agent.inventory.get(item, 0) <= 0:
+        return False, f"you are not carrying a {item}"
+    if item in D.WEAPONS:
+        old = agent.equipped_weapon
+        agent.remove_item(item, 1)
+        if old and old in D.WEAPONS:
+            agent.add_item(old, 1)
+        agent.equipped_weapon = item
+        log.emit(world.sim_time, "equipped", actor=agent.id, item=item, replaced=old or None)
+        return True, f"you now fight with a {item}" + (f"; your {old} is in your pack" if old else "")
+    if item in D.ARMOR:
+        slot = D.ARMOR[item].slot
+        old = agent.equipped_armor.get(slot)
+        agent.remove_item(item, 1)
+        if old:
+            agent.add_item(old, 1)
+        agent.equipped_armor[slot] = item
+        log.emit(world.sim_time, "equipped", actor=agent.id, item=item, replaced=old)
+        return True, f"you now wear a {item}" + (f"; your {old} is in your pack" if old else "")
+    return False, f"{item} is neither a weapon nor armour"

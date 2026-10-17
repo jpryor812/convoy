@@ -4,7 +4,7 @@ YOU
   id: A0001
   name: Tester
   denari: 500.0
-  net_worth: 1592.0
+  net_worth: 1278.8
   location: Blindfold Draw
   health: 100.0
   hunger: Normal, 0.0h since eating
@@ -55,6 +55,10 @@ WHAT NOBODY IN YOUR CITY IS MAKING
   - NOBODY MAKES Purified Water AND NO REFINERY EXISTS. Founding one costs 450; free ground at Refinery Row, The Hills, Town. You can afford it.
   - NOBODY MAKES Grain AND NO REFINERY EXISTS. Founding one costs 450; free ground at Refinery Row, The Hills, Town. You can afford it.
   - NOBODY MAKES Meal AND NO TAVERN / INN EXISTS. Founding one costs 200; free ground at Refinery Row, The Hills, Town. You can afford it.
+
+WHAT YOU HOLD THAT NOBODY USES
+  - Grain (32 held) -- worth scrap until a business uses it or it sells
+  - Iron (4 held) -- worth scrap until a business uses it or it sells
 
 CURRENT TAX RATES
   sales: 0.05

@@ -353,6 +353,32 @@ def main_roads(cities: list[str] | None = None) -> list[list[Point]]:
     return [main_road(c) for c in (cities or [M.HOME_CITY])]
 
 
+# How far east of the markets the roads between cities run, in ground metres.
+# Out past the market's own blocks, so the highway does not plough through
+# town; the longer road between the two END cities runs further out still, so
+# it reads as the long way round that it is.
+INTERCITY_EAST_M = 260.0
+INTERCITY_LONG_EAST_M = 420.0
+
+
+def intercity_roads(cities: list[str] | None = None) -> list[list[Point]]:
+    """The roads between the cities' markets, one polyline per road, for every
+    pair this world contains (2026-10-16). Each leaves its market eastward,
+    runs north-south through open country -- crossing the border river on a
+    bridge -- and turns back west into the other market."""
+    cities = cities or [M.HOME_CITY]
+    out: list[list[Point]] = []
+    for seg in M.INTERCITY_SEGMENTS:
+        ca, cb = M.city_of(seg.a), M.city_of(seg.b)
+        if ca not in cities or cb not in cities:
+            continue
+        a, b = junction_center(seg.a), junction_center(seg.b)
+        far = abs(M.CITY_KEYS.index(ca) - M.CITY_KEYS.index(cb)) > 1
+        east = max(a.y, b.y) + (INTERCITY_LONG_EAST_M if far else INTERCITY_EAST_M)
+        out.append([a, Point(a.x, east), Point(b.x, east), b])
+    return out
+
+
 def _smooth(t: float) -> float:
     """Smoothstep. Flat at both ends, so a bend leaves and arrives square."""
     return t * t * (3.0 - 2.0 * t)
