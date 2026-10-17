@@ -149,10 +149,19 @@ def test_valuation_counts_cash_and_stock():
        f"{biz.valuation(world):.2f} vs {base + 300.0:.2f}")
 
     biz.cash = 0.0
+    biz.active_production = "Bronze"      # copper is something it USES
     biz.inventory["Copper Ore"] = 10
     want = base + E.inventory_value({"Copper Ore": 10})
-    ok("stock raises valuation", abs(biz.valuation(world) - want) < 1e-6,
+    ok("stock it uses raises valuation at book", abs(biz.valuation(world) - want) < 1e-6,
        f"{biz.valuation(world):.2f} vs {want:.2f}")
+
+    # NOBODY USES IT: worth scrap, not book (2026-10-16). Ore piled up with no
+    # refinery to take it made the 2026-10-15 leader rich on paper only.
+    for other in world.businesses.values():
+        other.active_production = None
+    scrap = base + E.inventory_value({"Copper Ore": 10}) * D.SCRAP_VALUE_PCT
+    ok("stock nobody can use counts as scrap", abs(biz.valuation(world) - scrap) < 1e-6,
+       f"{biz.valuation(world):.2f} vs {scrap:.2f}")
 
 
 def test_spending_cash_on_stock_is_value_neutral():
@@ -170,6 +179,7 @@ def test_spending_cash_on_stock_is_value_neutral():
     a.owned_businesses.append(biz.id)
     biz.inventory.clear()
 
+    biz.active_production = "Bronze"      # feedstock it is about to refine
     unit = D.base_price("Copper Ore")
     biz.cash = unit * 10
     before = biz.valuation(world)

@@ -36,6 +36,11 @@ FAILURES: list[str] = []
 TAVERN_TOWN = M.GOVERNMENT_SITES["Tavern / Inn"]
 
 
+def check(label, actual, expected) -> None:
+    if actual != expected:
+        FAILURES.append(f"{label}: got {actual!r}, expected {expected!r}")
+
+
 def ok(label: str, cond: bool, detail: str = "") -> None:
     print(f"  {label}" + (f": {detail}" if detail else ""))
     if not cond:
@@ -86,16 +91,19 @@ def test_a_full_delivery_conserves_goods_and_money():
     ok("seller was paid", refinery.cash > refinery_cash, f"{refinery.cash:.2f}")
     ok("nothing delivered yet", tavern.inventory.get("Grain", 0) == 0)
 
-    # A courier with only a satchel cannot lift 20 units.
+    # A courier with only a satchel cannot PROMISE 20 units: the claim itself
+    # is refused, and the refusal says how to take a piece instead.
     courier.location = "Refinery Row"
-    A.accept_courier_job(world, log, courier, con.id)
-    okc, msg = A.collect_consignment(world, log, courier, con.id)
-    ok("on foot, a 20-unit load is refused", not okc, msg)
+    okc, msg = A.accept_courier_job(world, log, courier, con.id)
+    ok("on foot, claiming a 20-unit load is refused", not okc, msg)
+    ok("...and the refusal offers a piece", "qty=" in msg, msg)
 
     courier.location = "Town"
     A.buy_vehicle(world, log, courier, "Camel")
     A.mount(world, log, courier, courier.owned_vehicles[0])
     courier.location = "Refinery Row"
+    okc, msg = A.accept_courier_job(world, log, courier, con.id)
+    ok("with a Camel the whole job can be claimed", okc, msg)
     okc, msg = A.collect_consignment(world, log, courier, con.id)
     ok("with a Camel it loads", okc, msg)
     ok("the load takes up room in the cart", courier.carried_units() == 20,
@@ -469,6 +477,32 @@ def test_the_load_is_sealed():
     ok("the advert names no cargo", "Copper Ore" not in text, text)
     ok("nor a quantity", " 4x" not in text and "4x " not in text, text)
     ok("but does name the price", "40.00" in text, text)
+
+
+def test_a_big_job_is_shared_out_as_a_caravan():
+    """Four small vehicles can move one big order between them: each courier
+    claims the piece it can carry, and money and goods stay whole."""
+    world, log, owner, courier, mine, gov = _full_mine()
+    A.post_delivery_job(world, log, owner, mine.id, "Copper Ore", 100, gov.id, 90.0)
+    big = next(c for c in world.consignments.values() if c.qty == 100)
+    fee0, price0 = big.courier_fee, big.goods_price
+    courier.location = big.origin
+    okc, msg = A.accept_courier_job(world, log, courier, big.id, qty=5)
+    ok("a piece can be claimed on foot", okc, msg)
+    piece = next(c for c in world.consignments.values()
+                 if c.courier == courier.id and c.status == "claimed")
+    ok("the piece is its own job", piece.id != big.id and piece.qty == 5, str(piece))
+    ok("the rest stays posted", big.status == "awaiting_courier" and big.qty == 95,
+       f"{big.status} {big.qty}")
+    check("the fee is shared pro rata, nothing created or lost",
+          round(piece.courier_fee + big.courier_fee, 2), round(fee0, 2))
+    check("so is the price already paid", round(piece.goods_price + big.goods_price, 2),
+          round(price0, 2))
+    okc, msg = A.accept_courier_job(world, log, courier, big.id, qty=50)
+    ok("you cannot claim more than you can carry", not okc, msg)
+    okd, msg = A.drop_courier_job(world, log, courier, piece.id)
+    ok("an unloaded piece can be dropped", okd, msg)
+    ok("and is open to others again", piece.status == "awaiting_courier" and piece.courier is None)
 
 
 def test_a_job_you_cannot_lift_sorts_last():

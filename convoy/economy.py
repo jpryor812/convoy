@@ -508,6 +508,7 @@ def net_worth(
     business_values: list[float],
     vehicle_types: list[str],
     property_value: float = 0.0,
+    inventory_worth: float | None = None,
 ) -> float:
     """Denari + businesses + vehicles (base price)
     + property (purchase + upgrades) + inventory (base price).
@@ -521,7 +522,7 @@ def net_worth(
         + sum(business_values)
         + sum(D.VEHICLES[v].base_price for v in vehicle_types)
         + property_value
-        + inventory_value(inventory)
+        + (inventory_value(inventory) if inventory_worth is None else inventory_worth)
     )
 
 
@@ -684,6 +685,7 @@ def net_worth(
     business_values: list[float],
     vehicle_types: list[str],
     property_value: float = 0.0,
+    inventory_worth: float | None = None,
 ) -> float:
     """Denari + businesses + vehicles (base price)
     + property (purchase + upgrades) + inventory (base price).
@@ -697,7 +699,7 @@ def net_worth(
         + sum(business_values)
         + sum(D.VEHICLES[v].base_price for v in vehicle_types)
         + property_value
-        + inventory_value(inventory)
+        + (inventory_value(inventory) if inventory_worth is None else inventory_worth)
     )
 
 
@@ -742,3 +744,73 @@ def insurance_payout(insured_value: float) -> float:
 def required_reserve(outstanding_insured_value: float) -> float:
     """A brokerage must hold >= 70% of outstanding insured value to issue new policies."""
     return outstanding_insured_value * D.INSURANCE_RESERVE_PCT
+
+
+# --- what stock would actually sell for ----------------------------------------
+
+_REALIZABLE_CACHE: dict[int, tuple[tuple, dict]] = {}
+
+
+def _recent_prices(world) -> dict:
+    """Volume-weighted sale prices over the last day, per (city, item) and per
+    item across every city. Rebuilt at most every ten simulated minutes: it is
+    read on every valuation, and every decision values every business."""
+    txs = world.market.transactions
+    key = (len(txs), int(world.sim_time // 600))
+    hit = _REALIZABLE_CACHE.get(id(world))
+    if hit and hit[0] == key:
+        return hit[1]
+    since = world.sim_time - D.REALIZABLE_WINDOW_HOURS * 3600.0
+    sums: dict = {}
+    for t in reversed(txs):
+        if t.sim_time < since:
+            break
+        if t.unit_price <= 0:
+            continue                      # a gift says nothing about worth
+        for k in ((t.city, t.item), ("*", t.item)):
+            v, q = sums.get(k, (0.0, 0))
+            sums[k] = (v + t.unit_price * t.qty, q + t.qty)
+    prices = {k: v / q for k, (v, q) in sums.items() if q}
+    _REALIZABLE_CACHE[id(world)] = (key, prices)
+    return prices
+
+
+def items_in_use(world) -> frozenset:
+    """Every good somebody is set up to USE right now: an input to some open
+    business's current production, anywhere -- goods can be hauled. Computed
+    fresh each time: it is a pass over a few dozen businesses, and a cached
+    answer went stale the moment an owner changed what a refinery makes."""
+    used: set[str] = set()
+    for b in world.businesses.values():
+        if b.closed or not b.active_production:
+            continue
+        r = D.REFINING_RECIPES.get(b.active_production) or D.CRAFTING_RECIPES.get(b.active_production)
+        if r is not None:
+            used.update(r.inputs)
+    return frozenset(used)
+
+
+def realizable_price(world, item: str, city: str = "") -> float:
+    """What one unit of `item` would fetch now.
+
+    1. What it has actually sold for lately -- this city, else any city.
+    2. Book, if somebody is set up to use it (`items_in_use`) or it is a
+       finished good people buy for themselves. Ordering feedstock you are about
+       to refine must not read as losing money: before anything has traded,
+       which is all of hour zero, every purchase would otherwise look like one.
+    3. Scrap, if nobody can use it. That is ore nobody refines -- the warehouse
+       that made the 2026-10-15 run's richest agent rich on paper only.
+    """
+    prices = _recent_prices(world)
+    if (city, item) in prices:
+        return prices[(city, item)]
+    if ("*", item) in prices:
+        return prices[("*", item)]
+    if not D.is_intermediate(item) or item in items_in_use(world):
+        return D.base_price(item)
+    return D.base_price(item) * D.SCRAP_VALUE_PCT
+
+
+def realizable_value(world, inventory: dict[str, int], city: str = "") -> float:
+    return sum(realizable_price(world, item, city) * qty
+               for item, qty in inventory.items() if qty)

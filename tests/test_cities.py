@@ -129,49 +129,39 @@ def test_the_home_valley_is_untouched() -> None:
 # 2. THE VALLEYS DO NOT TOUCH
 # ---------------------------------------------------------------------------
 
-def test_there_is_no_road_between_them() -> None:
+def test_the_cities_are_joined_by_road() -> None:
+    """Roads join the cities since 2026-10-16: travel, trade, work and build
+    anywhere. Only a city this world does not contain is out of reach."""
     world, log = contest()
     here, there = citizen(world, HOME), citizen(world, OTHER)
-
-    ok("travel across the border is refused",
-       not A.travel_to(world, log, here, there.location)[0])
-    reason = A.travel_to(world, log, here, there.location)[1]
-    # TWO DIFFERENT REFUSALS. "No such place" would teach an agent the rival
-    # city is imaginary, and it would go on naming it.
-    ok("and says why, not 'unknown location'",
-       "no road" in reason.lower() and "unknown" not in reason.lower(), reason)
-    ok("a place that really does not exist reads differently",
-       "unknown" in A.travel_to(world, log, here, "Atlantis")[1].lower())
-
-    try:
-        M.travel_path(here.location, there.location)
-        FAILURES.append("travel_path allowed a cross-city journey")
-    except M.NoRoadThere:
-        pass
-
-    # ...and travel INSIDE a city still works, or the guard is too wide.
-    ok("travel at home still works",
-       A.travel_to(world, log, here, M.spurs_in(HOME)[0].name)[0])
+    seconds, path = M.travel_path(here.location, there.location)
+    ok("a route exists between the markets", seconds > 0 and path, str(path))
+    ok("over a road between cities",
+       any(seg in M.INTERCITY_SEGMENTS for seg in path), str([s.name for s in path]))
+    okt, msg = A.travel_to(world, log, here, there.location)
+    ok("an agent may travel to the other city", okt, msg)
+    ok("a place that does not exist is still refused",
+       "unknown" in A.travel_to(world, log, there, "Atlantis")[1].lower())
+    # A two-city world contains no third city, so there is no road to it.
+    third = [c for c in M.CITY_KEYS if c not in world.cities]
+    if third:
+        okx, msg = A.travel_to(world, log, there, M.market_of(third[0]))
+        ok("a city this world does not contain is unreachable", not okx, msg)
 
 
-def test_nothing_the_observation_offers_is_unreachable() -> None:
-    """Every id, place and job an agent is shown must be one it can act on.
-
-    This is PHASE4 §2 in its most expensive form: an observation that offers
-    forty destinations where twenty are reachable does not merely waste tokens,
-    it spends decisions on calls that can only be refused.
-    """
+def test_everything_offered_is_reachable() -> None:
+    """Every place an agent is shown must be one it can act on: now that means
+    any city in THIS world, and none outside it."""
     world, log = contest()
     here = citizen(world, HOME)
     here.denari = 5_000.0
     obs = O.observe(world, log, here, "reevaluation")
-
-    foreign = set(M.places_in(OTHER))
-    blob = repr(obs)
-    for place in sorted(foreign):
-        ok(f"the observation never names {place}", place not in blob)
-
-    # The job centre is the agent's own market, and lists its own city's work.
+    blob = repr(obs) + O.briefing_for(world, here)
+    for c in M.CITY_KEYS:
+        if c in world.cities:
+            continue
+        for place in M.places_in(c):
+            ok(f"never names {place}, which is not in this world", place not in blob)
     jobs = [ln for ln in obs["you_can"] if "JOB CENTRE" in ln]
     ok("the job board is the home market", jobs and M.market_of(HOME) in jobs[0],
        jobs[0] if jobs else "no job centre line")
@@ -201,40 +191,57 @@ def test_the_markets_are_separate() -> None:
     check("unscoped is the whole world", len(E.ticker(world)), 2)
 
 
-def test_chat_does_not_carry_across_the_hills() -> None:
+def test_world_chat_reaches_every_city() -> None:
+    """Hiring, recruiting and convoys cross city lines, so talk must too."""
     world, log = contest()
     here, there = citizen(world, HOME), citizen(world, OTHER)
-    A.post_world_chat(world, log, here, "grain is 9 at the bridge")
-
+    A.post_world_chat(world, log, here, "hiring miners at 30/hr")
     ok("a neighbour hears it",
-       any("grain is 9" in m.text for m in A.visible_chat(world, world.agents_in(HOME)[1])))
-    ok("the rival city does not",
-       not any("grain is 9" in m.text for m in A.visible_chat(world, there)))
+       any("hiring miners" in m.text for m in A.visible_chat(world, world.agents_in(HOME)[1])))
+    ok("and so does the other city",
+       any("hiring miners" in m.text for m in A.visible_chat(world, there)))
 
 
-def test_no_consignment_may_cross() -> None:
-    """The one path that could create a load with no road to travel.
-
-    Ordering is remote; carriage is not. A cross-city order would be refused by
-    nothing until `suggested_courier_fee` raised on it, which kills the tick
-    rather than the action.
-    """
+def test_goods_can_be_ordered_from_another_city() -> None:
+    """Trade between cities is a consignment like any other, carried by road."""
     from convoy.state import Business
 
     world, log = contest()
-    here = citizen(world, HOME)
-    mine = Business(id="B1", type="Refinery", name="Mine", owner=here.id,
+    here, there = citizen(world, HOME), citizen(world, OTHER)
+    mine = Business(id="B1", type="Refinery", name="Refinery", owner=here.id,
                     location=M.CITIES[HOME].refinery_row, cash=5_000.0)
     world.businesses[mine.id] = mine
     here.owned_businesses.append(mine.id)
-    rival_farm = next(
-        b for b in world.businesses.values()
-        if b.type == "Farm" and M.city_of(b.location) == OTHER
-    )
-    okay, why = A.order_from_business(
-        world, log, here, mine.id, rival_farm.id, "Wheat", 5, 10.0)
-    ok("a cross-city order is refused", not okay)
-    ok("and says there is no road", "no road" in why.lower(), why)
+    farm = Business(id="B2", type="Farm", name="Farm", owner=there.id,
+                    location=M.spurs_in(OTHER)[-1].name, cash=0.0)
+    farm.add_item("Wheat", 20)
+    world.businesses[farm.id] = farm
+    there.owned_businesses.append(farm.id)
+    okay, why = A.order_from_business(world, log, here, mine.id, farm.id, "Wheat", 5, 10.0)
+    ok("a cross-city order goes through", okay, why)
+    con = next((c for c in world.consignments.values() if c.buyer_business == mine.id), None)
+    ok("and makes a load to carry between the cities",
+       con is not None and M.city_of(con.origin) == OTHER and M.city_of(con.destination) == HOME)
+
+
+def test_a_business_counts_for_the_city_it_stands_in() -> None:
+    """Build in a rival's valley and you have made the rival richer."""
+    from convoy.state import Business
+
+    world, _log = contest()
+    here = citizen(world, HOME)
+    before = {c: world.city_wealth(c) for c in world.cities}
+    farm = Business(id="B9", type="Farm", name="Farm", owner=here.id,
+                    location=M.spurs_in(OTHER)[0].name, cash=500.0)
+    world.businesses[farm.id] = farm
+    here.owned_businesses.append(farm.id)
+    here.denari -= 500.0                  # it was built with the owner's money
+    after = {c: world.city_wealth(c) for c in world.cities}
+    value = farm.valuation(world)
+    ok("the owner's city lost what was spent",
+       abs((after[HOME] - before[HOME]) + 500.0) < 1e-6, f"{after[HOME] - before[HOME]:.2f}")
+    ok("the city it stands in gained the business",
+       abs((after[OTHER] - before[OTHER]) - value) < 1e-6, f"{after[OTHER] - before[OTHER]:.2f}")
 
 
 # ---------------------------------------------------------------------------
@@ -249,19 +256,21 @@ def test_each_city_gets_its_own_briefing() -> None:
     ok("the two briefings differ", mine != theirs)
     ok("each names its own market", M.market_of(HOME) in mine
        and M.market_of(OTHER) in theirs)
-    ok("and neither describes the other's ground",
-       M.market_of(OTHER) not in mine and M.market_of(HOME) not in theirs)
+    ok("and each is told how to reach the other",
+       M.market_of(OTHER) in mine and M.market_of(HOME) in theirs)
     for text, city, rival in ((mine, HOME, OTHER), (theirs, OTHER, HOME)):
         ok(f"{city}: the objective names the rival city",
            M.CITIES[rival].name in text)
         ok(f"{city}: the city total comes first",
-           "TOTAL Net Worth" in text and "FIRST:" in text)
+           "TOTAL" in text and "FIRST:" in text)
         ok(f"{city}: personal rank comes second",
            "SECOND:" in text and "ranked against your own" in text)
         ok(f"{city}: dying is priced as a hole in the city's score",
            "DYING COSTS YOUR CITY" in text)
-        ok(f"{city}: says there is no road",
-           "THERE IS NO ROAD TO IT" in text)
+        ok(f"{city}: says roads join the cities",
+           "Roads join every city's market" in text)
+        ok(f"{city}: says where a business's value counts",
+           "counts for the city it stands in" in text)
 
     # A ONE-CITY WORLD READS EXACTLY AS IT ALWAYS DID, or every earlier run
     # stops being comparable to the next one.
@@ -296,7 +305,9 @@ def test_the_score_reaches_the_prompt() -> None:
     ok("and your rank among your own neighbours",
        "in " + M.CITIES[HOME].name in (view["your_rank_at_home"] or ""))
     ok("the standing is stated in words",
-       any(w in view["standing"] for w in ("AHEAD", "BEHIND", "level")), view["standing"])
+       any(w in view["standing"] for w in ("LEADS", "BEHIND")), view["standing"])
+    ok("and every city is ranked", len(view.get("standings", [])) == len(world.cities),
+       str(view.get("standings")))
 
     text = O.render(obs)
     ok("THE CONTEST is rendered into the prompt", "THE CONTEST" in text)
@@ -487,7 +498,7 @@ def main() -> int:
         for f in FAILURES:
             print(f"  - {f}")
         return 1
-    print("Mirrored ground, sealed borders, and a score the agents are told.")
+    print("Mirrored ground, roads between the cities, and a score the agents are told.")
     return 0
 
 

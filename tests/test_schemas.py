@@ -141,7 +141,7 @@ def test_required_matches_the_function_signature():
 
     check("qty defaults, so is optional", "qty" in tools["buy_from_business"]["required"], False)
     ok("item has no default, so is required", "item" in tools["buy_from_business"]["required"])
-    check("no-arg action requires nothing", tools["quit_job"]["required"], [])
+    check("a no-arg action requires only its reason", tools["quit_job"]["required"], ["why"])
     ok("hours defaults", "hours" not in tools["start_shift"]["required"])
 
 
@@ -348,7 +348,21 @@ def test_prefix_cost_is_within_budget():
     # before a long run rather than trusting this number.
     tools_tok = len(json.dumps(S.tool_schemas())) // 4
     prefix_tok = len(O.static_briefing()) // 4 + tools_tok
-    ok("cached prefix under 14.5k tokens", prefix_tok < 14500, f"~{prefix_tok} tokens")
+    # 14,500 -> 15,500 on 2026-10-16, for the `why` field on every action
+    # (~500 tokens: one bare {"type": "string"} property and one `required`
+    # entry per tool, deliberately without a description). It replaces reasons
+    # posted to world chat -- 6,297 posts in the 2026-10-15 run -- so the
+    # tokens it costs in the cached prefix come back out of every observation's
+    # chat block. Cached input on GPT-6 Luna is $0.01/Mtok: about 7 cents on a
+    # 13,000-call run. Raised with the designer's agreement to add the field.
+    # 15,500 -> 17,000 on 2026-10-16, for the THREE-CITY, NO-STATE, RAIDS world:
+    # every city's places and the roads between them in the briefing, the
+    # raid paragraph, and five new actions (plan_raid, join_raid, abandon_raid,
+    # equip, offer_job / accept_job_offer, drop_courier_job) with a road-name
+    # enum. Measured on the real configuration: 16,326 tokens, nearly all of it
+    # cached at $0.01/Mtok -- about a cent over a whole run. The lever left is
+    # still the `item` enum repeated across tools (most of the 10.7k in tools).
+    ok("cached prefix under 17k tokens", prefix_tok < 17000, f"~{prefix_tok} tokens")
     ok("prefix is large enough to cache", prefix_tok > 1024, f"~{prefix_tok} tokens")
 
 

@@ -8,6 +8,7 @@ no second logging system.
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass, field, asdict
 from enum import IntEnum
 from pathlib import Path
@@ -83,6 +84,8 @@ SIGNIFICANCE: dict[str, Significance] = {
     "production": Significance.LOW,
     "wages_paid": Significance.LOW,
     "trade": Significance.LOW,
+    "sale": Significance.LOW,
+    "courier_dropped": Significance.LOW,
     "travel": Significance.LOW,
     "decision": Significance.LOW,
     "tax_collected": Significance.LOW,
@@ -122,6 +125,9 @@ class EventLog:
         self.path = Path(path) if path else None
         self.echo_min = echo_min
         self._fh = None
+        # Agents decide on worker threads (`EngineConfig.decision_workers`), and
+        # every one of them writes here. One lock so lines never interleave.
+        self._lock = threading.RLock()
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self._fh = self.path.open("a", encoding="utf-8")
@@ -172,16 +178,18 @@ class EventLog:
     ) -> Event:
         sig = significance if significance is not None else SIGNIFICANCE.get(type, Significance.LOW)
         ev = Event(sim_time, type, int(sig), actor, subject, location, detail)
-        self.events.append(ev)
-        if self._fh:
-            self._fh.write(json.dumps(asdict(ev)) + "\n")
-        if sig >= self.echo_min:
-            print(ev.format())
+        with self._lock:
+            self.events.append(ev)
+            if self._fh:
+                self._fh.write(json.dumps(asdict(ev)) + "\n")
+            if sig >= self.echo_min:
+                print(ev.format())
         return ev
 
     def flush(self) -> None:
-        if self._fh:
-            self._fh.flush()
+        with self._lock:
+            if self._fh:
+                self._fh.flush()
 
     def close(self) -> None:
         if self._fh:

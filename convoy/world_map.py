@@ -438,6 +438,17 @@ _CITY_NAMES: list[dict] = [
                  "every measurable way. Same ore, same ground, same road, same "
                  "twenty pairs of hands.",
     },
+    {
+        # THE THIRD CITY (2026-10-16), the same template under its own names,
+        # so `assert_cities_are_mirrors` holds it to the other two exactly.
+        "key": "thornwick",
+        "name": "Thornwick",
+        "locations": ("Kiln Row", "The Thornfells", "Thornwick Cross"),
+        "spurs": ("Hollow Draw", "Flint Cut", "Tin Gulch", "Barley Fields"),
+        "segments": ("Kilnside Road", "The Ford"),
+        "blurb": "The southern city, the same valley again under its own sky: "
+                 "same ore, same ground, same road, same twenty pairs of hands.",
+    },
 ]
 
 CITIES: dict[str, City] = {
@@ -517,6 +528,37 @@ def _build_valley(city: City) -> None:
 
 for _city in CITIES.values():
     _build_valley(_city)
+
+# ROADS BETWEEN THE CITIES (designer decision, 2026-10-16). Until now the
+# valleys were sealed and met only on the scoreboard; now anyone may travel,
+# trade, work and build anywhere, and a convoy between cities is the richest and
+# most exposed thing on the map. Market to market, through open country: long,
+# and the easiest ground in the world to lie in wait on.
+#
+# Neighbouring cities are a day's haul apart; the two ends of the chain are
+# joined directly too, by a longer road, so the middle city is a crossroads but
+# not a gatekeeper. That middle position IS an advantage -- shortest trips to
+# both rivals -- and it is a real one, like geography, not a bug to balance out.
+INTERCITY_SECONDS_PER_HOP = _BASE * 5.0
+_INTERCITY_SPEC: list[dict] = [
+    {"pair": (0, 1), "name": "The Long Road", "hops": 1.0},
+    {"pair": (1, 2), "name": "The Salt Road", "hops": 1.0},
+    {"pair": (0, 2), "name": "The Old Way", "hops": 1.8},
+]
+INTERCITY_SEGMENTS: list[RoadSegment] = []
+for _spec in _INTERCITY_SPEC:
+    _i, _j = _spec["pair"]
+    if max(_i, _j) >= len(CITY_KEYS):
+        continue
+    _ca, _cb = CITIES[CITY_KEYS[_i]], CITIES[CITY_KEYS[_j]]
+    INTERCITY_SEGMENTS.append(RoadSegment(
+        _ca.market, _cb.market, _spec["name"], "open country between cities",
+        INTERCITY_SECONDS_PER_HOP * _spec["hops"], 0.90,
+        0.55, 0.40, 0.45,
+        f"The open road from {_ca.name} to {_cb.name}: long, empty and watched "
+        f"by nobody. Every load that moves between the cities comes this way.",
+    ))
+EVERY_SEGMENT.extend(INTERCITY_SEGMENTS)
 
 EVERY_LOCATION: list[str] = [loc.name for loc in EVERY_LOCATION_SPEC]
 EVERY_PLACE: list[str] = [p for c in CITIES.values() for p in c.places]
@@ -656,31 +698,60 @@ def is_protected(place: str) -> bool:
     return junction_of(place) in PROTECTED_ZONES
 
 
-def road_path(a: str, b: str) -> list[RoadSegment]:
-    """Segments crossed travelling the main road from `a` to `b`.
+_ROAD_GRAPH: dict[str, list[tuple[str, RoadSegment]]] = {}
+for _seg in EVERY_SEGMENT:
+    _ROAD_GRAPH.setdefault(_seg.a, []).append((_seg.b, _seg))
+    _ROAD_GRAPH.setdefault(_seg.b, []).append((_seg.a, _seg))
 
-    Both ends must be in the same city. The valleys do not touch: there is no
-    road from one to the other, and a caller that got here with one end in each
-    has a bug rather than a long journey.
+
+def road_path(a: str, b: str, cities: list[str] | None = None) -> list[RoadSegment]:
+    """Segments crossed travelling the roads from junction `a` to junction `b`,
+    by the quickest route.
+
+    A network now, not one road: each valley's main road, plus the roads
+    between the cities' markets. `cities` limits the search to the cities a
+    world actually contains -- a two-city run has no road into Thornwick.
+    Raises `NoRoadThere` when no route exists inside those cities.
     """
     if a == b:
         return []
-    city = city_of(a)
-    if city_of(b) != city:
-        raise NoRoadThere(
-            f"{a} is in {CITIES[city].name} and {b} is in "
-            f"{CITIES[city_of(b)].name}. No road joins the two valleys."
-        )
-    road = _LOCATIONS_BY_CITY[city]
-    i, j = road.index(a), road.index(b)
-    step = 1 if j > i else -1
-    return [
-        SEGMENT_BY_PAIR[(road[k], road[k + step])]
-        for k in range(i, j, step)
-    ]
+    allowed = set(cities) if cities is not None else None
+
+    def ok(place: str) -> bool:
+        return allowed is None or city_of(place) in allowed
+
+    if not (ok(a) and ok(b)):
+        raise NoRoadThere(f"there is no road from {a} to {b} in this world")
+    import heapq
+    best: dict[str, float] = {a: 0.0}
+    prev: dict[str, tuple[str, RoadSegment]] = {}
+    heap = [(0.0, a)]
+    while heap:
+        d, here = heapq.heappop(heap)
+        if here == b:
+            break
+        if d > best.get(here, float("inf")):
+            continue
+        for there, seg in _ROAD_GRAPH.get(here, ()):
+            if not ok(there):
+                continue
+            nd = d + seg.seconds
+            if nd < best.get(there, float("inf")):
+                best[there] = nd
+                prev[there] = (here, seg)
+                heapq.heappush(heap, (nd, there))
+    if b not in prev:
+        raise NoRoadThere(f"there is no road from {a} to {b}")
+    path: list[RoadSegment] = []
+    node = b
+    while node != a:
+        node, seg = prev[node]
+        path.append(seg)
+    return list(reversed(path))
 
 
-def travel_path(origin: str, destination: str) -> tuple[float, list[RoadSegment]]:
+def travel_path(origin: str, destination: str,
+                cities: list[str] | None = None) -> tuple[float, list[RoadSegment]]:
     """Seconds at Medium speed, plus the road segments actually crossed.
 
     A spur dead-ends, so any journey from one spur to another climbs back to its
@@ -698,14 +769,15 @@ def travel_path(origin: str, destination: str) -> tuple[float, list[RoadSegment]
     if is_spur(destination):
         seconds += SPUR_BY_NAME[destination].seconds_deep
 
-    segments = road_path(junction_of(origin), junction_of(destination))
+    segments = road_path(junction_of(origin), junction_of(destination), cities)
     seconds += sum(s.seconds for s in segments)
     return seconds, segments
 
 
-def travel_seconds(origin: str, destination: str, speed_mult: float = 1.0) -> float:
+def travel_seconds(origin: str, destination: str, speed_mult: float = 1.0,
+                   cities: list[str] | None = None) -> float:
     """Travel time for a given vehicle speed multiplier (1.0 == Medium)."""
-    seconds, _ = travel_path(origin, destination)
+    seconds, _ = travel_path(origin, destination, cities)
     return seconds / max(speed_mult, 1e-9)
 
 

@@ -97,6 +97,8 @@ def new_world(
     log: EventLog,
     roster: list[tuple[str, str]],
     rosters: dict[str, list[tuple[str, str]]] | None = None,
+    *,
+    government: bool = True,
 ) -> World:
     """A one-city world from `roster`, or a contest from `rosters`.
 
@@ -114,14 +116,30 @@ def new_world(
     handle a log line has on a person.
     """
     world = World()
+    if not government:
+        _no_state(world)
     if rosters:
         world.cities = list(rosters)
-        for city in world.cities:
-            build_government(world, log, city)
+        if government:
+            for city in world.cities:
+                build_government(world, log, city)
         for city, people in rosters.items():
             spawn_agents(world, log, people, city)
-        return world
-
-    build_government(world, log)
-    spawn_agents(world, log, roster)
+    else:
+        if government:
+            build_government(world, log)
+        spawn_agents(world, log, roster)
+    if not government:
+        # Fed for a day, because nothing sells food until a citizen makes it.
+        for agent in world.agents.values():
+            agent.last_meal_window = D.START_FED_HOURS_NO_STATE
     return world
+
+
+def _no_state(world: World) -> None:
+    """A valley with no government: no tax of any kind is collected, because
+    there is nobody to collect it. Land bought from nobody is money that simply
+    leaves the economy; after that, land changes hands between citizens."""
+    world.no_state = True
+    g = world.government
+    g.wage_tax = g.sales_tax = g.property_tax = g.road_tax = 0.0

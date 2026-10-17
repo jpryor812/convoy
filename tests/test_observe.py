@@ -394,10 +394,14 @@ def test_agents_are_asked_to_explain_themselves() -> None:
     """
     brief = O.static_briefing()
     ok("the briefing asks for reasons", "SAY WHY" in brief)
-    ok("and says the record is what gets quoted back",
-       "recorded" in brief and "ask you about it" in brief)
-    ok("and names the decisions worth explaining",
-       all(w in brief for w in ("purchase", "business", "journey")))
+    ok("and says where a reason goes: the `why` field, into the notes",
+       "`why`" in brief and "notes" in brief and "ask you about" in brief)
+    ok("and keeps world chat for talking, not narrating",
+       "WORLD CHAT IS FOR TALKING" in brief and "Do not narrate" in brief)
+    from convoy import schemas as S
+    tools = S.tool_schemas()
+    ok("every action asks for a reason",
+       all("why" in t["function"]["parameters"]["required"] for t in tools))
 
 
 def main() -> int:

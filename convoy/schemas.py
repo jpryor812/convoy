@@ -158,6 +158,12 @@ DESCRIPTIONS: dict[str, str] = {
     ),
     "deposit": "Move denari from your pocket into one of your businesses.",
     "withdraw": "Take denari out of one of your businesses into your pocket.",
+    "pay": (
+        "Give another citizen denari from your pocket, wherever they are. Use it "
+        "to POOL MONEY for a business none of you can afford alone (a Refinery "
+        "costs more than anyone starts with), repay a loan, or settle a deal "
+        "agreed in chat. Nothing comes back automatically: agree terms first."
+    ),
     "collect_business_inventory": "Take goods out of your business and carry them.",
     "stock_business_inventory": "Put goods you are carrying into your business.",
     # -- property and kit ---------------------------------------------------
@@ -205,12 +211,30 @@ DESCRIPTIONS: dict[str, str] = {
     ),
     "accept_courier_job": (
         "Take on a haulage job somebody has posted. The fee is already escrowed, "
-        "so finishing it always pays. You can only haul one at a time."
+        "so finishing it always pays. Too big for your vehicle? Give qty and you "
+        "claim that much, paid pro rata; the rest stays posted for others."
+    ),
+    "offer_job": (
+        "Offer one named person a job at your business at a wage you choose -- "
+        "including someone working for somebody else. They can take it outright."
+    ),
+    "accept_job_offer": (
+        "Take a job you were offered by name. You leave any job you hold now."
+    ),
+    "plan_raid": (
+        "Lie in wait on a road to rob whoever crosses it with cargo. Stand at one "
+        "end of that road. Others can join. Losing the fight can kill you."
+    ),
+    "join_raid": "Join a raid somebody is lying in wait on. Stand at one end of its road.",
+    "abandon_raid": "Stop lying in wait and get up off the road.",
+    "equip": "Wield a weapon or wear armour you are carrying. The old piece goes in your pack.",
+    "drop_courier_job": (
+        "Give back a haulage job you claimed but have not loaded yet."
     ),
     "collect_consignment": (
         "Load a job you have claimed. You must be at the pickup location and "
-        "have room for the WHOLE load -- it does not split, so the size of your "
-        "vehicle decides which jobs you can take."
+        "have room for the load you claimed. If it will not fit, "
+        "drop_courier_job and claim a smaller part with qty."
     ),
     "deliver_consignment": (
         "Hand the load over at its destination and collect your fee. The goods "
@@ -221,7 +245,10 @@ DESCRIPTIONS: dict[str, str] = {
         "carriage fee comes back; the goods stay with the seller, already paid for."
     ),
     # -- social -------------------------------------------------------------
-    "post_world_chat": "Say something every living agent can read.",
+    "post_world_chat": (
+        "Talk to every citizen: offer or ask for work, post a convoy, recruit, "
+        "bargain, ask for help. Not for narrating what you are doing."
+    ),
     "send_direct_message": "Send a private message to one agent, wherever they are.",
     "post_guild_chat": "Say something only your guild can read.",
     "create_guild": "Found a guild. You become its leader and can invite others.",
@@ -272,6 +299,9 @@ def _enum_for(action: str, param: str) -> list[str] | None:
         # tokens on every tool that takes one, on every call, forever. The other
         # five vehicles stay: a Vehicle Dealer really does stock them.
         return [i for i in D.ALL_ITEMS if i != "On Foot"]
+    if param == "segment":
+        # Every road by name: the valleys' own and the roads between cities.
+        return [s.name for s in M.EVERY_SEGMENT]
     if param == "destination":
         # EVERY city's places, not just the home one -- the schema is one
         # cached document shared by every agent in the run, so an enum of one
@@ -398,16 +428,37 @@ DESCRIPTIONS_AFTER_WITHDRAWAL: dict[str, str] = {
 }
 
 
-def tool_schemas(state_gone: bool = False) -> list[dict[str, Any]]:
+# A world that NEVER had a government (2026-10-16). Every worker is a citizen:
+# the point of the labour market is owners bidding for each other's people, and
+# an always-on NPC at a fixed premium is a way out of it -- three were hired in
+# the first no-state smoke. And `apply_for_job` is only ever the owner staffing
+# their own place, which its old description did not say: in that smoke it was
+# refused 23 times in 29, agents trying it on somebody else's tavern.
+NO_STATE_HIDDEN = frozenset({"hire_npc_employee"})
+DESCRIPTIONS_NO_STATE: dict[str, str] = {
+    "apply_for_job": (
+        "Work at YOUR OWN business: puts you on its roster, at no wage -- an "
+        "owner is paid in profit. ONLY for a business you own. To work for "
+        "somebody else, answer their advert with apply_to_job, or take a job "
+        "they offered you with accept_job_offer. Omit the role to take the "
+        "first production role. Then start_shift."
+    ),
+}
+
+
+def tool_schemas(state_gone: bool = False, no_state: bool = False) -> list[dict[str, Any]]:
     """OpenAI-style tool definitions for every callable action.
 
     Part of the cached prefix, so this must not vary between calls or between
     agents -- hence sorted names and no world state anywhere in here. The one
     permitted variation is `state_gone`, which flips once when the government
-    withdraws: two stable prefixes across a run, not one per call.
+    withdraws: two stable prefixes across a run, not one per call. `no_state`
+    is fixed for a whole run, so it adds no variation within one.
     """
     tools: list[dict[str, Any]] = []
     for name, fn in ACTIONS.items():
+        if no_state and name in NO_STATE_HIDDEN:
+            continue
         sig = inspect.signature(fn)
         properties: dict[str, Any] = {}
         required: list[str] = []
@@ -417,12 +468,21 @@ def tool_schemas(state_gone: bool = False) -> list[dict[str, Any]]:
             properties[param.name] = _param_schema(name, param)
             if param.default is inspect.Parameter.empty:
                 required.append(param.name)
+        # WHY, ON EVERY ACTION. Asked for in the briefing and nowhere else, the
+        # reason went into world chat instead: one public post per decision,
+        # 6,297 in the 2026-10-15 run, burying every real message -- and 156
+        # decisions spent remarking that the tools had no field for a reason.
+        # No description here on purpose: sixty copies of one would cost the
+        # cached prefix ~1,000 tokens, and the briefing explains it once.
+        properties["why"] = {"type": "string"}
+        required.append("why")
         tools.append({
             "type": "function",
             "function": {
                 "name": name,
                 "description": (
-                    (DESCRIPTIONS_AFTER_WITHDRAWAL.get(name) if state_gone else None)
+                    (DESCRIPTIONS_NO_STATE.get(name) if no_state else None)
+                    or (DESCRIPTIONS_AFTER_WITHDRAWAL.get(name) if state_gone else None)
                     or DESCRIPTIONS.get(name, f"Perform {name.replace('_', ' ')}.")
                 ),
                 "parameters": {
@@ -452,6 +512,8 @@ def dispatch(
     fn = ACTIONS.get(name)
     if fn is None:
         return False, f"no such action {name!r}"
+    # The reason travels with the call but is not the action's business.
+    arguments = {k: v for k, v in arguments.items() if k != "why"}
 
     sig = inspect.signature(fn)
     allowed = {

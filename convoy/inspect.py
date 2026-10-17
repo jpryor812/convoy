@@ -321,7 +321,9 @@ def city_standings(world: World, events: list | None = None) -> dict[str, Any]:
         rows.sort(key=lambda r: r["hour"])
 
     leader = now[0]
-    gap = leader["total_net_worth"] - now[-1]["total_net_worth"] if len(now) > 1 else 0.0
+    # The lead over SECOND place: with three cities, the gap to last would
+    # overstate how safe the leader is.
+    gap = leader["total_net_worth"] - now[1]["total_net_worth"] if len(now) > 1 else 0.0
     return {
         "now": now,
         "history": history,

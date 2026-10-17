@@ -250,7 +250,8 @@ def transcript(log: EventLog, world: World) -> None:
             print(f"    [{e.sim_hour:6.2f}h] {e.type:<22} {bits[:90]}")
 
 
-def harness_report(log: EventLog, policy: CappedPolicy) -> int:
+def harness_report(log: EventLog, policy: CappedPolicy,
+                   city_of_actor: dict[str, str] | None = None) -> int:
     print("\n" + "=" * 74)
     print("HARNESS")
     print("=" * 74)
@@ -268,8 +269,24 @@ def harness_report(log: EventLog, policy: CappedPolicy) -> int:
     print(f"API calls          : {total_calls}")
     print(f"tool-call failures : {action_errors}")
     print(f"API failures       : {errors}")
-    print(f"turns with no action (model chose to think/wait): {reasoning}")
+    # Decisions that ended without a single action. This printed the count of
+    # ALL recorded decisions, so a run where every turn acted read as one where
+    # every turn idled.
+    idle_turns = sum(
+        1 for e in log.events
+        if e.type == "llm_reasoning" and str(e.detail.get("did", "")) in ("", "nothing")
+    )
+    print(f"decisions recorded : {reasoning}")
+    print(f"turns with no action (model chose to think/wait): {idle_turns}")
+    # Reflexes: moves made without the model. See `convoy/reflexes.py`.
+    reflexes = Counter(
+        e.detail.get("reflex") for e in log.events if e.type == "reflex"
+    )
+    if reflexes:
+        print(f"reflexes (no model call): {sum(reflexes.values())} -- " + ", ".join(
+            f"{k} {n}" for k, n in reflexes.most_common()))
 
+    city_of_actor = city_of_actor or {}
     problems: list[str] = []
     if errors:
         problems.append(f"{errors} API failures -- see llm_error events")
@@ -327,9 +344,15 @@ def harness_report(log: EventLog, policy: CappedPolicy) -> int:
     )
     if withdrawal is not None:
         after = withdrawal.sim_time
+        # ONLY THE CITY THE STATE LEFT. In a one-city withdrawal the other
+        # city still has its government, so its agents mentioning it is correct
+        # -- counting them made the 2026-10-15 run report 4.8% "still mention
+        # the government" when Cinderhold's own figure was 1.2%.
+        left = withdrawal.detail.get("city")
         thinking = [
             e for e in log.events
             if e.type == "llm_reasoning" and e.sim_time >= after
+            and (left in (None, "all") or city_of_actor.get(e.actor) in (None, left))
         ]
         def _hits(patterns: str) -> list:
             rx = re.compile(patterns, re.I)
@@ -373,13 +396,11 @@ def main() -> int:
                     help="agents PER CITY. Two cities of 20 is 40 agents and "
                          "roughly twice the API spend of one city of 20.")
     ap.add_argument(
-        "--cities", type=int, default=1, choices=[1, 2],
-        help="1 (default) is the single valley every earlier run used. 2 makes "
-             "it a CONTEST: two mirrored valleys with no road between them, "
-             "each with its own government, its own market and its own "
-             "population, scored on which city's TOTAL net worth is higher. "
-             "Agents are told their city comes first and their rank among "
-             "their own neighbours second.",
+        "--cities", type=int, default=1, choices=[1, 2, 3],
+        help="1 (default) is the single valley every earlier run used. 2 or 3 "
+             "makes it a CONTEST: mirrored valleys joined by roads between "
+             "their markets, scored on which city's TOTAL is highest -- its "
+             "citizens' own wealth plus every business standing in it.",
     )
     ap.add_argument("--decisions", type=int, default=15, help="hard cap per agent")
     ap.add_argument(
@@ -389,6 +410,30 @@ def main() -> int:
     ap.add_argument(
         "--hours", type=float, default=None,
         help="simulated duration. Default: whatever the decision cap needs.",
+    )
+    ap.add_argument(
+        "--npc-bandits", action="store_true",
+        help="faceless dice-roll bandits on every road, as before 2026-10-16. "
+             "Off by default: robbery is done by agents, with plan_raid.",
+    )
+    ap.add_argument(
+        "--government", action="store_true",
+        help="build the old government: state shops, state jobs, fixed prices "
+             "and taxes. Off by default since 2026-10-16 -- a run has no "
+             "government unless asked for one.",
+    )
+    ap.add_argument(
+        "--no-reflexes", action="store_true",
+        help="ask the model at every wake, as before 2026-10-16. By default the "
+             "moves with one sensible answer -- eat, load a claimed load and set "
+             "off, start the same shift again, keep waiting when nothing has "
+             "changed -- are made without a model call (convoy/reflexes.py).",
+    )
+    ap.add_argument(
+        "--workers", type=int, default=12,
+        help="agents deciding at once. 1 is strictly one at a time (the old "
+             "behaviour). Throughput is capped by --rpm either way, so raise "
+             "both together.",
     )
     ap.add_argument(
         "--rpm", type=float, default=llm.REQUESTS_PER_MINUTE,
@@ -458,6 +503,9 @@ def main() -> int:
     # Refused here, before a key is read or a world is built: a typo in the city
     # would otherwise run the whole contest with the state never leaving, and
     # nothing would say so until somebody looked at hour 36.
+    if args.state_exits_at is not None and not args.government:
+        ap.error("--state-exits-at needs --government: with no government "
+                 "there is nothing to withdraw")
     if args.state_exits_city is not None:
         city = args.state_exits_city.lower()
         in_play = M.CITY_KEYS[:args.cities]
@@ -516,10 +564,12 @@ def main() -> int:
         if args.cities > 1:
             cities = M.CITY_KEYS[:args.cities]
             world = new_world(
-                log, [], city_rosters(args.agents, models, cities)
+                log, [], city_rosters(args.agents, models, cities),
+                government=args.government,
             )
         else:
-            world = new_world(log, roster(args.agents, models))
+            world = new_world(log, roster(args.agents, models), government=args.government)
+        world.npc_bandits = args.npc_bandits
 
     policy = CappedPolicy(
         log=log, cap=args.decisions, dry_run=args.dry_run,
@@ -547,7 +597,8 @@ def main() -> int:
         print(f"CONTEST: {names} — {args.agents} agents each, "
               f"{args.agents * args.cities} in total, no road between them")
     print(f"{args.decisions} decisions each, up to {args.max_actions} actions per decision")
-    print(f"{hours:.1f} simulated hours, pacing {args.rpm:g} req/min")
+    print(f"{hours:.1f} simulated hours, pacing {args.rpm:g} req/min, "
+          f"{args.workers} deciding at once")
     if args.time_scale != 1.0:
         print(f"PRODUCTION TIMES SCALED x{args.time_scale:g} -- throughput only, "
               f"not a balanced economy")
@@ -566,7 +617,7 @@ def main() -> int:
     if advisor is not None:
         print(f"scripted advisor ON — {len(advisor.schedule)} recommendations scheduled\n")
 
-    Engine(
+    engine = Engine(
         world, log, policy,
         EngineConfig(
             duration_hours=hours,
@@ -577,11 +628,17 @@ def main() -> int:
             checkpoint_every_hours=1.0 if not args.dry_run else 1e9,
             state_exits_at=args.state_exits_at,
             state_exits_city=args.state_exits_city,
+            decision_workers=1 if args.dry_run else args.workers,
+            reflexes=not args.dry_run and not args.no_reflexes,
         ),
         on_checkpoint=None if args.dry_run else _checkpoint_hook(
             world, log, run_dir, args.day_hours, advisor
         ),
-    ).run()
+    )
+    try:
+        engine.run()
+    finally:
+        engine.close()
 
     transcript(log, world)
     log.export_csv(run_dir / "events.csv")
@@ -604,7 +661,7 @@ def main() -> int:
         print("=" * 74)
         print(advisor.report(world))
 
-    rc = harness_report(log, policy)
+    rc = harness_report(log, policy, {a.id: world.city_of(a) for a in world.agents.values()})
     spend = sum(u.cost for u in policy.usage.values())
     _announce_done(
         run_dir,

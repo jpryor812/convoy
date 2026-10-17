@@ -167,9 +167,15 @@ def _cities_from_log(run: Path, lines: int = 4000) -> list[str]:
                 if i >= lines:
                     break
                 try:
-                    where = json.loads(line).get("location")
+                    ev = json.loads(line)
                 except ValueError:
                     continue
+                # Runs since 2026-10-16 say their cities on the first line.
+                if ev.get("type") == "sim_start" and (ev.get("detail") or {}).get("cities"):
+                    keep = [c for c in ev["detail"]["cities"] if c in M.CITIES]
+                    if keep:
+                        return keep
+                where = ev.get("location")
                 if where:
                     try:
                         found.add(M.city_of(where))
@@ -424,9 +430,16 @@ def _headlines(events: list[dict], names: dict[str, str]) -> list[dict]:
         t, d = e["type"], e.get("detail") or {}
         hour, actor = round(e["sim_time"] / 3600.0, 2), e.get("actor")
         if t == "robbed":
+            by = d.get("raiders") or []
             out.append({"h": hour, "kind": "robbed", "who": actor,
-                        "text": f"{who(actor)} robbed on {d.get('segment')} "
-                                f"-- {d.get('value_lost', 0):.0f}d taken"})
+                        "text": f"{who(actor)} robbed on {d.get('segment')}"
+                                + (f" by {', '.join(by)}" if by else "")
+                                + f" -- {d.get('value_lost', 0):.0f}d taken"})
+        elif t == "raid_repelled":
+            killed = d.get("killed") or []
+            out.append({"h": hour, "kind": "bad" if killed else "robbed", "who": actor,
+                        "text": f"{who(actor)} beat off a raid on {d.get('segment')}"
+                                + (f" -- {', '.join(killed)} killed" if killed else "")})
         elif t == "business_founded":
             out.append({"h": hour, "kind": "founded", "who": actor,
                         "text": f"{who(actor)} opened a {d.get('business_type')}"})
@@ -446,12 +459,109 @@ def _headlines(events: list[dict], names: dict[str, str]) -> list[dict]:
                 out.append({"h": hour, "kind": "delivered", "who": actor,
                             "text": f"{who(actor)} delivered {qty}x {item} "
                                     f"-- {value:.0f}d"})
+        elif t == "agent_died" and d.get("cause") == "killed in a raid":
+            continue                          # told in its raid_repelled line
         elif t in ("business_bankrupt", "starved_to_death", "agent_died"):
             out.append({"h": hour, "kind": "bad", "who": actor,
                         "text": f"{who(actor)} "
                                 + ("went bankrupt" if t == "business_bankrupt"
                                    else "died")})
     out.sort(key=lambda r: r["h"])
+    return out
+
+
+def _raiding(events: list[dict], names: dict[str, str]) -> list[dict]:
+    """Every stretch of time an agent spent lying in wait on a road, from the
+    raid events: when they took up position, and the first of -- the raid's
+    end, leaving it, being beaten off, dying, or setting off somewhere."""
+    ends: dict[str, float] = {}
+    opened: list[tuple[str, str, str, float]] = []      # agent, raid, segment, start
+    for e in events:
+        t, d = e.get("type"), e.get("detail") or {}
+        if t == "raid_planned":
+            ends[d.get("raid")] = e["sim_time"] + float(d.get("hours") or 0) * 3600.0
+        if t in ("raid_planned", "raid_joined"):
+            opened.append((e.get("actor"), d.get("raid"), d.get("segment"), e["sim_time"]))
+    stops: dict[str, list[float]] = {}
+    for e in events:
+        t, d = e.get("type"), e.get("detail") or {}
+        if t in ("raid_abandoned", "agent_died", "travel"):
+            stops.setdefault(e.get("actor"), []).append(e["sim_time"])
+        if t == "raid_repelled":
+            by_name = {v: k for k, v in names.items()}
+            for n in d.get("raiders") or []:
+                stops.setdefault(by_name.get(n, n), []).append(e["sim_time"])
+    out = []
+    for agent, raid, seg, start in opened:
+        end = ends.get(raid, start + 4 * 3600.0)
+        later = [t for t in stops.get(agent, []) if t > start]
+        if later:
+            end = min(end, min(later))
+        out.append({"id": agent, "segment": seg, "from": round(start / 3600.0, 3),
+                    "to": round(end / 3600.0, 3), "raid": raid})
+    return out
+
+
+def _segment_paths(cities: list[str]) -> dict[str, list[list[float]]]:
+    """Every road as a line on the map, so a raider can be drawn ON the road
+    they are watching rather than standing in town."""
+    out: dict[str, list[list[float]]] = {}
+    for c in cities:
+        for seg in M.segments_in(c):
+            a, b = L.junction_center(seg.a), L.junction_center(seg.b)
+            out[seg.name] = [[a.x, a.y], [b.x, b.y]]
+    roads = L.intercity_roads(cities)
+    for seg, road in zip([s for s in M.INTERCITY_SEGMENTS
+                          if M.city_of(s.a) in cities and M.city_of(s.b) in cities], roads):
+        out[seg.name] = [[p.x, p.y] for p in road]
+    return out
+
+
+def _trades(events: list[dict], names: dict[str, str], world) -> list[dict]:
+    """Every completed sale, for the Trades page: who sold what to whom, when,
+    for how much. From the `sale` event, which runs before 2026-10-16 do not
+    have -- for those the page says so rather than showing an empty market.
+
+    Businesses are named by their sign; a business that no longer exists (the
+    state's, after it left) by what the log said it was called.
+    """
+    biz_names: dict[str, str] = {}
+    if world is not None:
+        biz_names.update({b.id: b.name for b in world.businesses.values()})
+    for e in events:
+        det = e.get("detail") or {}
+        if e.get("type") == "business_closed" and det.get("name"):
+            biz_names.setdefault(e.get("subject"), det["name"])
+        if e.get("type") == "business_founded" and e.get("subject"):
+            owner = names.get(e.get("actor"), e.get("actor"))
+            biz_names.setdefault(e["subject"], f"{owner}'s {det.get('business_type', 'business')}")
+
+    def who(x):
+        return names.get(x) or biz_names.get(x) or x or "?"
+
+    out = []
+    for e in events:
+        d = e.get("detail") or {}
+        if e.get("type") == "payment":
+            # Cash handed over with `pay`: pooled stakes, loans, settled deals.
+            # Nothing came back, so it is listed as cash from payer to payee.
+            out.append({
+                "h": round(e["sim_time"] / 3600.0, 2),
+                "item": "Denari" + (f" ({d['note']})" if d.get("note") else ""),
+                "qty": 1, "unit": d.get("amount"), "total": d.get("amount"),
+                "seller": who(e.get("actor")), "buyer": who(e.get("subject")),
+                "kind": "payment", "city": d.get("city") or "",
+            })
+            continue
+        if e.get("type") != "sale":
+            continue
+        out.append({
+            "h": round(e["sim_time"] / 3600.0, 2),
+            "item": d.get("item"), "qty": d.get("qty"),
+            "unit": d.get("unit_price"), "total": d.get("total"),
+            "seller": who(d.get("seller")), "buyer": who(d.get("buyer")),
+            "kind": d.get("kind"), "city": d.get("city") or "",
+        })
     return out
 
 
@@ -585,6 +695,8 @@ def replay(run: Path, places: dict[str, L.Place]) -> dict:
                     "vehicle": detail.get("vehicle"),
                     "escorts": detail.get("escorts"),
                     "risk": detail.get("risk"),
+                    # Real raiders (2026-10-16): the people who did it, by name.
+                    "raiders": detail.get("raiders") or [],
                 })
             if etype in ("agent_died", "starved_to_death"):
                 a["died"] = round(hour, 2)
@@ -594,6 +706,8 @@ def replay(run: Path, places: dict[str, L.Place]) -> dict:
                     "woken": detail.get("woken_because", ""),
                     "did": detail.get("did", ""),
                     "why": detail.get("text", ""),
+                    # The agent's stated reason for each action, in its own words.
+                    "reasons": detail.get("reasons") or [],
                     "gist": _gist(detail.get("text", ""), detail.get("did", "")),
                     # NET WORTH AT THAT MOMENT. Every decision carries the
                     # agent's own assets, so the map can rank agents at the
@@ -697,6 +811,11 @@ def replay(run: Path, places: dict[str, L.Place]) -> dict:
         # Every robbery, with the hour and the road it happened on. The page
         # stages an interception from these -- see AMBUSH in the template.
         "robberies": robberies,
+        # Every sale, named on both sides. See `_trades`.
+        "trades": _trades(events, names, world),
+        # Who lay in wait on which road, and when. See `_raiding`.
+        "raiding": _raiding(events, names),
+        "segment_paths": _segment_paths(cities_of(run)),
         # The things worth interrupting somebody to mention. See `_headlines`.
         "headlines": _headlines(events, names),
         "cards": I.cards(world) if world else {},
@@ -729,6 +848,8 @@ def build_payload(run: Path | None = None) -> dict:
     # them, and a single road drawn through both would be the page asserting a
     # journey the engine refuses to allow.
     roads = [[(p.x, p.y) for p in road] for road in L.main_roads(cities)]
+    # The roads BETWEEN the cities, market to market (2026-10-16).
+    roads += [[(p.x, p.y) for p in road] for road in L.intercity_roads(cities)]
     roads += [[(p.x, p.y) for p in pl.path] for pl in places.values() if pl.path]
 
     return {
@@ -982,7 +1103,8 @@ TEMPLATE = r"""<!doctype html>
   #board .tabs button.on{background:#44562f;color:#fffdf7;border-color:#6d8449}
   /* One accent per city, used by the tab, the leaderboard's city column and
      the race chart, so the same colour means the same city everywhere. */
-  #board .c0{color:#9dd17a} #board .c1{color:#d9a06a}
+  #board .c0{color:#9dd17a} #board .c1{color:#d9a06a} #board .c2{color:#7aa9d1}
+  #board .tabs button.on.c2{background:#2c445b;border-color:#557fa0}
   #board .tabs button.on.c0{background:#3d5b2c;border-color:#7aa055}
   #board .tabs button.on.c1{background:#5b442c;border-color:#a07f55}
   #board .race{width:100%;height:132px;margin:2px 0 14px;display:block}
@@ -1045,6 +1167,8 @@ TEMPLATE = r"""<!doctype html>
   details.note[open] summary::before{content:"\25BE  "}
   details.note .woke{font-size:11px;color:#8d9779;margin:3px 0 2px}
   details.note .why{color:#3d4534;white-space:pre-wrap;margin-top:3px}
+  details.note .reasons{margin:4px 0 2px;padding-left:16px;color:#20241a}
+  details.note .reasons li{margin:1px 0}
   .chat input[type=email]{width:100%;box-sizing:border-box;background:#fff;
                  color:#20241a;border:1px solid #cfc9b0;border-radius:4px;
                  padding:6px;font:inherit}
@@ -1115,6 +1239,7 @@ TEMPLATE = r"""<!doctype html>
   <button data-board="convoys">Convoy schedule</button>
   <button data-board="commodities">Commodity prices</button>
   <button data-board="advice">Advice report</button>
+  <button data-board="trades">Trades</button>
 </div>
 <div id="board"></div>
 <div id="ticker"><div id="ticker-rows"></div></div>
@@ -1279,7 +1404,9 @@ function ambushesAt(hour){
     const px = -hy / len, py = hx / len;            // perpendicular to the road
     const reach = 52;
     const raiders = [];
-    for (let i = 0; i < 3; i++){
+    // Real raiders are already on the road (see `raidingAt`): invent nobody.
+    const invented = (r.raiders || []).length ? 0 : 3;
+    for (let i = 0; i < invented; i++){
       const side = i === 1 ? -1 : 1;
       const spread = (i - 1) * 14;
       raiders.push({
@@ -1460,11 +1587,51 @@ function visibleBuildings(){
   return REPLAY ? DATA.buildings.filter(b => bizAt(b, HOUR)) : DATA.buildings;
 }
 
+/* LYING IN WAIT. A raider is drawn ON the road they are watching, hooded, for
+   as long as the raid lasts -- not standing in town. Spread along the road so
+   a crew of four reads as four. */
+function raidingAt(id, hour){
+  const r = (DATA.raiding || []).find(q => q.id === id && hour >= q.from && hour <= q.to);
+  if (!r) return null;
+  const path = (DATA.segment_paths || {})[r.segment];
+  if (!path || path.length < 2) return null;
+  const crew = (DATA.raiding || []).filter(q => q.raid === r.raid && hour >= q.from && hour <= q.to);
+  const k = crew.findIndex(q => q.id === id);
+  // a point a little either side of halfway along the road
+  const t = 0.5 + (k - (crew.length - 1) / 2) * 0.04;
+  let total = 0;
+  const lens = [];
+  for (let i = 0; i < path.length - 1; i++){
+    const l = Math.hypot(path[i+1][0] - path[i][0], path[i+1][1] - path[i][1]);
+    lens.push(l); total += l;
+  }
+  let want = total * Math.max(0, Math.min(1, t));
+  for (let i = 0; i < lens.length; i++){
+    if (want <= lens[i]){
+      const f = lens[i] ? want / lens[i] : 0;
+      return {x: path[i][0] + (path[i+1][0] - path[i][0]) * f,
+              y: path[i][1] + (path[i+1][1] - path[i][1]) * f};
+    }
+    want -= lens[i];
+  }
+  const last = path[path.length - 1];
+  return {x: last[0], y: last[1]};
+}
+
 function peopleNow(){
   if (!REPLAY) return DATA.people;
   const out = [];
   for (const a of DATA.agents){
     if (!livingAt(a, HOUR)) continue;
+    const lying = raidingAt(a.id, HOUR);
+    if (lying){
+      out.push({
+        id: a.id, name: a.name, x: lying.x, y: lying.y,
+        sx: wx(lying), sy: wy(lying), person: HAULER, facing: "S",
+        hauling: false, courier: false, working: false, vehicle: null, raiding: true,
+      });
+      continue;
+    }
     const pos = positionAt(a.id, HOUR);
     if (!pos) continue;
     const biz = pos.moving ? null : shiftAt(a, HOUR);
@@ -1559,7 +1726,12 @@ function setHour(h){
   followFrame();
   draw();
   drawTicker();
+  // The Trades page is a ledger TO THIS HOUR, so it follows the slider --
+  // redrawn once per quarter hour rather than every frame of playback.
+  const q = Math.floor(HOUR * 4);
+  if (openBoard === "trades" && q !== lastTradeQ){ lastTradeQ = q; renderBoard(); }
 }
+let lastTradeQ = -1;
 
 function tick(ts){
   if (!playing) return;
@@ -1699,7 +1871,11 @@ function drawBridge(){
     const len = Math.hypot(bx - ax, by - ay);
     for (let t = 0; t < len; t += step){
       const x = ax + (bx - ax) * (t / len), y = ay + (by - ay) * (t / len);
-      if (Math.abs(x - RIVER_X) > RIVER_HALF + step * 0.5) continue;
+      // Over the valley river, or over the river between two cities -- the
+      // road between cities crosses the latter on its way north or south.
+      const overValley = Math.abs(x - RIVER_X) <= RIVER_HALF + step * 0.5;
+      const overBorder = BORDERS.some(r => Math.abs(y - r.y) <= r.half + step * 0.5);
+      if (!overValley && !overBorder) continue;
       if (pier && pier.width)
         g.drawImage(pier, Math.round(x - step / 2),
                     Math.round(y + deck.height / 2 - 4), pier.width, pier.height);
@@ -1976,7 +2152,8 @@ function drawCityNames(){
     const y = (Math.min(...ys) + Math.max(...ys)) / 2 + fs / 3;
     g.fillStyle = "#0d1108d9";
     g.fillRect(x - w / 2, y - fs - 6 / zoom, w, fs + 14 / zoom);
-    g.fillStyle = i === 0 ? "#9dc4e8" : "#e8b48a";
+    // One city, one colour: the same as its line on the race chart.
+    g.fillStyle = ["#9dd17a", "#d9a06a", "#7aa9d1"][i % 3];
     g.fillText(label, x, y);
   });
 }
@@ -2046,7 +2223,7 @@ function draw(){
         // than the person leading it, not as a barn.
         if (IMG[key]) sprite(key, p.sx, p.sy + 4, 0.55);
       }
-      sprite(`person:${p.person}:${p.facing}`, p.sx, p.sy + hop, 1);
+      sprite(`person:${p.raiding ? HAULER : p.person}:${p.facing}`, p.sx, p.sy + hop, 1);
       if (p.courier) pack(p.sx, p.sy + hop, p.facing);
       const th = thoughtAt(p.id, HOUR);
       if (th && th.gist) bubble(p.sx, p.sy + hop - 34, th.gist);
@@ -2247,7 +2424,12 @@ function notesBlock(id){
     `<details class="note"${i === 0 ? " open" : ""}>`
     + `<summary><b>h${d.h}</b> ${esc(d.did || "thought about it")}</summary>`
     + (d.woken ? `<div class="woke">woken: ${esc(String(d.woken).replace(/_/g, " "))}</div>` : "")
-    + `<div class="why">${esc(d.why || "(acted without saying why)")}</div>`
+    /* Stated reasons first -- one line per action, the agent's own words --
+       then its longer thinking, when there was any beyond them. */
+    + ((d.reasons || []).length
+        ? `<ul class="reasons">${d.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : "")
+    + ((d.reasons || []).length && d.why === d.reasons.join("\n") ? ""
+        : `<div class="why">${esc(d.why || "(acted without saying why)")}</div>`)
     + `</details>`).join("");
   if (all.length > NOTES_SHOWN)
     h += `<div class="none">${all.length - NOTES_SHOWN} earlier notes not shown</div>`;
@@ -2816,6 +2998,45 @@ function boardCommodities(){
   return h + "</table>";
 }
 
+/* THE TRADES PAGE. Every sale to the slider's hour, newest first, named on
+   both sides -- the market's ledger rather than its prices. Filtered by the
+   city tabs like the other boards, and summarised at the top so the shape of
+   the economy reads before the rows do. */
+const TRADE_KIND = {shop: "bought from a business", sell: "sold to a business",
+  meal: "meal", order: "business order", direct: "agent to agent", gift: "gift",
+  payment: "cash payment"};
+function boardTrades(){
+  const all = (DATA.trades || []);
+  if (!all.length){
+    return '<div class="empty">This run was recorded before every sale was '
+         + 'logged by name, so there is no ledger to show. Runs from 16 October '
+         + '2026 on have one.</div>';
+  }
+  const rows = all.filter(t => t.h <= HOUR && (!cityFilter || t.city === cityFilter));
+  const value = rows.reduce((s, t) => s + (t.total || 0), 0);
+  const gifts = rows.filter(t => t.kind === "gift").length;
+  const byKind = {};
+  rows.forEach(t => { byKind[t.kind] = (byKind[t.kind] || 0) + 1; });
+  let h = (CONTEST ? cityTabs() : "")
+    + `<div class="sub">${rows.length.toLocaleString()} trades worth ${coin(value)}`
+    + (gifts ? ` &middot; ${gifts} gifts` : "") + `<br>`
+    + Object.entries(byKind).sort((a, b) => b[1] - a[1])
+        .map(([k, n]) => `${esc(TRADE_KIND[k] || k)} ${n}`).join(" &middot; ")
+    + `</div>`;
+  h += '<table><tr><th>Hour</th><th>Seller</th><th>Buyer</th><th>Goods</th>'
+     + '<th class="n">Each</th><th class="n">Total</th></tr>';
+  rows.slice(-200).reverse().forEach(t => {
+    h += `<tr class="jump" data-hour="${t.h}"><td class="dim">${t.h.toFixed(1)}</td>`
+      +  `<td class="who">${esc(t.seller)}</td><td>${esc(t.buyer)}</td>`
+      +  (t.kind === "payment"
+            ? `<td><span class="up">cash paid</span> ${esc(t.item.replace(/^Denari ?/, ""))}</td>`
+            : `<td>${t.qty}&times; ${esc(t.item)}${t.kind === "gift" ? ' <span class="up">gift</span>' : ""}</td>`)
+      +  `<td class="n dim">${t.unit}</td><td class="n">${t.total}</td></tr>`;
+  });
+  if (rows.length > 200) h += `<tr><td colspan="6" class="dim">${rows.length - 200} older trades not shown</td></tr>`;
+  return h + "</table>";
+}
+
 /* THE REPORT CARD. What was said, whether it was HEARD, and what happened to
    the agent against what happened to everybody else. The last column is the
    one that matters: an agent that gained 200 in a valley that all gained 200
@@ -2920,7 +3141,7 @@ function cityTabs(){
     const tone = key ? " " + cityClass(key) : "";
     return `<button class="tab${on}${tone}" data-city="${key || ''}">${esc(label)}</button>`;
   };
-  return '<div class="tabs">' + tab(null, "Both")
+  return '<div class="tabs">' + tab(null, CITIES.length > 2 ? "All" : "Both")
        + CITIES.map(c => tab(c.key, c.name)).join("") + "</div>";
 }
 
@@ -3032,6 +3253,8 @@ const BOARD_TITLES = {
               + "Anonymous: what sold and for how much, never who sold it."],
   advice: ["Advice report", "What was said, whether the agent HEARD it, and how "
          + "it did against everyone else. A rising tide is not good advice."],
+  trades: ["Trades", "Every sale up to this hour: who sold what to whom, and for "
+         + "how much. Gifts are trades at no price."],
 };
 
 const boardEl = document.getElementById("board");
@@ -3055,6 +3278,7 @@ function renderBoard(){
   const body = which === "leaderboard" ? boardLeaderboard()
              : which === "commodities" ? boardCommodities()
              : which === "advice" ? boardAdvice()
+             : which === "trades" ? boardTrades()
              : which === "contest" ? boardContest() : boardConvoys();
   boardEl.innerHTML = `<h2>${title}</h2><div class="sub">${sub}</div>` + body;
   // (boards) -- the agent-card follow link is wired in openPanel.
