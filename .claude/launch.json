@@ -46,6 +46,28 @@
         "_site"
       ],
       "port": 8778
+    },
+    {
+      "name": "play",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "play.py",
+        "--port",
+        "8800"
+      ],
+      "port": 8800
+    },
+    {
+      "name": "play-test",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "play.py",
+        "--port",
+        "8801",
+        "--games-dir",
+        "runs/games-test"
+      ],
+      "port": 8801
     }
   ]
 }

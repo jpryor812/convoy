@@ -923,7 +923,8 @@ def site_config() -> dict:
 
 
 def render_html(payload: dict, art: dict[str, str] | None = None,
-                served: bool = False, site: dict | None = None) -> str:
+                served: bool = False, site: dict | None = None,
+                game: dict | None = None) -> str:
     """The whole page, as a string.
 
     `served` is True when `serve.py` hands the page out itself: the page then
@@ -936,7 +937,12 @@ def render_html(payload: dict, art: dict[str, str] | None = None,
     finding none, is a replay with a waitlist. Without it, nothing changes.
     """
     art = collect_assets() if art is None else art
+    # `game` is set by `play.py`: the page becomes the map of a world you live
+    # in, with the player's panel down the right (GAME_UI). Everything else
+    # about the page is unchanged.
     return (TEMPLATE
+            .replace("__GAME_UI__", GAME_UI if game else "")
+            .replace("__GAME__", script_json(game) if game else "null")
             .replace("__SERVER__", "location.origin" if served else "null")
             .replace("__SITE__", script_json(site) if site else "null")
             .replace("__PROPS__", json.dumps(
@@ -1699,11 +1705,24 @@ let playing = false, lastFrame = 0;
 let FOLLOW = null;
 function followFrame(){
   if (!FOLLOW) return;
-  const pos = positionAt(FOLLOW, HOUR);
-  if (!pos) return;
-  panx = -(pos.x - c.width / 2 / zoom);
-  pany = -(pos.y - c.height / 2 / zoom) + 90 / zoom;
+  /* WHERE THEY ARE DRAWN, IN PIXELS. This read `positionAt`, which is world
+     metres, and used it as screen pixels -- the rotation and the scale both
+     skipped -- so "track" pointed the camera at the wrong part of the map. The
+     drawn seat is also where a worker actually stands, at their bench. */
+  const p = peopleNow().find(q => q.id === FOLLOW);
+  if (!p) return;
+  // A watcher keeps the person low in the frame, leaving room for the card
+  // above them; a player wants themselves dead centre between the bars.
+  const dy = GAME ? -12 : 90;
+  panx = -(p.sx - (c.width - DOCK_W()) / 2 / zoom);
+  pany = -(p.sy - (c.height / 2 + dy) / zoom);
   clampPan();
+}
+
+function trackAgent(id){
+  FOLLOW = FOLLOW === id ? null : id;
+  if (FOLLOW && zoom < 1.2) zoom = 1.6;
+  followFrame(); draw();
 }
 
 /* Jump to a recorded moment and watch it happen. The board lists the hour of
@@ -1785,7 +1804,9 @@ function resize(){
     framed = true;
     // A CONTEST OPENS ON BOTH CITIES. The comparison is the point; opening on
     // one market left the other valley entirely off screen.
-    if (CONTEST) frameAll(); else centreOn(OPEN_ON);
+    // A GAME OPENS ON THE PLAYER, close in. See the GAME block at the end.
+    if (GAME){ zoom = 1.7; FOLLOW = GAME.you; followFrame(); }
+    else if (CONTEST) frameAll(); else centreOn(OPEN_ON);
   }
   else clampPan();
   draw();
@@ -2100,6 +2121,49 @@ function hitTest(px, py){
   return null;
 }
 
+/* THE PLAYER, MARKED. A red seal on the ground that breathes, like a selected
+   unit in a strategy game, and a small banner overhead -- readable from the
+   whole-valley zoom, where a 32px villager is a speck. Sizes are divided by
+   zoom so the marker keeps its size on screen however far out you are. */
+function youSeal(x, y){
+  const t = performance.now() / 1000, k = 1 + 0.08 * Math.sin(t * 3);
+  const s = Math.max(1, 0.9 / zoom);
+  g.save();
+  g.beginPath(); g.ellipse(x, y + 1, 21 * k * s, 10 * k * s, 0, 0, Math.PI * 2);
+  g.fillStyle = "rgba(190,40,30,0.55)"; g.fill();
+  g.lineWidth = 2.5 * s; g.strokeStyle = "#f3dfa8"; g.stroke();
+  g.beginPath(); g.ellipse(x, y + 1, 27 * k * s, 13 * k * s, 0, 0, Math.PI * 2);
+  g.lineWidth = 1.5 * s; g.strokeStyle = "rgba(243,223,168,0.6)"; g.stroke();
+  g.restore();
+}
+function youBanner(x, y){
+  const s = Math.max(1, 0.9 / zoom);
+  const top = y - 44 * s;
+  g.save();
+  g.font = `700 ${Math.round(11 * s)}px Cinzel, Georgia, serif`;
+  g.textAlign = "center"; g.textBaseline = "middle";
+  const w = g.measureText("YOU").width + 14 * s, h = 17 * s;
+  g.fillStyle = "#b5321f"; g.strokeStyle = "#f3dfa8"; g.lineWidth = 1.5 * s;
+  g.beginPath();
+  g.moveTo(x - w / 2, top - h / 2); g.lineTo(x + w / 2, top - h / 2);
+  g.lineTo(x + w / 2, top + h / 2); g.lineTo(x + 5 * s, top + h / 2);
+  g.lineTo(x, top + h / 2 + 6 * s); g.lineTo(x - 5 * s, top + h / 2);
+  g.lineTo(x - w / 2, top + h / 2); g.closePath();
+  g.fill(); g.stroke();
+  g.fillStyle = "#f8ecc8"; g.fillText("YOU", x, top + 0.5);
+  g.restore();
+}
+
+/* The nearest named place to a click, for a player who wants to go there. */
+function placeHit(px, py){
+  let best = null, bestD = 140 * PPM;
+  for (const p of DATA.places){
+    const d = Math.hypot(px - wx(p), py - wy(p));
+    if (d < bestD){ best = p; bestD = d; }
+  }
+  return best ? {kind: "place", ref: best} : null;
+}
+
 function building(b){
   const im = IMG["biz:" + b.sprite]; if (!im || !im.width) return;
   /* CENTRED, unlike people. A slot IS the shared corner of four parcels, so a
@@ -2201,7 +2265,8 @@ function draw(){
       // MOVING: a parked cart drawn under everyone standing in Town turns the
       // market square into a car park.
       const hop = p.working ? hopOffset(p.id) : 0;
-      const ring = rankColour(p.id);
+      if (GAME && p.id === GAME.you) youSeal(p.sx, p.sy);
+      const ring = (GAME && p.id === GAME.you) ? null : rankColour(p.id);
       if (ring){
         // A DARK RIM UNDER A BRIGHT ONE. The leader's green is a near match for
         // the grass it usually stands on, so a plain green ellipse on a green
@@ -2226,7 +2291,8 @@ function draw(){
       sprite(`person:${p.raiding ? HAULER : p.person}:${p.facing}`, p.sx, p.sy + hop, 1);
       if (p.courier) pack(p.sx, p.sy + hop, p.facing);
       const th = thoughtAt(p.id, HOUR);
-      if (th && th.gist) bubble(p.sx, p.sy + hop - 34, th.gist);
+      if (th && th.gist && !(GAME && p.id === GAME.you)) bubble(p.sx, p.sy + hop - 34, th.gist);
+      if (GAME && p.id === GAME.you) youBanner(p.sx, p.sy + hop);
     }});
   for (const amb of ambushesAt(HOUR)){
     for (const r of amb.raiders)
@@ -2312,6 +2378,8 @@ let HOVER = null, SELECTED = null;
    silently -- an "Ask" button that does nothing is worse than one that explains
    it cannot. Point this at a running `serve.py` and the same UI works live. */
 const SITE = __SITE__;
+// A world you are playing in, from `play.py`. See GAME_UI.
+const GAME = __GAME__;
 let SERVER = new URLSearchParams(location.search).get("server") || __SERVER__;
 /* Every request names the run this page is showing, so a question asked after
    the server has moved on to another run still reaches THIS run's agent. */
@@ -2558,6 +2626,7 @@ let LIVE_HOUR = null;
    "the top" is a different sum for each. */
 function anchorOf(hit){
   const r = hit.ref;
+  if (hit.kind === "place") return {x: wx(r), y: wy(r)};
   if (hit.kind === "building"){
     const im = IMG["biz:" + r.sprite];
     const h = im && im.height ? im.height * r.scale : 48;
@@ -2566,6 +2635,10 @@ function anchorOf(hit){
   const im = IMG[`person:${r.person}:${r.facing}`];
   return {x: wx(r), y: wy(r) - (im && im.height ? im.height : 32)};
 }
+
+/* The width the player's panel takes off the right of the map; 0 when
+   watching, or when the panel sits along the bottom on a narrow screen. */
+function DOCK_W(){ return 0; }
 
 /* Ease the camera in rather than jumping. A cut leaves you hunting for what you
    just clicked; a quarter-second move keeps the thing under your eye the whole
@@ -2580,7 +2653,7 @@ function flyTo(x, y, targetZoom){
     const k = Math.min((now - t0) / ms, 1);
     const e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
     zoom = from.zoom + (targetZoom - from.zoom) * e;
-    const wantX = -(x - c.width / 2 / zoom);
+    const wantX = -(x - (c.width - DOCK_W()) / 2 / zoom);
     const wantY = -(y - c.height * FOCUS_Y / zoom);
     panx = from.panx + (wantX - from.panx) * e;
     pany = from.pany + (wantY - from.pany) * e;
@@ -2612,6 +2685,16 @@ async function openPanel(hit){
 }
 
 function renderPanel(hit){
+  if (hit.kind === "place"){
+    panelBody.innerHTML = `<h2>${esc(hit.ref.name)}</h2><div class="sub">${esc(hit.ref.kind)}</div>`;
+    if (GAME && window.gameHook) window.gameHook(hit, panelBody);
+    draw();
+    return;
+  }
+  _renderPanel(hit);
+  if (GAME && window.gameHook) window.gameHook(hit, panelBody);
+}
+function _renderPanel(hit){
   const card = DATA.cards[hit.ref.id];
   if (!card && hit.kind === "person" && REPLAY){
     panelBody.innerHTML = noCardPanel(hit.ref);
@@ -2667,7 +2750,7 @@ function positionPopup(){
   /* Kept on screen, with the tail sliding along the card's edge to stay over
      the target. Without that the card clamps at the edge and its tail points
      confidently at empty grass. */
-  const clampedLeft = Math.max(8, Math.min(left, innerWidth - w - 8));
+  const clampedLeft = Math.max(8, Math.min(left, innerWidth - DOCK_W() - w - 8));
   panel.style.setProperty("--tail",
     `${Math.max(14, Math.min(sx - clampedLeft, w - 14))}px`);
   panel.style.left = `${clampedLeft}px`;
@@ -2787,7 +2870,8 @@ addEventListener("mouseup", e => {
      it was grabbing at you. Four pixels is below what a hand does by accident
      and well under what a deliberate drag does. */
   if (!wasDragging || moved > 4) return;
-  const hit = hitTest(worldFromEvent(e).x, worldFromEvent(e).y);
+  const at = worldFromEvent(e);
+  const hit = hitTest(at.x, at.y) || (GAME ? placeHit(at.x, at.y) : null);
   hit ? openPanel(hit) : closePanel();
 });
 addEventListener("mousemove", e => {
@@ -2843,14 +2927,14 @@ function framePlaces(pts){
   const xs = pts.map(wx), ys = pts.map(wy);
   const w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
   zoom = Math.max(0.05, Math.min(3, 0.82 * Math.min(
-    c.width / Math.max(w, 1), c.height / Math.max(h, 1))));
-  panx = -((Math.min(...xs) + w / 2) - c.width / 2 / zoom);
+    (c.width - DOCK_W()) / Math.max(w, 1), c.height / Math.max(h, 1))));
+  panx = -((Math.min(...xs) + w / 2) - (c.width - DOCK_W()) / 2 / zoom);
   pany = -((Math.min(...ys) + h / 2) - c.height / 2 / zoom);
   clampPan();
 }
 function centreOn(name){
   const p = DATA.places.find(q => q.name === name) || DATA.places[0];
-  panx = -(wx(p) - c.width / 2 / zoom);
+  panx = -(wx(p) - (c.width - DOCK_W()) / 2 / zoom);
   pany = -(wy(p) - c.height / 2 / zoom);
   clampPan();
 }
@@ -3431,8 +3515,10 @@ async function pullReplay(){
   Object.assign(BOARDS, DATA.boards || {});
   _rankHour = null;
   slider.max = DATA.end_hour;
+  // A game draws the live hour itself (see GAME_UI); a replay keeps the edge.
+  if (GAME) draw();
   // Watching the present: stay on it. Scrubbing the past: stay where you were.
-  if (atEdge && !playing) setHour(DATA.end_hour);
+  else if (atEdge && !playing) setHour(DATA.end_hour);
   else { slider.value = HOUR; draw(); }
   if (openBoard) showBoard(openBoard);
 }
@@ -3511,15 +3597,725 @@ async function sitePoll(first){
   if (first) openDoor(STATUS.live && STATUS.run !== DATA.run ? "live" : undefined);
 }
 
-if (REPLAY && SITE && SITE.live_json && !SERVER){
+if (GAME){
+  // The camera starts on the player, close in. GAME_UI keeps it there until
+  // the map is dragged, and "find me" brings it back.
+  HOUR = DATA.end_hour;
+  zoom = 1.7;
+  FOLLOW = GAME.you;
+  followFrame(); draw();
+  setInterval(pullReplay, 3000);
+} else if (REPLAY && SITE && SITE.live_json && !SERVER){
   sitePoll(true);
   setInterval(() => sitePoll(false), 60000);
 } else if (SERVER && REPLAY){
   pollStatus(true);
   setInterval(() => pollStatus(false), 30000);
 }
-</script></body></html>
+</script>__GAME_UI__</body></html>
 """
+
+
+# THE PLAYER'S SCREEN. Injected only into a page `play.py` serves, where GAME
+# carries the request token and the player's id.
+#
+# Designer direction, 2026-10-17, after the first playtest ("I can't find my
+# player, there is way too much information on the side panel"): the map is the
+# screen. Always visible: a top bar with what you are worth and where you stand,
+# and one line saying what you are doing. Everything else is a button along the
+# bottom that opens one focused panel -- the shape of a turn-based strategy
+# game's HUD, not a spreadsheet. Every action still goes through `/api/act`,
+# the same `schemas.dispatch` the agents use, with the same refusals.
+GAME_UI = r"""<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Alegreya+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{--wd:#24160b;--wood:#4a2e17;--wl:#6b4423;--gold:#d4a548;--golddk:#8a6420;--parch:#f3e7c9;
+  --parch2:#e6d4a8;--ink:#2b1d10;--soft:#6e5838;--red:#b5321f;--green:#4f7a2a;--head:Cinzel,Georgia,serif;
+  --body:"Alegreya Sans",ui-sans-serif,system-ui,sans-serif}
+body.game #boards-nav,body.game #board,body.game #ticker,body.game #hud,body.game #clock,
+body.game #keys,body.game #livepill,body.game #frontdoor{display:none!important}
+body.game{font-family:var(--body)}
+.g-wood{background:linear-gradient(#5e3c1e,#3b2411);border:2px solid var(--wd);
+  box-shadow:inset 0 1px 0 #8a6236,inset 0 -2px 0 #2a190c,0 4px 12px #0009}
+/* ---- top bar ---- */
+#g-top{position:fixed;top:8px;left:8px;right:8px;z-index:20;display:flex;gap:8px;align-items:stretch;pointer-events:none}
+#g-top>*{pointer-events:auto}
+.g-plate{border-radius:10px;padding:5px 10px;display:flex;align-items:center;gap:9px;color:var(--parch)}
+.g-crest{width:38px;height:38px;border-radius:50%;background:radial-gradient(#d0452e,#7e1f12);
+  border:2px solid var(--gold);display:grid;place-items:center;font:700 16px var(--head);color:#f8ecc8;flex:none}
+.g-name{font:700 14px var(--head);letter-spacing:.03em;white-space:nowrap}
+.g-sub{font-size:13px;color:#e3cf9c;white-space:nowrap}
+.g-res{flex:1;display:flex;justify-content:center;gap:6px;flex-wrap:wrap;align-items:center}
+.g-chip{display:flex;align-items:center;gap:6px;background:linear-gradient(#f8eed6,#e4d0a2);
+  border:2px solid var(--golddk);border-radius:8px;padding:3px 10px 3px 6px;color:var(--ink);
+  box-shadow:0 2px 6px #0006;font:700 15px var(--head);white-space:nowrap}
+.g-chip svg{width:22px;height:22px;flex:none}
+.g-chip small{font:500 12px var(--body);color:var(--soft);margin-left:2px}
+.g-chip.bad{background:linear-gradient(#f6d2c4,#e3a993);border-color:var(--red);animation:g-throb 1.2s infinite}
+@keyframes g-throb{50%{box-shadow:0 0 0 4px #b5321f55}}
+.g-time b{font:700 15px var(--head);white-space:nowrap}
+.g-time select{background:#2a190c;color:var(--parch);border:1px solid var(--golddk);border-radius:6px;
+  font:500 13px var(--body);padding:3px}
+.g-round{width:36px;height:36px;border-radius:50%;border:2px solid var(--gold);background:linear-gradient(#7a4c24,#43280f);
+  color:var(--parch);display:grid;place-items:center;cursor:pointer;flex:none;padding:0}
+.g-round svg{width:18px;height:18px}
+.g-spend{font-size:12px;color:#e3cf9c;white-space:nowrap}
+#g-ribbon{position:fixed;top:70px;left:50%;transform:translateX(-50%);z-index:19;
+  background:linear-gradient(#f8eed6,#e4d0a2);border:2px solid var(--golddk);border-radius:999px;
+  padding:5px 16px;color:var(--ink);font:500 15px var(--body);box-shadow:0 3px 10px #0007;
+  white-space:nowrap;max-width:calc(100% - 24px);overflow:hidden;text-overflow:ellipsis;display:flex;gap:8px;align-items:center}
+#g-ribbon .dot{width:9px;height:9px;border-radius:50%;background:var(--green);flex:none}
+#g-ribbon.idle .dot{background:#b88a2e} #g-ribbon.paused .dot{background:#888}
+#g-note{position:fixed;top:106px;left:50%;transform:translateX(-50%);z-index:19;color:#fff3d0;
+  background:#7e1f12e6;border:1px solid var(--gold);border-radius:8px;padding:4px 12px;font:500 14px var(--body);display:none}
+/* ---- bottom bar ---- */
+#g-bar{position:fixed;left:50%;transform:translateX(-50%);bottom:8px;z-index:20;border-radius:12px;
+  padding:6px;display:flex;gap:5px;max-width:calc(100% - 16px);overflow-x:auto;scrollbar-width:none}
+#g-bar::-webkit-scrollbar{display:none}
+#g-bar button{position:relative;width:70px;height:66px;flex:none;border-radius:9px;cursor:pointer;
+  background:linear-gradient(#f6ebcf,#dcc590);border:2px solid var(--golddk);color:var(--ink);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+  font:700 11px var(--head);letter-spacing:.03em;box-shadow:inset 0 -3px 0 #c7ad74}
+#g-bar button svg{width:26px;height:26px}
+#g-bar button:hover{filter:brightness(1.06);transform:translateY(-1px)}
+#g-bar button.on{background:linear-gradient(#d0452e,#8e2516);color:#f8ecc8;border-color:var(--gold);box-shadow:inset 0 -3px 0 #6e190d}
+.g-badge{position:absolute;top:-6px;right:-6px;min-width:20px;height:20px;border-radius:10px;background:var(--red);
+  color:#fff;font:700 12px var(--body);display:none;align-items:center;justify-content:center;padding:0 5px;border:2px solid var(--parch)}
+#g-find{position:fixed;right:14px;bottom:92px;z-index:20;width:52px;height:52px}
+#g-find svg{width:24px;height:24px}
+/* ---- panels ---- */
+#g-panel{position:fixed;left:50%;transform:translateX(-50%);bottom:90px;z-index:21;width:min(580px,calc(100% - 20px));
+  max-height:calc(100vh - 210px);display:none;flex-direction:column;border-radius:12px;
+  background:var(--parch);border:3px solid var(--wood);box-shadow:inset 0 0 0 2px var(--gold),0 10px 30px #000b;color:var(--ink)}
+#g-panel.open{display:flex}
+#g-panel header{display:flex;align-items:center;gap:10px;padding:10px 14px 8px;border-bottom:2px solid var(--parch2)}
+#g-panel h2{margin:0;font:700 19px var(--head);flex:1;letter-spacing:.03em}
+#g-panel .x{background:none;border:0;font:700 22px var(--body);color:var(--soft);cursor:pointer;line-height:1}
+#g-pbody{overflow-y:auto;padding:8px 14px 14px;font:16px/1.4 var(--body)}
+#g-pbody h3{font:700 13px var(--head);letter-spacing:.07em;color:var(--golddk);margin:14px 0 6px;text-transform:uppercase}
+.g-card{background:#fbf3df;border:1px solid #d6c08e;border-radius:9px;padding:9px 11px;margin:7px 0}
+.g-card .t{font-weight:700} .g-card .m{color:var(--soft);font-size:14px}
+.g-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px dashed #d8c597}
+.g-row:last-child{border-bottom:0} .g-row .grow{flex:1;min-width:0}
+.g-btn{background:var(--wood);color:var(--parch);border:1px solid var(--wd);border-radius:7px;
+  padding:5px 11px;font:700 13px var(--body);cursor:pointer;margin:3px 4px 0 0;white-space:nowrap}
+.g-btn:hover{background:var(--wl)} .g-btn.go{background:var(--red);border-color:#6e190d}
+.g-btn.go:hover{background:#cf3d27} .g-btn:disabled{opacity:.45;cursor:default}
+.g-empty{color:var(--soft);font-style:italic;padding:6px 0}
+.g-warn{color:#9a3412} .g-good{color:var(--green)} .g-dim{color:var(--soft)}
+.g-tip{font-size:14px;color:var(--soft);margin:3px 0}
+.g-back{background:none;border:0;color:var(--golddk);font:700 14px var(--body);cursor:pointer;padding:0;margin-bottom:6px}
+.g-form label{display:block;margin:9px 0 3px;font-weight:700;font-size:14px}
+.g-form input,.g-form select,.g-compose input,.g-compose select{width:100%;background:#fffaf0;border:1px solid #c9b07a;border-radius:7px;
+  padding:7px 9px;font:15px var(--body);color:var(--ink)}
+.g-form .desc{color:var(--soft);font-size:14px}
+.g-chatlog{max-height:300px;overflow-y:auto;font-size:15px}
+.g-chatlog div{padding:5px 0;border-bottom:1px dashed #d8c597}
+.g-chatlog b{color:var(--golddk)}
+.g-compose{display:flex;gap:6px;margin-top:8px} .g-compose select{width:150px;flex:none}
+.g-feed div{padding:5px 0;border-bottom:1px dashed #d8c597}
+.g-feed .alert{color:#9a1c0c;font-weight:700} .g-feed .message{color:#24527a}
+.g-feed .news{color:var(--soft)} .g-feed .did{color:#56482f}
+#g-pbody pre{white-space:pre-wrap;font:13px/1.45 ui-monospace,monospace;background:#fffaf0;border:1px solid #d6c08e;
+  border-radius:8px;padding:9px;max-height:380px;overflow:auto}
+/* ---- notices ---- */
+#g-toasts{position:fixed;top:112px;left:50%;transform:translateX(-50%);z-index:30;display:flex;flex-direction:column;
+  gap:6px;align-items:center;width:min(520px,calc(100% - 24px));pointer-events:none}
+.g-toast{background:var(--parch);border:2px solid var(--golddk);border-left:6px solid var(--green);border-radius:8px;
+  padding:8px 12px;color:var(--ink);font:500 15px var(--body);box-shadow:0 6px 18px #000a;width:100%}
+.g-toast.bad{border-left-color:var(--red)} .g-toast.msg{border-left-color:#2f6c9e}
+/* ---- the map's own pop-up, in the same dress ---- */
+body.game #popup{background:var(--parch);color:var(--ink);border:3px solid var(--wood);
+  box-shadow:inset 0 0 0 2px var(--gold),0 8px 24px #000b;font-family:var(--body)}
+body.game #popup h2{font-family:var(--head)}
+#popup .game-acts{margin-top:10px;border-top:2px solid var(--parch2);padding-top:8px}
+@media (max-width:760px){
+  .g-name,.g-sub{display:none} .g-chip{font-size:13px;padding:2px 8px 2px 4px} .g-chip svg{width:18px;height:18px}
+  .g-chip small{display:none} .g-time select,.g-spend{display:none}
+  #g-ribbon{top:auto;bottom:86px;font-size:14px} #g-find{bottom:132px}
+  #g-panel{bottom:84px;max-height:calc(100vh - 150px)} #g-toasts{top:60px}
+  #g-bar button{width:62px;height:60px;font-size:10px}
+}
+</style>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-coin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="#e2b33f" stroke="#7a5414" stroke-width="2"/><circle cx="12" cy="12" r="5" fill="none" stroke="#7a5414" stroke-width="1.6"/></symbol>
+    <symbol id="i-chest" viewBox="0 0 24 24"><rect x="3" y="9" width="18" height="11" rx="1.5" fill="#9a5f2c" stroke="#3b2411" stroke-width="1.8"/><path d="M3 9a9 5 0 0 1 18 0" fill="#b9773a" stroke="#3b2411" stroke-width="1.8"/><rect x="10" y="11" width="4" height="4" fill="#e2b33f" stroke="#3b2411" stroke-width="1.2"/></symbol>
+    <symbol id="i-bread" viewBox="0 0 24 24"><path d="M4 13c0-5 16-5 16 0v5H4z" fill="#d79a4e" stroke="#5a3410" stroke-width="1.8"/><path d="M8 11l1 3M12 10.5v3.5M16 11l-1 3" stroke="#5a3410" stroke-width="1.4"/></symbol>
+    <symbol id="i-banner" viewBox="0 0 24 24"><path d="M6 3v18" stroke="#3b2411" stroke-width="2"/><path d="M6 4h12l-3 4 3 4H6z" fill="#b5321f" stroke="#3b2411" stroke-width="1.6"/></symbol>
+    <symbol id="i-here" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 21s-7-6.2-7-12a7 7 0 0 1 14 0c0 5.8-7 12-7 12z"/><circle cx="12" cy="9" r="2.6"/></symbol>
+    <symbol id="i-travel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z" fill="currentColor"/></symbol>
+    <symbol id="i-biz" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 10l9-6 9 6"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></symbol>
+    <symbol id="i-jobs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M13 5l6 6-3 3-6-6z"/><path d="M11.5 9.5L3 18l3 3 8.5-8.5"/></symbol>
+    <symbol id="i-cart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M2 7h13v8H2z"/><path d="M15 10h4l3 3v2h-7"/><circle cx="6" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></symbol>
+    <symbol id="i-market" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3v17M5 6h14M8 20h8"/><path d="M5 6l-3 6a3 3 0 0 0 6 0z"/><path d="M19 6l-3 6a3 3 0 0 0 6 0z"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 5h16v11H10l-5 4v-4H4z"/></symbol>
+    <symbol id="i-log" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 21h4"/></symbol>
+    <symbol id="i-crown" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 18l2-11 5 5 2-7 2 7 5-5 2 11z"/></symbol>
+    <symbol id="i-scroll" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 4h11a3 3 0 0 1 3 3v13H9a3 3 0 0 1-3-3z"/><path d="M10 9h6M10 13h6"/></symbol>
+    <symbol id="i-find" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5l12 7-12 7z"/></symbol>
+  </defs>
+</svg>
+<div id="g-top">
+  <div class="g-plate g-wood"><div class="g-crest" id="g-crest">?</div>
+    <div><div class="g-name" id="g-name">&hellip;</div><div class="g-sub" id="g-sub"></div></div></div>
+  <div class="g-res">
+    <div class="g-chip" title="Cash in your pocket"><svg><use href="#i-coin"/></svg><span id="g-cash">&ndash;</span></div>
+    <div class="g-chip" title="Your net worth: cash, goods, land and businesses"><svg><use href="#i-chest"/></svg><span id="g-worth">&ndash;</span><small id="g-rank"></small></div>
+    <div class="g-chip" id="g-foodchip" title="How long until you need to eat"><svg><use href="#i-bread"/></svg><span id="g-food">&ndash;</span></div>
+    <div class="g-chip" id="g-citychip" title="Your city against the others" style="display:none"><svg><use href="#i-banner"/></svg><span id="g-city"></span></div>
+  </div>
+  <div class="g-plate g-wood g-time">
+    <div><b id="g-clock">Day 1</b><div class="g-spend" id="g-spend"></div></div>
+    <select id="g-pace" title="Game speed">
+      <option value="3">1 hr = 20 min</option><option value="6">1 hr = 10 min</option>
+      <option value="12">1 hr = 5 min</option><option value="30">1 hr = 2 min</option>
+      <option value="60">1 hr = 1 min</option><option value="120">1 hr = 30 s</option>
+    </select>
+    <button class="g-round" id="g-pause" title="Pause / play"><svg><use href="#i-pause"/></svg></button>
+  </div>
+</div>
+<div id="g-ribbon"><span class="dot"></span><span id="g-activity">&hellip;</span></div>
+<div id="g-note"></div>
+<div id="g-toasts"></div>
+<button class="g-round g-wood" id="g-find" title="Find me"><svg><use href="#i-find"/></svg></button>
+<section id="g-panel" aria-live="polite">
+  <header><h2 id="g-ptitle"></h2><button class="x" id="g-pclose" title="Close">&times;</button></header>
+  <div id="g-pbody"></div>
+</section>
+<nav id="g-bar" class="g-wood">
+  <button data-tab="here" title="What you can do where you stand"><svg><use href="#i-here"/></svg>Here</button>
+  <button data-tab="travel" title="Go somewhere"><svg><use href="#i-travel"/></svg>Travel</button>
+  <button data-tab="business" title="Your businesses"><svg><use href="#i-biz"/></svg>Business</button>
+  <button data-tab="jobs" title="Work and hiring"><svg><use href="#i-jobs"/></svg>Jobs<i class="g-badge" id="b-jobs"></i></button>
+  <button data-tab="convoys" title="Haulage, carts and raids"><svg><use href="#i-cart"/></svg>Convoys<i class="g-badge" id="b-convoys"></i></button>
+  <button data-tab="market" title="Prices and suppliers"><svg><use href="#i-market"/></svg>Market</button>
+  <button data-tab="chat" title="Talk to the others"><svg><use href="#i-chat"/></svg>Chat<i class="g-badge" id="b-chat"></i></button>
+  <button data-tab="log" title="What has happened to you"><svg><use href="#i-log"/></svg>News<i class="g-badge" id="b-log"></i></button>
+  <button data-tab="ranks" title="Who is winning, and what's working"><svg><use href="#i-crown"/></svg>Ranks</button>
+  <button data-tab="orders" title="Every action, the rules, and saving"><svg><use href="#i-scroll"/></svg>Orders</button>
+</nav>
+<script>
+(() => {
+document.body.classList.add("game");
+const G = GAME;
+const $ = id => document.getElementById(id);
+const get = url => fetch(url, {cache: "no-store"}).then(r => r.json());
+const post = (url, body) => fetch(url, {method: "POST",
+  headers: {"Content-Type": "application/json", "X-Game-Token": G.token},
+  body: JSON.stringify(body || {})}).then(r => r.json());
+const h = s => esc(String(s == null ? "" : s));
+const money = v => (+v || 0).toLocaleString(undefined, {maximumFractionDigits: 0});
+const TITLES = {here: "Where you stand", travel: "Travel", business: "Your businesses", jobs: "Jobs",
+  convoys: "Convoys", market: "Market", chat: "Chat", log: "News", ranks: "Ranks", orders: "Orders"};
+let ST = null, OBS = null, BOARD = null, TOOLS = {}, FEED_SEQ = 0;
+const FEED = [];
+let OPEN = null, FORM = null;          // the open tab, and a form open inside it
+let seen = {chat: 0, log: 0};
+let liveBase = {hour: 0, at: 0};
+
+/* ---------- small helpers ---------- */
+function clock(hour){
+  const day = Math.floor(hour / 24) + 1, m = Math.floor((hour % 24) * 60);
+  return `Day ${day} · ${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+}
+const nameOf = id => {
+  if (!id) return "";
+  if (id === G.you) return "you";
+  const a = BOARD && BOARD.agents.find(x => x.id === id);
+  return a ? a.name : id;
+};
+const short = n => String(n || "").replace(/-[a-z0-9.]+-[a-z0-9.]+-(\d+)$/i, " #$1");
+function toast(msg, kind){
+  const el = document.createElement("div");
+  el.className = "g-toast" + (kind ? " " + kind : "");
+  el.textContent = msg; $("g-toasts").appendChild(el);
+  while ($("g-toasts").children.length > 3) $("g-toasts").firstChild.remove();
+  setTimeout(() => el.remove(), kind === "bad" ? 7000 : 4500);
+}
+function act(action, args){
+  return post("/api/act", {action, args: Object.assign({why: ""}, args || {})}).then(r => {
+    toast(r.ok ? r.message : `Can't: ${r.message || r.error}`, r.ok ? "" : "bad");
+    refreshState(); refreshFeed();
+    return r;
+  });
+}
+window.gameAct = act;
+const B = (label, action, args, go) =>
+  `<button class="g-btn${go ? " go" : ""}" data-act="${h(action)}" data-args='${h(JSON.stringify(args || {}))}'>${h(label)}</button>`;
+const F = (label, action, args, title) =>
+  `<button class="g-btn" data-form="${h(action)}" data-args='${h(JSON.stringify(args || {}))}' data-title="${h(title || label)}">${h(label)}</button>`;
+function wire(root){
+  root.querySelectorAll("[data-act]").forEach(b => b.onclick = e => {
+    e.preventDefault(); e.stopPropagation(); act(b.dataset.act, JSON.parse(b.dataset.args));
+  });
+  root.querySelectorAll("[data-form]").forEach(b => b.onclick = e => {
+    e.preventDefault(); e.stopPropagation();
+    openForm(b.dataset.form, JSON.parse(b.dataset.args), b.dataset.title);
+  });
+  root.querySelectorAll("[data-tabgo]").forEach(b => b.onclick = e => { e.preventDefault(); openTab(b.dataset.tabgo); });
+}
+
+/* ---------- the top bar and the ribbon ---------- */
+function renderTop(){
+  if (!ST) return;
+  const y = ST.you;
+  $("g-crest").textContent = (ST.city_name || "?")[0];
+  $("g-name").textContent = short(y.name);
+  $("g-sub").textContent = `${ST.city_name} · ${y.id}`;
+  $("g-cash").textContent = money(y.denari);
+  $("g-worth").textContent = money(y.net_worth);
+  $("g-rank").textContent = `#${ST.your_rank} of ${ST.population}`;
+  const left = ST.fed_hours_left, hungry = ST.hunger !== "Normal";
+  $("g-food").textContent = hungry ? ST.hunger.toUpperCase() : left > 0 ? `Fed ${left.toFixed(0)}h` : "Eat soon";
+  $("g-foodchip").classList.toggle("bad", hungry || left < 2);
+  if (ST.cities && ST.cities.length > 1){
+    const order = ST.cities.slice().sort((a, b) => b.total - a.total);
+    const at = order.findIndex(c => c.key === ST.city);
+    $("g-citychip").style.display = "";
+    $("g-city").textContent = `${ST.city_name} ${["1st", "2nd", "3rd"][at] || ""}`;
+    $("g-citychip").title = order.map(c => `${c.name}: ${money(c.total)}`).join("\n");
+  }
+  $("g-spend").textContent = `$${ST.spent.toFixed(2)} of $${ST.budget.toFixed(0)}`;
+  $("g-pause").innerHTML = `<svg><use href="#i-${ST.paused ? "play" : "pause"}"/></svg>`;
+  if ([...$("g-pace").options].every(o => o.value !== String(ST.pace)))
+    $("g-pace").insertAdjacentHTML("beforeend", `<option value="${ST.pace}">x${ST.pace}</option>`);
+  if (document.activeElement !== $("g-pace")) $("g-pace").value = String(ST.pace);
+  const rb = $("g-ribbon");
+  $("g-activity").textContent = ST.paused ? `Paused · ${ST.activity}` : ST.activity;
+  rb.classList.toggle("idle", /^Idle/.test(ST.activity));
+  rb.classList.toggle("paused", ST.paused);
+  $("g-note").style.display = ST.note ? "block" : "none";
+  $("g-note").textContent = ST.note || "";
+}
+async function refreshStatus(){
+  let s; try { s = await get("/api/status"); } catch (e) { return; }
+  if (s.error){ location.reload(); return; }
+  ST = s; liveBase = {hour: s.hour, at: performance.now()};
+  renderTop();
+}
+$("g-pause").onclick = async () => { await post("/api/control", {paused: !(ST && ST.paused)}); refreshStatus(); };
+$("g-pace").onchange = async () => { await post("/api/control", {pace: +$("g-pace").value}); refreshStatus(); };
+
+/* THE LIVE HOUR. The server says where the clock is every two seconds; between
+   answers it is run forward at the game's pace, so people walk the roads
+   instead of jumping. Never more than one answer's worth ahead. */
+function liveHour(){
+  if (!ST) return HOUR;
+  if (ST.paused) return ST.hour;
+  const ahead = (performance.now() - liveBase.at) / 1000 * ST.pace / 3600;
+  return liveBase.hour + Math.min(ahead, 4 * ST.pace / 3600);
+}
+let lastDraw = 0;
+function frame(ts){
+  if (ts - lastDraw > 80){
+    lastDraw = ts;
+    HOUR = liveHour();
+    if (ST) $("g-clock").textContent = clock(HOUR);
+    followFrame(); draw();
+  }
+  requestAnimationFrame(frame);
+}
+
+/* ---------- find me ---------- */
+function findMe(){
+  FOLLOW = G.you;
+  if (zoom < 1.2) zoom = 1.7;
+  closePanel();
+  followFrame(); draw();
+}
+$("g-find").onclick = findMe;
+
+/* ---------- the panel ---------- */
+function openTab(tab){
+  if (OPEN === tab && !FORM){ closeTab(); return; }
+  OPEN = tab; FORM = null;
+  if (tab === "chat") seen.chat = (OBS && OBS.chat || []).length;
+  if (tab === "log") seen.log = FEED.length;
+  document.querySelectorAll("#g-bar button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+  $("g-ptitle").textContent = TITLES[tab];
+  $("g-panel").classList.add("open");
+  renderTab(true);
+  badges();
+}
+function closeTab(){
+  OPEN = null; FORM = null;
+  $("g-panel").classList.remove("open");
+  document.querySelectorAll("#g-bar button").forEach(b => b.classList.remove("on"));
+}
+document.querySelectorAll("#g-bar button").forEach(b => b.onclick = () => openTab(b.dataset.tab));
+$("g-pclose").onclick = closeTab;
+addEventListener("keydown", e => {
+  if (e.key === "Escape" && OPEN) closeTab();
+  if (e.key === "f" && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) findMe();
+});
+
+function renderTab(force){
+  if (!OPEN || !OBS || !BOARD) return;
+  const body = $("g-pbody");
+  if (FORM) return;                          // never redraw under someone filling a form
+  if (!force && body.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
+  if (OPEN === "chat" && !force){ updateChat(); return; }
+  const top = body.scrollTop;
+  body.innerHTML = TABS[OPEN]();
+  wire(body);
+  if (OPEN === "chat") wireChat();
+  if (OPEN === "orders") wireOrders();
+  if (!force) body.scrollTop = top;
+}
+
+const TABS = {
+  here(){
+    const y = OBS.you, here = OBS.here || {};
+    let out = `<div class="g-card"><div class="t">${h(y.location)}</div><div class="m">${h(ST.activity)}</div>`
+      + `<div>${F("Go somewhere else", "travel_to", {}, "Travel")}</div></div>`;
+    const biz = here.businesses || [];
+    out += `<h3>Businesses here</h3>`;
+    if (!biz.length) out += `<div class="g-empty">No businesses stand here.</div>`;
+    for (const b of biz){
+      const mine = b.owner === y.id, sells = Object.entries(b.sells || {});
+      out += `<div class="g-card"><div class="t">${h(short(b.name))}${mine ? ' <span class="g-good">(yours)</span>' : ""}</div>`
+        + `<div class="m">${h(b.type)}${b.owner && !mine ? ` · owned by ${h(short(nameOf(b.owner)))}` : ""}</div>`
+        + (b.status ? `<div class="${/CLOSED|EMPTY/.test(b.status) ? "g-warn" : "g-dim"}">${h(b.status.split(" -- ")[0])}</div>` : "")
+        + (b.warning ? `<div class="g-warn">${h(b.warning)}</div>` : "")
+        + (sells.length ? `<div>${sells.map(([i, v]) => `<b>${h(i)}</b> ${money(v.price)} <span class="g-dim">(${v.stock})</span>`).join(" · ")}</div>` : "")
+        + `<div>`
+        + (sells.some(([i]) => i === "Meal") ? B(`Eat a meal — ${money(b.sells.Meal.price)}`, "buy_meal", {business_id: b.id}, true) : "")
+        + (sells.length ? F("Buy", "buy_from_business", {business_id: b.id, item: sells[0][0]}, `Buy from ${short(b.name)}`) : "")
+        + (mine ? `<button class="g-btn" data-tabgo="business">Manage</button>`
+                : F("Sell to them", "sell_to_business", {business_id: b.id}, `Sell to ${short(b.name)}`)
+                  + F("Order delivery", "order_from_business", {seller_business_id: b.id}, `Order from ${short(b.name)}`))
+        + `</div></div>`;
+    }
+    const people = here.agents || [];
+    out += `<h3>People here</h3>`;
+    out += people.length ? people.map(a => `<div class="g-row"><div class="grow">${h(short(a.name))} <span class="g-dim">${h(a.id)}</span></div>`
+      + F("Message", "send_direct_message", {target_id: a.id}, `Message ${short(a.name)}`)
+      + F("Pay", "pay", {agent_id: a.id}, `Pay ${short(a.name)}`)
+      + (y.businesses && y.businesses.length ? F("Offer job", "offer_job", {agent_id: a.id, business_id: y.businesses[0].id}, `Offer ${short(a.name)} a job`) : "")
+      + `</div>`).join("") : `<div class="g-empty">Nobody else is here.</div>`;
+    const tips = (OBS.you_can || []).filter(t => !/^Carrying/.test(t));
+    if (tips.length) out += `<h3>Good to know</h3>` + tips.map(t => `<div class="g-tip">• ${h(t)}</div>`).join("");
+    return out;
+  },
+  travel(){
+    const mine = ST.city, groups = {};
+    for (const p of BOARD.places) (groups[p.city] = groups[p.city] || {name: p.city_name, rows: []}).rows.push(p);
+    const keys = Object.keys(groups).sort((a, b) => (a === mine ? -1 : b === mine ? 1 : 0));
+    let out = `<div class="g-tip">Farms and mines stand down the spur roads; shops on the main road. Roads between cities are long and open to raiders.</div>`;
+    for (const k of keys){
+      out += `<h3>${h(groups[k].name)}${k === mine ? " — home" : ""}</h3>`;
+      for (const p of groups[k].rows.sort((a, b) => (a.minutes ?? 1e9) - (b.minutes ?? 1e9))){
+        const kind = (PLACE[p.name] || {}).kind || "";
+        const here = p.name === OBS.you.location;
+        out += `<div class="g-row"><div class="grow"><b>${h(p.name)}</b> <span class="g-dim">${h(kind === "spur" ? "spur" : kind)}</span></div>`
+          + (here ? `<span class="g-good">you are here</span>`
+                  : `<span class="g-dim">${p.minutes == null ? "" : p.minutes < 60 ? p.minutes + " min" : (p.minutes / 60).toFixed(1) + " h"}</span>`
+                    + B("Go", "travel_to", {destination: p.name}, true))
+          + `</div>`;
+      }
+    }
+    return out;
+  },
+  business(){
+    const list = OBS.you.businesses || [];
+    let out = "";
+    for (const b of list){
+      const stock = Object.entries(b.stock || {}).map(([k, v]) => `${v} ${k}`).join(", ") || "empty";
+      const id = {business_id: b.id};
+      const stalled = /STALLED|FULL|nothing|not set/i.test(b.production || "");
+      out += `<div class="g-card"><div class="t">${h(short(b.name))} <span class="g-dim">${h(b.id)}</span></div>
+        <div class="m">${h(b.type)} at ${h(b.location)} · cash <b>${money(b.cash)}</b> · staff ${h(b.workers)}/${h(b.employee_places)} · storage ${h(b.storage_used)}/${h(b.storage_capacity)}</div>
+        ${b.production ? `<div class="${stalled ? "g-warn" : "g-good"}">${h(b.production)}</div>` : ""}
+        <div class="m">Stock: ${h(stock)}</div>
+        <div>${B("Work here myself", "apply_for_job", id, true)}${F("Set production", "set_production", id)}${F("Set a price", "set_retail_price", id)}${F("Order supplies", "order_from_business", {my_business_id: b.id}, "Order supplies")}</div>
+        <div>${F("Deposit", "deposit", id)}${F("Withdraw", "withdraw", id)}${F("Advertise a job", "post_job", id)}${F("Offer a job", "offer_job", id)}${F("Take stock out", "collect_business_inventory", id)}${F("Hire a courier", "post_delivery_job", id)}</div>
+      </div>`;
+    }
+    out += `<h3>Found a business</h3><div class="g-tip">You found it where you stand. Farms and mines need a spur road; everything else, the main road. You have ${money(OBS.you.denari)}.</div>`;
+    out += BOARD.business_types.map(t => `<div class="g-row"><div class="grow"><b>${h(t.name)}</b> <span class="g-dim">${t.spur ? "spur" : "main road"} · makes ${h(t.makes.slice(0, 4).join(", "))}${t.makes.length > 4 ? "…" : ""}</span></div>`
+      + `<b>${money(t.cost)}</b>` + F("Found", "start_business", {type: t.name}, `Found a ${t.name}`) + `</div>`).join("");
+    return out;
+  },
+  jobs(){
+    const y = OBS.you, me = y.id;
+    let out = "";
+    if (y.job){
+      out += `<div class="g-card"><div class="t">You work as ${h(y.job.role)}</div><div class="m">${h(short(y.job.business))} · ${money(y.job.wage_per_hour)}/hr</div>`
+        + `<div>${B("Work 4 hours", "start_shift", {hours: 4}, true)}${B("Work 8 hours", "start_shift", {hours: 8})}${B("Stop work", "end_shift")}${B("Quit", "quit_job")}</div></div>`;
+    } else out += `<div class="g-card"><div class="t">You have no job.</div><div class="m">Answer an advert below, take an offer, or work your own business.</div></div>`;
+    const offers = BOARD.jobs.filter(j => j.to_me);
+    out += `<h3>Offers made to you</h3>` + (offers.length ? offers.map(j => `<div class="g-row"><div class="grow"><b>${h(j.role)}</b> at ${h(short(j.business))} <span class="g-dim">${h(j.at)}</span></div><b>${money(j.wage)}/hr</b>${B("Accept", "accept_job_offer", {posting_id: j.id}, true)}</div>`).join("")
+      : `<div class="g-empty">Nobody has offered you a job.</div>`);
+    const board = BOARD.jobs.filter(j => !j.to_me && !j.mine);
+    out += `<h3>Job board</h3>` + (board.length ? board.sort((a, b) => b.wage - a.wage).map(j => `<div class="g-row"><div class="grow"><b>${h(j.role)}</b> at ${h(short(j.business))} <span class="g-dim">${h(j.at)}</span></div><b>${money(j.wage)}/hr</b>`
+      + (j.applied ? `<span class="g-dim">applied</span>` : B("Apply", "apply_to_job", {posting_id: j.id})) + `</div>`).join("")
+      : `<div class="g-empty">No adverts are up.</div>`);
+    const mineAds = BOARD.jobs.filter(j => j.mine);
+    if (mineAds.length || (y.businesses || []).length){
+      out += `<h3>Your adverts and offers</h3>`;
+      out += mineAds.map(j => `<div class="g-card"><div class="t">${h(j.role)} at ${money(j.wage)}/hr <span class="g-dim">${h(j.id)}</span></div>`
+        + (Array.isArray(j.applicants) && j.applicants.length ? j.applicants.map(a => `<div class="g-row"><div class="grow">${h(short(a.name))} applied</div>${B("Hire", "hire_applicant", {posting_id: j.id, applicant_id: a.id}, true)}</div>`).join("")
+           : `<div class="g-dim">No applicants yet.</div>`)
+        + `<div>${B("Take it down", "close_job", {posting_id: j.id})}</div></div>`).join("");
+      if ((y.businesses || []).length) out += `<div>${F("Advertise a job", "post_job", {business_id: y.businesses[0].id})}${F("Offer someone a job", "offer_job", {business_id: y.businesses[0].id})}</div>`;
+    }
+    return out;
+  },
+  convoys(){
+    const hauls = BOARD.hauls, y = OBS.you;
+    let out = `<div class="g-tip">You carry ${Object.values(y.carrying || {}).reduce((a, b) => a + b, 0)} of ${h(y.capacity)} · ${h(y.vehicle)} · ${h(y.weapon)}</div>`;
+    const mine = hauls.filter(c => c.mine_to_carry);
+    out += `<h3>Loads you are carrying</h3>` + (mine.length ? mine.map(c => `<div class="g-row"><div class="grow"><b>${c.qty} ${h(c.item)}</b> ${h(c.from)} → ${h(c.to)} <span class="g-dim">fee ${money(c.fee)}</span></div>`
+      + (c.carrying ? (OBS.you.location === c.to ? B("Deliver", "deliver_consignment", {consignment_id: c.id}, true) : B(`Go to ${c.to}`, "travel_to", {destination: c.to}, true))
+                    : (OBS.you.location === c.from ? B("Load it", "collect_consignment", {consignment_id: c.id}, true) : B(`Go to ${c.from}`, "travel_to", {destination: c.from}, true)))
+      + B("Drop", "drop_courier_job", {consignment_id: c.id}) + `</div>`).join("") : `<div class="g-empty">You are not hauling anything.</div>`);
+    const open = hauls.filter(c => c.status === "awaiting_courier" && !c.mine_to_receive);
+    out += `<h3>Haulage jobs going begging</h3>` + (open.length ? open.sort((a, b) => b.fee - a.fee).map(c => `<div class="g-row"><div class="grow"><b>${c.qty} ${h(c.item)}</b> ${h(c.from)} → ${h(c.to)}</div><b>${money(c.fee)}</b>`
+      + B("Take it", "accept_courier_job", {consignment_id: c.id}, true) + F("Take part", "accept_courier_job", {consignment_id: c.id}, "Take part of a load") + `</div>`).join("")
+      : `<div class="g-empty">Nobody needs anything moved.</div>`);
+    const coming = hauls.filter(c => c.mine_to_receive);
+    if (coming.length) out += `<h3>Your orders on the way</h3>` + coming.map(c => `<div class="g-row"><div class="grow">${c.qty} ${h(c.item)} ${h(c.from)} → ${h(c.to)}</div><span class="g-dim">${c.status === "claimed" ? "on the road" : "waiting for a courier"}</span></div>`).join("");
+    out += `<h3>Raids</h3>` + (BOARD.raids.length ? BOARD.raids.map(r => `<div class="g-row"><div class="grow">Lying in wait on <b>${h(r.segment)}</b> <span class="g-dim">${r.members} raider${r.members > 1 ? "s" : ""}, ${r.hours_left}h left</span></div>`
+      + (r.mine ? B("Abandon", "abandon_raid") : B("Join", "join_raid", {raid_id: r.id})) + `</div>`).join("") : `<div class="g-empty">Nobody is lying in wait.</div>`)
+      + `<div>${F("Plan a raid", "plan_raid", {}, "Plan a raid")}${F("Hire guards", "hire_escort", {}, "Hire guards")}${F("Equip", "equip", {}, "Equip a weapon or armour")}</div>`;
+    const roads = OBS.on_the_roads || [];
+    if (roads.length) out += `<h3>On the roads now</h3>` + roads.map(r => `<div class="g-tip">${h(short(r))}</div>`).join("");
+    return out;
+  },
+  market(){
+    let out = `<h3>What goods sold for lately</h3>`;
+    const mp = OBS.market_prices || [];
+    out += mp.length ? mp.map(l => `<div class="g-row">${h(l)}</div>`).join("") : `<div class="g-empty">Nothing has sold yet.</div>`;
+    const sup = OBS.where_to_buy_stock || [];
+    out += `<h3>Who sells what</h3>` + (sup.length ? sup.map(s => `<div class="g-row"><div class="grow"><b>${h(short(s.name))}</b> <span class="g-dim">${h(s.at)}</span><br>${h((s.sells || []).join(", "))}</div>`
+      + F("Order", "order_from_business", {seller_business_id: s.id, item: (s.sells || [])[0]}, `Order from ${short(s.name)}`) + `</div>`).join("")
+      : `<div class="g-empty">Nobody has anything to sell yet.</div>`);
+    const pp = OBS.player_prices_here || {};
+    if (Object.keys(pp).length) out += `<h3>Prices where you stand</h3>` + Object.entries(pp).map(([k, v]) => `<div class="g-row"><div class="grow">${h(short(k))}</div>${h(Object.entries(v).map(([i, p]) => `${i} ${p}`).join(", "))}</div>`).join("");
+    return out;
+  },
+  chat(){
+    return `<div class="g-chatlog" id="g-chatlog"></div>
+      <div class="g-compose"><select id="g-to"></select><input id="g-say" placeholder="Say something…" maxlength="400"><button class="g-btn go" id="g-send">Send</button></div>`;
+  },
+  log(){
+    return `<div class="g-feed">` + (FEED.slice().reverse().map(f =>
+      `<div class="${h(f.kind)}"><span class="g-dim">${clock(f.hour)}</span> — ${h(f.text)}</div>`).join("")
+      || `<div class="g-empty">Nothing has happened to you yet.</div>`) + `</div>`;
+  },
+  ranks(){
+    let out = "";
+    if (ST.cities && ST.cities.length > 1)
+      out += `<h3>The cities</h3>` + ST.cities.slice().sort((a, b) => b.total - a.total).map((c, i) =>
+        `<div class="g-row"><div class="grow">${i + 1}. <b>${h(c.name)}</b>${c.key === ST.city ? " (yours)" : ""}</div><b>${money(c.total)}</b></div>`).join("");
+    out += `<h3>Richest citizens</h3>` + ST.leaders.map((a, i) =>
+      `<div class="g-row"${a.you ? ' style="background:#f6d9b8"' : ""}><div class="grow">${i + 1}. ${a.you ? "<b>You</b>" : h(short(a.name))}</div><b>${money(a.worth)}</b></div>`).join("")
+      + (ST.your_rank > ST.leaders.length ? `<div class="g-row" style="background:#f6d9b8"><div class="grow">${ST.your_rank}. <b>You</b></div><b>${money(ST.you.net_worth)}</b></div>` : "");
+    const ww = OBS.whats_working || [];
+    if (ww.length) out += `<h3>What's working</h3><pre>${h(ww.join("\n"))}</pre>`;
+    return out;
+  },
+  orders(){
+    const names = Object.keys(TOOLS).sort();
+    return `<div class="g-tip">Every action the agents can take is here, by name. The buttons elsewhere fill these in for you.</div>
+      <select id="g-pick" class="g-form" style="width:100%;padding:8px;border-radius:7px;border:1px solid #c9b07a;background:#fffaf0;font:15px var(--body)">
+        <option value="">Choose an action…</option>${names.map(n => `<option value="${h(n)}">${h(n.replace(/_/g, " "))}</option>`).join("")}</select>
+      <h3>The rules of the world</h3><button class="g-btn" id="g-rules-btn">Show the rules every agent is given</button><pre id="g-rules" style="display:none"></pre>
+      <h3>What your agent sees</h3><button class="g-btn" id="g-obs-btn">Show everything, as a model would see it</button><pre id="g-obs" style="display:none"></pre>
+      <h3>Game</h3><div>${`<button class="g-btn" id="g-budget-btn">Raise the spending cap by $5</button>`}<button class="g-btn go" id="g-quit">Save &amp; quit</button></div>`;
+  },
+};
+
+function wireOrders(){
+  $("g-pick").onchange = () => { if ($("g-pick").value) openForm($("g-pick").value, {}, $("g-pick").value.replace(/_/g, " ")); };
+  $("g-rules-btn").onclick = async () => {
+    const r = await get("/api/briefing"); $("g-rules").textContent = r.text; $("g-rules").style.display = "block";
+  };
+  $("g-obs-btn").onclick = async () => {
+    const r = await get("/api/state"); $("g-obs").textContent = r.text; $("g-obs").style.display = "block";
+  };
+  $("g-budget-btn").onclick = async () => {
+    await post("/api/control", {budget: (ST ? ST.budget : 10) + 5}); refreshStatus(); toast("Spending cap raised by $5");
+  };
+  $("g-quit").onclick = async () => {
+    if (!confirm("Save this game and go back to the start screen? You can resume it later.")) return;
+    $("g-quit").disabled = true; $("g-quit").textContent = "Saving…";
+    await post("/api/end"); location.reload();
+  };
+}
+
+/* ---------- chat ---------- */
+function updateChat(){
+  const log = $("g-chatlog"); if (!log) return;
+  const lines = OBS.chat || [];
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  log.innerHTML = lines.slice(-60).map(l => {
+    const m = l.match(/^(\d+:\d+) \[([^\]]+)\] ([^:]+?)(?: \(([A-Z]\d+)\))?: ([\s\S]*)$/);
+    if (!m) return `<div>${h(l)}</div>`;
+    const [, t, ch, who, , text] = m;
+    return `<div><span class="g-dim">${h(t)}</span> <b>${h(short(who))}</b>${ch !== "world" ? ` <span class="g-dim">(${h(ch)})</span>` : ""}: ${h(text)}</div>`;
+  }).join("") || `<div class="g-empty">Nobody has said anything yet.</div>`;
+  if (atBottom) log.scrollTop = 1e6;
+  seen.chat = lines.length; badges();
+}
+function wireChat(){
+  const to = $("g-to");
+  to.innerHTML = `<option value="">Everyone</option>` + BOARD.agents.map(a => `<option value="${h(a.id)}">${h(short(a.name))}</option>`).join("");
+  updateChat(); $("g-chatlog").scrollTop = 1e6;
+  const send = async () => {
+    const text = $("g-say").value.trim(); if (!text) return;
+    const r = to.value ? await act("send_direct_message", {target_id: to.value, text}) : await act("post_world_chat", {text});
+    if (r.ok) $("g-say").value = "";
+  };
+  $("g-send").onclick = send;
+  $("g-say").addEventListener("keydown", e => { if (e.key === "Enter") send(); });
+  $("g-say").focus();
+}
+
+/* ---------- forms, built from each action's own schema ---------- */
+const LISTS = {
+  business_id: () => (BOARD.places && businessesList()), my_business_id: () => (OBS.you.businesses || []).map(b => [b.id, short(b.name)]),
+  seller_business_id: () => businessesList(), to_business_id: () => businessesList(),
+  agent_id: () => BOARD.agents.map(a => [a.id, short(a.name)]), target_id: () => BOARD.agents.map(a => [a.id, short(a.name)]),
+  applicant_id: () => BOARD.agents.map(a => [a.id, short(a.name)]),
+  destination: () => BOARD.places.map(p => [p.name, `${p.name} (${p.city_name})`]),
+  item: () => BOARD.items.map(i => [i, i]), output: () => BOARD.items.map(i => [i, i]),
+  type: () => BOARD.business_types.map(t => [t.name, `${t.name} — ${t.cost}`]),
+  consignment_id: () => BOARD.hauls.map(c => [c.id, `${c.qty} ${c.item}: ${c.from} → ${c.to}`]),
+  posting_id: () => BOARD.jobs.map(j => [j.id, `${j.role} at ${short(j.business)}, ${j.wage}/hr`]),
+  raid_id: () => BOARD.raids.map(r => [r.id, `on ${r.segment}`]),
+  segment: () => BOARD.segments.map(s => [s, s]),
+};
+function businessesList(){
+  const seen = new Set(), out = [];
+  for (const b of (OBS.you.businesses || [])) { seen.add(b.id); out.push([b.id, `${short(b.name)} (yours)`]); }
+  for (const b of ((OBS.here || {}).businesses || [])) if (!seen.has(b.id)) { seen.add(b.id); out.push([b.id, `${short(b.name)} (here)`]); }
+  for (const s of (OBS.where_to_buy_stock || [])) if (!seen.has(s.id)) { seen.add(s.id); out.push([s.id, `${short(s.name)}, ${s.at}`]); }
+  for (const c of Object.values(DATA.cards || {})) if (c.kind === "business" && c.id && !seen.has(c.id)) { seen.add(c.id); out.push([c.id, short(c.name || c.id)]); }
+  return out;
+}
+function openForm(action, prefill, title){
+  const t = TOOLS[action];
+  if (!t){ toast(`No such action: ${action}`, "bad"); return; }
+  if (!OPEN){ OPEN = "orders"; $("g-panel").classList.add("open"); }
+  FORM = action;
+  $("g-ptitle").textContent = title ? title.charAt(0).toUpperCase() + title.slice(1) : action.replace(/_/g, " ");
+  const props = t.parameters.properties || {}, req = new Set(t.parameters.required || []);
+  let html = `<button class="g-back" id="g-back">← Back</button><form class="g-form" id="g-form" autocomplete="off"><div class="desc">${h(t.description || "")}</div>`;
+  for (const [k, p] of Object.entries(props)){
+    if (k === "why") continue;
+    const v = prefill[k] !== undefined ? prefill[k] : "";
+    const label = k.replace(/_id$/, "").replace(/_/g, " ") + (req.has(k) ? "" : " (optional)");
+    const opts = p.enum ? p.enum.map(o => [o, o]) : LISTS[k] ? LISTS[k]() : null;
+    if (p.type === "boolean"){
+      html += `<label><input type="checkbox" name="${h(k)}" data-type="boolean" style="width:auto"${v ? " checked" : ""}> ${h(label)}</label>`;
+    } else if (opts && opts.length){
+      const has = opts.some(([val]) => String(val) === String(v));
+      html += `<label>${h(label)}</label><select name="${h(k)}" data-type="${h(p.type)}">`
+        + (req.has(k) && has ? "" : `<option value="">${req.has(k) ? "choose…" : "—"}</option>`)
+        + (v !== "" && !has ? `<option value="${h(v)}" selected>${h(v)}</option>` : "")
+        + opts.map(([val, lab]) => `<option value="${h(val)}"${String(val) === String(v) ? " selected" : ""}>${h(lab)}</option>`).join("") + `</select>`;
+    } else {
+      const num = p.type === "number" || p.type === "integer";
+      html += `<label>${h(label)}</label><input name="${h(k)}" data-type="${h(p.type)}" ${num ? `type="number" step="${p.type === "integer" ? 1 : "any"}" min="0"` : ""} value="${h(v)}">`;
+    }
+  }
+  html += `<div style="margin-top:12px"><button class="g-btn go" type="submit">Do it</button></div></form>`;
+  $("g-pbody").innerHTML = html;
+  $("g-back").onclick = () => { const tab = OPEN; FORM = null; OPEN = null; openTab(tab); };
+  $("g-form").onsubmit = async e => {
+    e.preventDefault();
+    const args = {};
+    for (const el of $("g-form").querySelectorAll("[name]")){
+      const ty = el.dataset.type;
+      if (ty === "boolean"){ if (el.checked) args[el.name] = true; continue; }
+      if (el.value === "") continue;
+      args[el.name] = ty === "integer" ? parseInt(el.value, 10) : ty === "number" ? parseFloat(el.value) : el.value;
+    }
+    const r = await act(action, args);
+    if (r.ok){ const tab = OPEN; FORM = null; OPEN = null; openTab(tab); }
+  };
+  const first = [...$("g-form").querySelectorAll("input,select")].find(i => !i.value && i.type !== "checkbox");
+  if (first) first.focus();
+}
+window.gameOpenForm = openForm;
+
+/* ---------- state, board, feed ---------- */
+async function refreshState(){
+  let r; try { r = await get("/api/state"); } catch (e) { return; }
+  if (!r || !r.obs) return;
+  OBS = r.obs;
+  badges();
+  renderTab(false);
+}
+async function refreshBoard(){
+  try { BOARD = await get("/api/board"); } catch (e) { return; }
+  badges();
+}
+async function refreshFeed(){
+  let r; try { r = await get(`/api/feed?since=${FEED_SEQ}`); } catch (e) { return; }
+  for (const f of r.feed || []){
+    if (f.seq <= FEED_SEQ) continue;
+    FEED_SEQ = f.seq; FEED.push(f);
+    if (f.kind === "alert") toast(f.text, "bad");
+    else if (f.kind === "message") toast(f.text, "msg");
+    else if (f.kind === "wake") toast(f.text);       // the rest waits under News
+  }
+  while (FEED.length > 200) FEED.shift();
+  if (OPEN === "log") { seen.log = FEED.length; renderTab(false); }
+  badges();
+}
+function badge(id, n){ const el = $(id); el.textContent = n > 99 ? "99+" : n; el.style.display = n > 0 ? "flex" : "none"; }
+function badges(){
+  if (OBS) badge("b-chat", OPEN === "chat" ? 0 : Math.max(0, (OBS.chat || []).length - seen.chat));
+  badge("b-log", OPEN === "log" ? 0 : Math.max(0, FEED.length - seen.log));
+  if (BOARD){
+    badge("b-jobs", BOARD.jobs.filter(j => j.to_me || (j.mine && Array.isArray(j.applicants) && j.applicants.length)).length);
+    badge("b-convoys", BOARD.hauls.filter(c => c.mine_to_carry).length);
+  }
+}
+
+/* ---------- the map pop-up: actions on what you clicked ---------- */
+window.gameHook = (hit, body) => {
+  const r = hit.ref;
+  let html = "";
+  if (hit.kind === "place"){
+    html = r.name === (OBS && OBS.you.location) ? `<span class="g-good">You are here.</span>` : B(`Travel to ${r.name}`, "travel_to", {destination: r.name}, true);
+  } else if (r.id && r.id[0] === "B"){
+    if (r.place && !(OBS && OBS.you.location === r.place)) html += B("Go there", "travel_to", {destination: r.place}, true);
+    if (r.type === "Tavern / Inn") html += B("Eat here", "buy_meal", {business_id: r.id});
+    if (r.owner !== G.you){
+      html += F("Order delivery", "order_from_business", {seller_business_id: r.id}, "Order delivery");
+      html += F("Sell to them", "sell_to_business", {business_id: r.id}, "Sell to them");
+    } else html += `<button class="g-btn" data-tabgo="business">Manage</button>`;
+  } else if (r.id && r.id[0] === "A" && r.id !== G.you){
+    html += F("Message", "send_direct_message", {target_id: r.id}, "Message")
+          + F("Pay", "pay", {agent_id: r.id}, "Pay") + F("Offer a job", "offer_job", {agent_id: r.id}, "Offer a job");
+  }
+  if (!html) return;
+  const div = document.createElement("div"); div.className = "game-acts"; div.innerHTML = html;
+  body.appendChild(div); wire(div);
+};
+
+(async () => {
+  const t = await get("/api/tools");
+  for (const tool of t.tools) TOOLS[tool.name] = tool;
+  await Promise.all([refreshStatus(), refreshBoard()]);
+  await refreshState();
+  await refreshFeed();
+  seen.log = FEED.length; seen.chat = (OBS && OBS.chat || []).length; badges();
+  requestAnimationFrame(frame);
+  setInterval(refreshStatus, 2000);
+  setInterval(refreshState, 3000);
+  setInterval(refreshBoard, 5000);
+  setInterval(refreshFeed, 2000);
+})();
+})();
+</script>"""
 
 
 if __name__ == "__main__":

@@ -93,6 +93,11 @@ def full_roster() -> list[tuple[str, str]]:
     return roster
 
 
+def _land_seed() -> int:
+    import random
+    return random.randrange(1, 2 ** 31)
+
+
 def new_world(
     log: EventLog,
     roster: list[tuple[str, str]],
@@ -116,6 +121,7 @@ def new_world(
     handle a log line has on a person.
     """
     world = World()
+    world.land_seed = _land_seed()
     if not government:
         _no_state(world)
     if rosters:

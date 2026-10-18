@@ -527,6 +527,12 @@ class Business:
     production_blocked: bool = False
     research_buffer: float = 0.0
     peak_headcount: int = 0           # max simultaneous production staff observed
+    # The ground under a farm or mine: hidden at founding, revealed when it
+    # first produces. See `convoy/land.py`.
+    land_rolled: bool = False
+    land_bonus_item: str = ""
+    land_bonus_pct: float = 0.0
+    land_revealed: bool = False
     plots: int = 0                    # spur land taken; 0 for main-road businesses
     outstanding_insured_value: float = 0.0
     last_convoy_post: float = -1e9
@@ -890,6 +896,35 @@ class Consignment:
     def split_label(self) -> str:
         """How the deal reads, seller first: "75/25"."""
         return f"{self.seller_share * 100:.0f}/{self.buyer_share * 100:.0f}"
+
+
+@dataclass
+class BuyOrder:
+    """A standing bid: "I will pay `price` each for `qty` of `item`, at my business."
+
+    Designer request, 2026-10-17: post the price and how many you want, so that
+    other people can fill it. The other half of a market -- until now goods
+    could only be OFFERED at a price (`retail_prices`), never asked for, so a
+    buyer had to find a seller and take what they charged.
+
+    THE MONEY IS HELD, so a seller who fills it is certain of being paid: the
+    buying business escrows `price * qty`, plus the carriage, when it posts. A
+    fill pays the seller from that and leaves the goods to be carried, exactly
+    as an `order_from_business` does -- a consignment at the seller's site,
+    with this order's share of `courier_fee` for whoever hauls it (none, and
+    the buyer fetches it). Partial fills are fine; cancelling returns the rest.
+    """
+    id: str
+    buyer: str                       # agent who posted it
+    business: str                    # where the goods go; pays from its cash
+    item: str
+    qty: int                         # still wanted
+    price: float                     # per unit
+    created_at: float
+    qty_posted: int = 0
+    courier_fee: float = 0.0         # for the whole order; a fill carries its share
+    escrow: float = 0.0              # held now: goods + carriage still unspent
+    status: str = "open"             # open | filled | cancelled
 
 
 @dataclass
@@ -1265,9 +1300,12 @@ class World:
     consignments: dict[str, "Consignment"] = field(default_factory=dict)
     escort_postings: dict[str, "EscortPosting"] = field(default_factory=dict)
     raids: dict[str, "Raid"] = field(default_factory=dict)
+    buy_orders: dict[str, "BuyOrder"] = field(default_factory=dict)
     # Faceless dice-roll bandits on every road (`engine._resolve_banditry`).
     # Off for runs since 2026-10-16: robbery is done by people (`Raid`).
     npc_bandits: bool = True
+    # Draws every farm's and mine's hidden ground. See `convoy/land.py`.
+    land_seed: int = 0
     # The latest "what's working" summary, when it was published, and the
     # numbers the next one measures change against. See `convoy/digest.py`.
     digest: str = ""

@@ -665,8 +665,11 @@ BUSINESS_TYPES: dict[str, BusinessType] = {
             "Farm", 150, None, True, True, ("Farmhand", "Laborer"),
             ("Dirty Water", "Wheat", "Hide"),  # Wool removed with the resource
         ),
+        # 250 for playtesting (designer, 2026-10-17): a new player can found
+        # one from the starting 300 and keep 50 for feedstock and meals, then
+        # work it themselves. It was 450.
         BusinessType(
-            "Refinery", 450, None, True, True, ("Refinery Worker",),
+            "Refinery", 250, None, True, True, ("Refinery Worker",),
             ("Purified Water", "Grain", "Lumber", "Seasoned Hardwood", "Cut Stone",
              "Fired Brick", "Charcoal", "Tanned Leather", "Bronze", "Iron"),
         ),

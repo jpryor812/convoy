@@ -20,8 +20,10 @@ from . import world_map
 from .events import EventLog, Significance
 from . import banditry as B
 from . import raids as R
+from . import land as LAND
 from .state import (
     Raid,
+    BuyOrder,
     Activity,
     Agent,
     Business,
@@ -772,6 +774,8 @@ def start_business(
     )
     world.businesses[biz.id] = biz
     agent.owned_businesses.append(biz.id)
+    # A farm or mine gets its hidden ground now. See `convoy/land.py`.
+    LAND.roll(world, biz)
     # The starter ground comes WITH the business, already built on. Charging
     # separately for it would roughly double the entry price, and PHASE4 already
     # halved founding costs because entry was absorbing whole runs -- in the
@@ -2377,6 +2381,25 @@ def _settle_split(
     return wanted, power.explain()
 
 
+def _pay_for_business(biz: Business, agent: Agent, amount: float) -> str | None:
+    """Pay for a business's purchase: its own cash first, the rest from the
+    owner's pocket. Returns None when paid, or why it could not be.
+
+    Designer request, 2026-10-17: "I shouldn't have to deposit money in my
+    business to buy wheat from another farm, I should just be able to buy that
+    with cash." An owner standing there with the money and a business with
+    none was refused and told to `deposit` first -- a step that moved nothing
+    but the money from one of their pockets to another. The same for everyone.
+    """
+    from_pocket = max(0.0, amount - max(0.0, biz.cash))
+    if from_pocket > agent.denari + 1e-9:
+        return (f"that costs {amount:.2f}; {biz.name} has {max(0.0, biz.cash):.2f} "
+                f"and you have {agent.denari:.2f}")
+    biz.cash -= amount - from_pocket
+    agent.denari -= from_pocket
+    return None
+
+
 def order_from_business(
     world: World, log: EventLog, agent: Agent, my_business_id: str,
     seller_business_id: str, item: str, qty: int, courier_fee: float,
@@ -2418,14 +2441,9 @@ def order_from_business(
     goods = unit * qty
     tax = E.sales_tax_on(goods, world.government.sales_tax)
     total = goods + courier_fee
-    if buyer.cash < total:
-        return False, (
-            f"{buyer.name} has {buyer.cash:.2f} and needs {total:.2f} "
-            f"({goods:.2f} goods + {courier_fee:.2f} carriage). "
-            f"Deposit into the business first."
-        )
-
-    buyer.cash -= total
+    short = _pay_for_business(buyer, agent, total)
+    if short:
+        return False, f"{short} ({goods:.2f} goods + {courier_fee:.2f} carriage)"
     if not seller.is_government:
         seller.remove_item(item, qty)
         seller.cash += goods - tax
@@ -2467,6 +2485,141 @@ def order_from_business(
         f"you carry {con.buyer_share * 100:.0f}% of the fee and of anything "
         f"bandits take. {structure}"
     )
+
+
+# ---------------------------------------------------------------------------
+# BUY ORDERS: standing bids anyone can fill (2026-10-17). See `state.BuyOrder`.
+# ---------------------------------------------------------------------------
+
+def post_buy_order(
+    world: World, log: EventLog, agent: Agent, business_id: str, item: str,
+    qty: int, price: float, courier_fee: float = 0.0,
+) -> Result:
+    """Say what you will pay for something your business uses, and how many.
+
+    Anyone holding it can fill it, all or part, with `fill_buy_order`. The
+    money is held now -- your business's cash first, then your pocket -- so a
+    seller is certain to be paid; cancelling returns what is left to you.
+    `courier_fee` is offered for carrying the whole order (shared
+    pro rata among fills); 0 means you fetch the goods yourself.
+    """
+    biz = world.businesses.get(business_id)
+    if not biz or biz.closed or biz.owner != agent.id:
+        return False, "not your business"
+    if item not in D.ALL_ITEMS or item == "On Foot":
+        return False, f"there is no such good as {item!r}"
+    if not _business_can_use(biz, item):
+        return False, f"your {biz.type} has no use for {item}"
+    qty = int(qty)
+    if qty <= 0 or qty > 500:
+        return False, "ask for between 1 and 500"
+    if price <= 0:
+        return False, "the price must be more than 0"
+    if courier_fee < 0:
+        return False, "courier fee cannot be negative"
+    escrow = round(price * qty + courier_fee, 2)
+    short = _pay_for_business(biz, agent, escrow)
+    if short:
+        return False, short
+    order = BuyOrder(id=world.new_id("W"), buyer=agent.id, business=biz.id, item=item,
+                     qty=qty, price=round(price, 2), created_at=world.sim_time,
+                     qty_posted=qty, courier_fee=round(courier_fee, 2), escrow=escrow)
+    world.buy_orders[order.id] = order
+    log.emit(world.sim_time, "buy_order_posted", actor=agent.id, subject=order.id,
+             business=biz.id, item=item, qty=qty, price=order.price,
+             fee=order.courier_fee, location=biz.location)
+    carry = (f" {courier_fee:.2f} is offered to carry it." if courier_fee > 0
+             else " You will fetch it yourself.")
+    return True, (f"buy order {order.id} posted: {qty} {item} at {price:.2f} each for "
+                  f"{biz.name}. {escrow:.2f} is held until it is filled or "
+                  f"cancelled.{carry}")
+
+
+def fill_buy_order(
+    world: World, log: EventLog, agent: Agent, order_id: str, business_id: str, qty: int = 0,
+) -> Result:
+    """Sell into somebody's buy order from your business's stock, at their price.
+
+    You are paid at once from the money they put up. The goods leave your yard
+    and wait there for them (or their courier) to carry. `qty` 0 fills as much
+    as you have, up to what they still want.
+    """
+    order = world.buy_orders.get(order_id)
+    if not order or order.status != "open":
+        return False, "no such open buy order"
+    seller = world.businesses.get(business_id)
+    if not seller or seller.closed or seller.owner != agent.id:
+        return False, "not your business"
+    buyer = world.businesses.get(order.business)
+    if not buyer or buyer.closed:
+        order.status = "cancelled"
+        return False, "the business that posted it has closed"
+    if buyer.owner == agent.id:
+        return False, "that is your own buy order"
+    if (world_map.city_of(seller.location) not in world.cities
+            or world_map.city_of(buyer.location) not in world.cities):
+        return False, f"there is no road from {seller.location} to {buyer.location}"
+    have = seller.inventory.get(order.item, 0)
+    if have <= 0:
+        return False, f"{seller.name} has no {order.item}"
+    take = min(order.qty, have, int(qty) if qty and qty > 0 else order.qty)
+    goods = round(order.price * take, 2)
+    fee = round(order.courier_fee * take / order.qty_posted, 2) if order.qty_posted else 0.0
+    tax = E.sales_tax_on(goods, world.government.sales_tax)
+    seller.remove_item(order.item, take)
+    seller.cash += goods - tax
+    world.government.collect(tax)
+    order.escrow = round(max(0.0, order.escrow - goods - fee), 2)
+    order.qty -= take
+    if order.qty <= 0:
+        order.status = "filled"
+        buyer.cash += order.escrow          # rounding dust goes home
+        order.escrow = 0.0
+    _record_trade(world, log, Transaction(world.sim_time, order.item, take, order.price,
+                                          seller.id, buyer.id,
+                                          city=world_map.city_of(seller.location)),
+                  "order", seller.location)
+    where = ""
+    if seller.location == buyer.location:
+        buyer.add_item(order.item, take)
+        buyer.cash += fee
+        where = "handed over on the spot"
+        con_id = None
+    else:
+        con = Consignment(
+            id=world.new_id("C"), seller_business=seller.id, buyer_business=buyer.id,
+            item=order.item, qty=take, goods_price=goods, courier_fee=fee,
+            origin=seller.location, destination=buyer.location, created_at=world.sim_time,
+            qty_posted=take,
+        )
+        world.consignments[con.id] = con
+        con_id = con.id
+        where = f"waiting at {seller.location} to be carried to {buyer.location}"
+    log.emit(world.sim_time, "buy_order_filled", actor=agent.id, subject=order.id,
+             buyer=order.buyer, business=buyer.id, seller_business=seller.id,
+             item=order.item, qty=take, price=order.price, left=order.qty,
+             consignment=con_id, location=seller.location)
+    left = f" They still want {order.qty}." if order.qty else ""
+    return True, (f"sold {take} {order.item} into {order.id} at {order.price:.2f}: "
+                  f"{goods - tax:.2f} to {seller.name}. The goods are {where}.{left}")
+
+
+def cancel_buy_order(world: World, log: EventLog, agent: Agent, order_id: str) -> Result:
+    """Take down a buy order of yours. What it still held comes back to you."""
+    order = world.buy_orders.get(order_id)
+    if not order or order.buyer != agent.id:
+        return False, "not your buy order"
+    if order.status != "open":
+        return False, f"it is already {order.status}"
+    # To your pocket, not the business: it was put up from either, and money
+    # stranded in a business is money you must withdraw before you can spend.
+    refund = order.escrow
+    agent.denari += refund
+    order.escrow = 0.0
+    order.status = "cancelled"
+    log.emit(world.sim_time, "buy_order_cancelled", actor=agent.id, subject=order.id,
+             refunded=round(refund, 2))
+    return True, f"cancelled {order.id}; {refund:.2f} back in your pocket"
 
 
 def _return_lent_vehicle(world: World, con, courier: Agent | None = None) -> None:

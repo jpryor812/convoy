@@ -118,7 +118,8 @@ def test_citizens_can_pool_cash_for_a_refinery() -> None:
     world, log = _world(2)
     a, b = list(world.agents.values())
     cost = D.BUSINESS_TYPES["Refinery"].startup_cost
-    ok("a refinery costs more than anyone starts with", cost > D.STARTING_DENARI)
+    # The refinery itself is affordable alone since 2026-10-17 (250, for
+    # playtesting); pooling still matters for running it, and for dearer links.
     okp, msg = A.pay(world, log, b, a.id, 200, note="stake in the refinery")
     ok("one can pay another", okp, msg)
     check("the money moved", (a.denari, b.denari),
