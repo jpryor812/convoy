@@ -97,6 +97,15 @@ def fingerprint(world: "World", agent: "Agent") -> list:
                         if not b.closed and b.owner != agent.id
                         and world_map.city_of(b.location) == city)
             supplies.append([item, stock // 5])
+    # A BUY ORDER for something its businesses hold or make: news a seller
+    # must not sleep through (2026-10-17).
+    wanted = sorted(
+        o.id for o in world.buy_orders.values()
+        if o.status == "open" and o.buyer != agent.id
+        and any((b := world.businesses.get(bid)) is not None and not b.closed
+                and (b.inventory.get(o.item, 0) > 0 or o.item in (b.spec.outputs or ()))
+                for bid in agent.owned_businesses)
+    )
     jobless_board = 0
     if not agent.current_job:
         jobless_board = sum(1 for p in world.job_postings.values()
@@ -105,7 +114,7 @@ def fingerprint(world: "World", agent: "Agent") -> list:
         neighbours, offers, applicants, trades, mine, supplies, jobless_board,
         int(agent.denari // 10), sum(agent.inventory.values()),
         sum(agent.stolen.values()), agent.sustenance_stage, agent.alive,
-        bool(agent.current_job), world.digest_at,
+        bool(agent.current_job), world.digest_at, wanted,
     ]
 
 
@@ -248,3 +257,90 @@ def handle(world: "World", log: "EventLog", agent: "Agent", reason: str) -> bool
             _note(world, log, agent, "keep waiting", "nothing new since it last thought")
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# RESTOCKING (designer request, 2026-10-17)
+# ---------------------------------------------------------------------------
+#
+# "I'm selling Dirty Water and Grain so that taverns can make meals, but no one
+# is buying them and my prices aren't even that high." The 2026-10-17 game at
+# hour 3: two tavern owners had started eight-hour shifts at empty taverns, and
+# an agent on shift is not asked anything until the shift ends -- so the Grain
+# that came up for sale an hour later was never in front of them. An owner whose
+# business has stopped for want of an input buys it: there is one sensible
+# answer when it is for sale at a price the output still pays for, and it does
+# not need a model call, nor to wait until the owner next looks up.
+#
+# Run every game hour for each owner (not the player: see EngineConfig).
+# Buys from businesses that have PUT IT ON SALE -- held at a price -- cheapest
+# first, enough to run RESTOCK_HOURS, out of business cash then the owner's
+# pocket, keeping RESTOCK_RESERVE_HOURS of payroll back.
+
+RESTOCK_HOURS = 4.0
+RESTOCK_MARGIN = 0.85          # inputs may cost up to this share of what the output fetches
+RESTOCK_RESERVE_HOURS = 4.0
+RESTOCK_FOOD_RESERVE = 15.0    # an owner keeps enough for a meal
+RESTOCK_COURIER_SHARE = 0.10   # carriage offered when the seller is elsewhere
+
+
+def restock(world: "World", log: "EventLog", agent: "Agent", rate_of) -> list[str]:
+    """Order the inputs a stalled (or about to stall) business lacks. Returns
+    what was bought. `rate_of(biz)` is the engine's units-per-hour."""
+    bought: list[str] = []
+    for bid in list(agent.owned_businesses):
+        b = world.businesses.get(bid)
+        if b is None or b.closed or not b.active_production:
+            continue
+        out = b.active_production
+        recipe = A.D.REFINING_RECIPES.get(out) or A.D.CRAFTING_RECIPES.get(out)
+        if not recipe or not recipe.inputs:
+            continue
+        target = max(4.0, rate_of(b) * RESTOCK_HOURS)
+        coming = {}
+        for c in world.consignments.values():
+            if c.buyer_business == b.id and c.status in ("awaiting_courier", "claimed"):
+                coming[c.item] = coming.get(c.item, 0) + c.qty
+        # Who sells each input, cheapest first (same place breaks ties: no carriage).
+        offers = {}
+        for item in recipe.inputs:
+            best = None
+            for s in world.businesses.values():
+                if (s.closed or s.is_government or s.owner == agent.id
+                        or s.inventory.get(item, 0) <= 0 or item not in s.retail_prices
+                        or world_map.city_of(s.location) not in world.cities):
+                    continue
+                ok, _ = A._may_buy_from(b, s)
+                if not ok:
+                    continue
+                key = (s.price_for(item) * (1.0 if s.location == b.location else 1.0 + RESTOCK_COURIER_SHARE))
+                if best is None or key < best[0]:
+                    best = (key, s)
+            offers[item] = best[1] if best else None
+        # Does the output still pay for its inputs at these prices?
+        value = b.retail_prices.get(out) or A.D.base_price(out)
+        cost = sum(q * (offers[i].price_for(i) if offers[i] else A.D.base_price(i))
+                   for i, q in recipe.inputs.items())
+        if cost > RESTOCK_MARGIN * value:
+            continue
+        payroll = sum(e.wage for e in b.roster if e.agent_id != agent.id and not e.as_researcher)
+        budget = (max(0.0, b.cash) + agent.denari
+                  - payroll * RESTOCK_RESERVE_HOURS - RESTOCK_FOOD_RESERVE) * 0.5
+        for item, q in recipe.inputs.items():
+            seller = offers[item]
+            need = int(q * target) - b.inventory.get(item, 0) - coming.get(item, 0)
+            if seller is None or need <= 0 or budget <= 0:
+                continue
+            unit = seller.price_for(item)
+            carry = 0.0 if seller.location == b.location else RESTOCK_COURIER_SHARE
+            qty = min(need, seller.inventory.get(item, 0), int(budget // (unit * (1 + carry))))
+            if qty <= 0:
+                continue
+            fee = round(max(1.0, unit * qty * carry), 2) if carry else 0.0
+            ok, msg = A.order_from_business(world, log, agent, b.id, seller.id, item, qty, fee)
+            if ok:
+                budget -= unit * qty + fee
+                did = f"restocked {b.name}: {qty} {item} from {seller.name} at {unit:.2f}"
+                _note(world, log, agent, "restock", did)
+                bought.append(did)
+    return bought

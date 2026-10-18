@@ -102,9 +102,14 @@ def business_card(world: World, biz: Business) -> dict[str, Any]:
         if p.business_id == biz.id and p.is_live(world.sim_time)
     ]
 
+    land = None
+    if biz.land_rolled and biz.land_revealed:
+        land = {"item": biz.land_bonus_item, "pct": biz.land_bonus_pct}
     return {
         "kind": "business",
         "id": biz.id,
+        # The ground, once its first harvest has shown it. See convoy/land.py.
+        "land": land,
         "name": biz.name or biz.type,
         "type": biz.type,
         "place": biz.location,

@@ -29,6 +29,7 @@ from . import world_map as M
 from .events import EventLog, Significance
 from . import digest as DG
 from . import reflexes as RX
+from . import land as LAND
 from .state import Activity, Agent, Business, World
 
 TICK_SECONDS = 60.0     # one simulated minute of continuous processes
@@ -102,6 +103,11 @@ class EngineConfig:
     # without asking the model. See `convoy/reflexes.py`. Off by default so
     # scripted policies and their tests see every wake; model runs turn it on.
     reflexes: bool = False
+    # Owners buy the inputs their stalled businesses lack, every game hour,
+    # without a model call (see reflexes.restock). Not for `manual_agents`:
+    # the player runs their own purchasing.
+    restock: bool = False
+    manual_agents: frozenset = frozenset()
     # How far the clock may run ahead of the oldest decision still being
     # thought about, in simulated minutes. Small, so a decision lands close to
     # the moment it was asked for; large enough that many agents think at once.
@@ -154,6 +160,7 @@ class Engine:
         self._next_checkpoint = (
             world.sim_time + self.config.checkpoint_every_hours * 3600.0
         )
+        self._next_restock = world.sim_time + 3600.0
 
     # -- main loop ---------------------------------------------------------
 
@@ -260,6 +267,13 @@ class Engine:
                     or w.sim_time >= w.digest_at + DG.DIGEST_EVERY_HOURS * 3600.0 - 1e-6):
                 with self.world_lock:
                     self._publish_digest()
+
+            if cfg.restock and w.sim_time >= self._next_restock:
+                with self.world_lock:
+                    self._next_restock = w.sim_time + 3600.0
+                    for agent in list(w.agents.values()):
+                        if agent.alive and agent.owned_businesses and agent.id not in cfg.manual_agents:
+                            RX.restock(w, self.log, agent, self.production_rate)
 
             if w.sim_time >= self._next_checkpoint:
                 with self.world_lock:
@@ -1000,7 +1014,8 @@ class Engine:
                 agent.skill_hours[emp.role] = (
                     agent.skill_hours.get(emp.role, 0.0) + credit_skill_hours
                 )
-        return rate
+        # The ground: rich land makes one good faster. See `convoy/land.py`.
+        return rate * LAND.multiplier(biz, output)
 
     def production_headroom(self, biz: "Business") -> tuple[float, str]:
         """How many more units this business could make before something stops it.
@@ -1180,6 +1195,14 @@ class Engine:
             biz.production_buffer -= units
             biz.production_blocked = False
             biz.add_item(output, units)
+            # THE FIRST HARVEST SHOWS WHAT THE GROUND IS. See `convoy/land.py`.
+            if biz.land_rolled and not biz.land_revealed:
+                biz.land_revealed = True
+                self.log.emit(
+                    w.sim_time, "land_revealed", actor=biz.owner, subject=biz.id,
+                    location=biz.location, item=biz.land_bonus_item,
+                    pct=biz.land_bonus_pct, significance=Significance.MEDIUM,
+                )
             self.log.emit(
                 w.sim_time, "production", subject=biz.id, location=biz.location,
                 item=output, qty=units, workers=headcount,

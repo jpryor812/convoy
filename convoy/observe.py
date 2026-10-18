@@ -30,6 +30,7 @@ from typing import Any
 
 from . import banditry as B
 from . import data as D
+from . import land as LAND
 from . import economy as E
 from . import world_map as M
 from .events import EventLog, Significance
@@ -1390,8 +1391,30 @@ def _owned_business_view(world: World, bid: str) -> dict[str, Any]:
             # load of Dirty Water -- an input no tavern can use -- while the one
             # it actually lacked was Purified Water. The engine knows exactly
             # which line of the recipe is short; it must say so.
+            # And WHERE TO GET IT, at what price (2026-10-17). "MISSING: Grain"
+            # told a tavern owner what it lacked but not that a refinery in the
+            # same square had it on sale -- and the Grain went unbought.
+            def _source(item: str) -> str:
+                from . import actions as A   # circular at import time, as in `observe`
+                best = None
+                for s in world.businesses.values():
+                    if (s.closed or s.is_government or s.owner == b.owner
+                            or s.inventory.get(item, 0) <= 0 or item not in s.retail_prices
+                            or M.city_of(s.location) not in world.cities):
+                        continue
+                    if not A._may_buy_from(b, s)[0]:
+                        continue
+                    if best is None or s.price_for(item) < best.price_for(item):
+                        best = s
+                if best is None:
+                    return f" -- nobody has it on sale; post_buy_order to ask for it"
+                where = ("same place, handed over at once" if best.location == b.location
+                         else best.location)
+                return (f" -- ON SALE: {best.inventory.get(item, 0)} at "
+                        f"{best.price_for(item):.2f} from {best.name} ({best.id}, {where}); "
+                        f"order_from_business")
             short = [
-                f"{i} (have {b.inventory.get(i, 0)}, need {q})"
+                f"{i} (have {b.inventory.get(i, 0)}, need {q}){_source(i)}"
                 for i, q in (recipe.inputs.items() if recipe else [])
                 if b.inventory.get(i, 0) < q
             ]
@@ -1406,6 +1429,9 @@ def _owned_business_view(world: World, bid: str) -> dict[str, Any]:
                 f"STALLED making {b.active_production} -- {why}.{needs} NPC hires "
                 f"are not paid while stalled; agent employees are."
             )
+    ground = LAND.describe(b)
+    if ground:
+        view["land"] = ground
     mine = [
         p for p in world.job_postings.values()
         if p.business_id == bid and p.is_live(world.sim_time)
@@ -1434,8 +1460,9 @@ def _owned_business_view(world: World, bid: str) -> dict[str, Any]:
                     f"lapses in {max(0.0, D.JOB_POSTING_HOURS - p.hours_open(world.sim_time)):.1f}h."
                     if p.applicants else
                     f"NOBODY has applied in {p.hours_open(world.sim_time):.1f}h. "
-                    f"close_job('{p.id}') and post_job again at a higher wage, "
-                    f"or hire_npc_employee instead."
+                    f"close_job('{p.id}') and post_job again at a higher wage"
+                    + (", or offer_job to someone by name." if world.no_state
+                       else ", or hire_npc_employee instead.")
                 ),
             }
             for p in mine
@@ -1877,7 +1904,8 @@ def observe(
             {
                 "id": b.id, "name": b.name, "type": b.type, "at": b.location,
                 "sells": sorted(
-                    i for i in (b.spec.outputs or ())
+                    (f"{i} {b.price_for(i):.2f}" + ("" if i in b.retail_prices or b.is_government else " (not on sale)"))
+                    for i in (b.spec.outputs or ())
                     if b.is_government or b.inventory.get(i, 0) > 0
                 )[:5],
             }
@@ -1888,6 +1916,36 @@ def observe(
             # the next city is real trade -- a longer, more exposed haul.
             and M.city_of(b.location) in world.cities
         ]
+
+    # BUY ORDERS (2026-10-17): somebody has named a price for a thing. Shown to
+    # the owners who could fill one -- a business of theirs holds it or makes
+    # it -- because a bid nobody who can sell sees is a bid that is never filled.
+    if agent.owned_businesses:
+        mine = [world.businesses[b] for b in agent.owned_businesses
+                if b in world.businesses and not world.businesses[b].closed]
+        fillable = []
+        for o in world.buy_orders.values():
+            if o.status != "open" or o.buyer == agent.id:
+                continue
+            holders = [b for b in mine if b.inventory.get(o.item, 0) > 0 or o.item in (b.spec.outputs or ())]
+            if not holders:
+                continue
+            buyer = world.businesses.get(o.business)
+            fillable.append({
+                "order": o.id, "wants": f"{o.qty} {o.item} at {o.price:.2f} each",
+                "for": f"{buyer.name if buyer else o.business} at {buyer.location if buyer else '?'}",
+                "carriage": (f"they pay {o.courier_fee:.2f} to carry it" if o.courier_fee > 0
+                             else "they fetch it themselves"),
+                "you_hold": ", ".join(f"{b.id} {b.inventory.get(o.item, 0)}" for b in holders),
+            })
+        if fillable:
+            obs["buy_orders_you_can_fill"] = fillable[:8]
+        own = [o for o in world.buy_orders.values() if o.buyer == agent.id and o.status == "open"]
+        if own:
+            obs["your_buy_orders"] = [
+                f"{o.id}: {o.qty} of {o.qty_posted} {o.item} still wanted at {o.price:.2f}"
+                for o in own
+            ]
 
     # Haulage nobody has taken. Without this an agent could never FIND work --
     # the same cold start that has kept every chat channel silent so far.
@@ -2283,6 +2341,8 @@ def render(obs: dict[str, Any]) -> str:
         ("raids_lately", "RAIDS IN THE LAST DAY"),
         ("taxes_now", "CURRENT TAX RATES"),
         ("where_to_buy_stock", "WHERE TO ORDER FEEDSTOCK (you need not travel)"),
+        ("buy_orders_you_can_fill", "BUY ORDERS YOU COULD FILL (fill_buy_order -- paid at their price, at once)"),
+        ("your_buy_orders", "YOUR BUY ORDERS STILL OPEN"),
         ("courier_jobs", "HAULAGE JOBS GOING BEGGING"),
         ("escort_jobs", "ESCORT WORK GOING BEGGING (paid passage, if you want it)"),
         ("your_orders_in_transit", "YOUR ORDERS NOT YET DELIVERED"),

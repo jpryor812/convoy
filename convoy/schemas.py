@@ -203,12 +203,25 @@ DESCRIPTIONS: dict[str, str] = {
         "Buy stock for a business you own from another business, and post the "
         "haulage job in one go. You do NOT have to travel to the seller. Your "
         "business pays for the goods and escrows the courier's fee out of its "
-        "OWN cash, so deposit into it first. The goods leave the seller at once "
+        "own cash, and your pocket covers whatever it lacks. The goods leave the seller at once "
         "and wait at their site until a courier hauls them; if nobody does, that "
         "is your loss, not the seller's. Set courier_fee high enough that "
         "somebody wants the job -- a share of what the load is worth is the "
         "usual way to think about it."
     ),
+    "post_buy_order": (
+        "Name the price you will pay for something your business uses, and how "
+        "many -- a standing bid anyone holding it can fill with fill_buy_order. "
+        "The money is held now (business cash, then your pocket), so sellers "
+        "know they will be paid. Set courier_fee to have it carried, or 0 to "
+        "fetch it yourself. cancel_buy_order returns what is left."
+    ),
+    "fill_buy_order": (
+        "Sell into someone's buy order from your business's stock, at their "
+        "price. You are paid at once. The goods wait in your yard for them to "
+        "carry. Open buy orders you could fill are listed for you."
+    ),
+    "cancel_buy_order": "Take down a buy order of yours; what it still held comes back to you.",
     "accept_courier_job": (
         "Take on a haulage job somebody has posted. The fee is already escrowed, "
         "so finishing it always pays. Too big for your vehicle? Give qty and you "

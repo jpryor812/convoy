@@ -202,6 +202,40 @@ def test_off_by_default_so_scripted_policies_see_every_wake() -> None:
     ok("off unless asked for", EngineConfig().reflexes is False)
 
 
+def test_a_stalled_business_buys_what_it_lacks() -> None:
+    """Designer report, 2026-10-17: Grain on sale in the same square, and the
+    taverns that needed it -- owners stuck on shift -- never bought any."""
+    from convoy import observe as O
+    from convoy import world_map as M
+    world, log = _world(3)
+    seller, owner, other = list(world.agents.values())
+    town = M.CITIES[world.cities[0]].market
+    for a in (seller, owner, other):
+        a.location = town
+    seller.location = "Refinery Row" if "Refinery Row" in M.locations_in(world.cities[0]) else town
+    A.start_business(world, log, seller, "Refinery")
+    ref = world.businesses[seller.owned_businesses[0]]
+    ref.add_item("Grain", 20)
+    A.start_business(world, log, owner, "Tavern / Inn")
+    tav = world.businesses[owner.owned_businesses[0]]
+    A.set_production(world, log, owner, tav.id, "Meal")
+    tav.production_blocked = True
+    obs = O.observe(world, log, owner, "reevaluation")
+    text = str(obs)
+    ok("an unpriced stock is not offered as on sale", "nobody has it on sale" in text, text[:300])
+    A.set_retail_price(world, log, seller, ref.id, "Grain", 30.0)
+    ok("too dear for a Meal to pay for: not bought", RX.restock(world, log, owner, lambda b: 2.0) == [])
+    A.set_retail_price(world, log, seller, ref.id, "Grain", 5.0)
+    text = str(O.observe(world, log, owner, "reevaluation"))
+    ok("the stalled line names who sells the missing input", "ON SALE" in text and ref.id in text, text[:300])
+    before = ref.cash
+    did = RX.restock(world, log, owner, lambda b: 2.0)
+    held = tav.inventory.get("Grain", 0) + sum(c.qty for c in world.consignments.values() if c.buyer_business == tav.id)
+    ok("a fair price: the owner buys it, without being asked", did and held > 0, str(did))
+    ok("and the seller is paid", ref.cash > before)
+    ok("it does not buy again what is already coming", RX.restock(world, log, owner, lambda b: 2.0) == [])
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
