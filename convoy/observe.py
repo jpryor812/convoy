@@ -612,6 +612,7 @@ def static_briefing(
     rival: str | None = None,
     no_state: bool = False,
     npc_bandits: bool = True,
+    starter: bool = False,
 ) -> str:
     """Everything that never changes, for the cached system prompt.
 
@@ -732,18 +733,37 @@ def static_briefing(
         # buy at hour zero, the briefing has to say what the valley must make
         # first, or nobody makes it. The food chain is spelled out because the
         # 2026-10-15 run starved for want of a tavern even with a state.
-        header += (
+        header += ((
+            "\n\nTHERE IS NO GOVERNMENT, AND NO TAX -- only FOUR STATE SITES "
+            "the town was started with: the state's Tavern (in the market "
+            "square), Farm, Mine and Refinery. They are a backstop: they SELL "
+            "at a fixed HIGH price (about 1.5x book; its Tavern also sells "
+            "weapons, armour and tools), BUY ANY good at a fixed LOW price "
+            "(0.4x book; sell_to_bidder), and HIRE anyone at a fixed wage -- so nobody "
+            "starves on day one and anyone can earn a wage. Everything else -- "
+            "every other shop, job, cart and weapon -- exists only because one "
+            "of you made it, and a citizen who makes what the state sells and "
+            "prices it under the state takes its customers.\n"
+        ) if starter else (
             "\n\nTHERE IS NO GOVERNMENT. Nothing buys or sells at a fixed "
             "price, nobody pays a wage but another citizen, and there is no tax. "
             "Every shop, job, meal, cart and weapon in the world exists only "
             "because one of you made it.\n"
+        )) + (
             f"YOU START FED FOR {D.START_FED_HOURS_NO_STATE:.0f} HOURS. After "
             "that you can eat only a Meal cooked at a Tavern. A Tavern cooks "
             "Meals from Grain and Purified Water; a Refinery makes those from "
-            "Wheat and Dirty Water; a Farm grows those. NOBODY MAKES ANY OF IT "
+            "Wheat and Dirty Water; a Farm grows those. "
+        ) + ((
+            "The state's Tavern feeds anyone who can pay its high price, so "
+            "the opportunity is to feed the town CHEAPER: a citizen chain of "
+            "farm, refinery and tavern that undercuts it takes every customer.\n"
+        ) if starter else (
+            "NOBODY MAKES ANY OF IT "
             "YET: unless citizens found farms, a refinery and a tavern -- and "
             "staff them -- within the first day, people starve, and a citizen "
             "who starves is a hole in the city's score.\n"
+        )) + (
             "The same goes for everything else. A Stable breeds Camels from "
             "Purified Water, Grain and Tanned Leather (a Refinery tans Hide from "
             "a Farm). A Weaponsmith forges Slings and Spears from Lumber and "
@@ -802,6 +822,7 @@ def briefing_for(world: World, agent: Agent) -> str:
         rival=([c for c in world.cities if c != city] or None) if world.is_contest() else None,
         no_state=world.no_state,
         npc_bandits=world.npc_bandits,
+        starter=world.starter_sites,
     )
 
 
@@ -1398,9 +1419,12 @@ def _owned_business_view(world: World, bid: str) -> dict[str, Any]:
                 from . import actions as A   # circular at import time, as in `observe`
                 best = None
                 for s in world.businesses.values():
-                    if (s.closed or s.is_government or s.owner == b.owner
-                            or s.inventory.get(item, 0) <= 0 or item not in s.retail_prices
-                            or M.city_of(s.location) not in world.cities):
+                    if s.closed or s.owner == b.owner or M.city_of(s.location) not in world.cities:
+                        continue
+                    if s.is_government:
+                        if item not in (s.spec.outputs or ()):
+                            continue
+                    elif s.inventory.get(item, 0) <= 0 or item not in s.retail_prices:
                         continue
                     if not A._may_buy_from(b, s)[0]:
                         continue
@@ -1410,6 +1434,9 @@ def _owned_business_view(world: World, bid: str) -> dict[str, Any]:
                     return f" -- nobody has it on sale; post_buy_order to ask for it"
                 where = ("same place, handed over at once" if best.location == b.location
                          else best.location)
+                if best.is_government:
+                    return (f" -- the state's {best.type} sells it at {best.price_for(item):.2f} "
+                            f"({best.id}, {where}); order_from_business")
                 return (f" -- ON SALE: {best.inventory.get(item, 0)} at "
                         f"{best.price_for(item):.2f} from {best.name} ({best.id}, {where}); "
                         f"order_from_business")
@@ -1432,6 +1459,24 @@ def _owned_business_view(world: World, bid: str) -> dict[str, Any]:
     ground = LAND.describe(b)
     if ground:
         view["land"] = ground
+    from . import ground as GR
+    wear = GR.describe(world, b)
+    if wear:
+        view["ground_and_air"] = wear
+    # PROJECTS (2026-10-18): what is being built here, or what could be.
+    from . import progress as PG
+    owner = world.agents.get(b.owner)
+    if b.project:
+        eta = PG.eta_hours(world, b, owner)
+        mat = PG.PROJECTS[b.project["kind"]]["material"]
+        view["project"] = (f"building {b.project['kind']}: {b.project['done'] / b.project['total']:.0%}, "
+                           f"ready in about {eta:.1f}h -- sooner with more people on shift here "
+                           f"and {mat} in the yard")
+    elif not b.is_government:
+        opts = [f"{k} ({PG.project_cost(b, k):.0f}, ~{PG.project_work(b, k):.0f} work-hours): {v['does']}"
+                for k, v in PG.PROJECTS.items() if k in PG.available(b) and b.improvements.get(k, 0) < v["max"]]
+        if opts:
+            view["projects_you_can_start"] = opts
     mine = [
         p for p in world.job_postings.values()
         if p.business_id == bid and p.is_live(world.sim_time)
@@ -1699,7 +1744,14 @@ def observe(
     # that went on describing the state for another thirty-five hours. This says
     # it at the top of every observation for the rest of the run.
     gone_at = world.state_gone_at(world.city_of(agent))
-    if world.no_state:
+    if world.no_state and world.starter_sites:
+        obs_state_gone = (
+            "NO GOVERNMENT BUT FOUR STATE SITES: its Tavern, Farm, Mine and "
+            "Refinery sell high, buy low and hire at a fixed wage. Everything "
+            "else is another citizen's -- if a thing is going to exist, one of "
+            "you makes it."
+        )
+    elif world.no_state:
         obs_state_gone = (
             "THERE IS NO GOVERNMENT. Every shop, job, meal and buyer is another "
             "citizen's -- if a thing is going to exist, one of you makes it."
@@ -1731,6 +1783,8 @@ def observe(
         ),
         "weapon": agent.equipped_weapon,
     }
+    if agent.calling:
+        you["calling"] = f"{agent.calling}: {D.CALLINGS.get(agent.calling, '')} For life."
     # Vehicles an agent OWNS, with their ids. Without this the id exists only
     # inside the engine: `mount` needs one, the schema tells the model never to
     # invent an id, and nothing in the observation ever supplied one. Every
@@ -1916,6 +1970,64 @@ def observe(
             # the next city is real trade -- a longer, more exposed haul.
             and M.city_of(b.location) in world.cities
         ]
+
+    # THE HOUSEHOLD AND KNOW-HOW (2026-10-18). See family.py, progress.py.
+    from . import family as FAM
+    from . import progress as PG
+    if agent.house:
+        now = world.sim_time
+        def _line(m):
+            if not m.adult:
+                return (f"{m.id} {m.name}: {m.role or 'child'}, of age in "
+                        f"{max(0.0, (m.grown_at - now) / 86400):.1f} days ({m.calling}); "
+                        f"feed_family with a Meal to bring it a day sooner")
+            bits = [f"{m.id} {m.name}: grown, {m.calling}"]
+            bits.append(f"works at {m.works_at}" if m.works_at else "idle at home (assign_family to put them to work)")
+            if m.spouse == FAM.HEAD:
+                bits.append("your partner")
+            elif m.spouse:
+                sp = FAM.member(agent, m.spouse)
+                bits.append(f"married to {sp.name if sp else '?'}")
+            elif m.adult:
+                bits.append("unmarried")
+            return ", ".join(bits)
+        obs["your_house"] = {
+            "house": f"{agent.house}, {len(agent.family)} of {FAM.cap(agent)} in the household",
+            "members": [_line(m) for m in agent.family] or ["nobody: the house is just you"],
+            "allies": [f"{world.agents[a].house} ({a})" for a in agent.allies if a in world.agents] or "none yet",
+            "how it grows": ("children are born only to a married couple; marry a grown member to "
+                             "another house's with propose_marriage -- theirs joins you, the houses "
+                             "become allies. A grown member is also your heir if you die."),
+        }
+        offers = [o for o in world.marriage_offers.values() if o.target == agent.id and o.status == "open"]
+        if offers:
+            obs["marriage_proposals_to_you"] = [
+                f"{o.id}: {world.agents[o.proposer].house} ({o.proposer}) asks for your "
+                f"{(FAM.member(agent, o.their_member) or type('x', (), {'name': '?'})).name} "
+                f"to marry their {(FAM.member(world.agents[o.proposer], o.member) or type('x', (), {'name': '?'})).name}, "
+                f"dowry {o.dowry:.0f} -- accept_marriage or decline_marriage"
+                for o in offers if o.proposer in world.agents]
+        if any(m.adult and not m.spouse for m in agent.family):
+            city = world.city_of(agent)
+            matches = []
+            for other in world.agents_in(city):
+                if other.id == agent.id or not other.alive or not other.house:
+                    continue
+                free = [m for m in other.family if m.adult and not m.spouse]
+                if free:
+                    matches.append(f"{other.house} ({other.id}): " + ", ".join(
+                        f"{m.id} {m.name} ({m.calling})" for m in free[:2]))
+            if matches:
+                obs["houses_you_could_marry_into"] = matches[:6]
+    study = agent.researching
+    can = [f"{k}: {t['name']} ({t['hours']}h) -- {t['does']}" for k, t in PG.TECHS.items()
+           if PG.can_study(agent, k)[0]]
+    obs["know_how"] = {
+        "studying": (f"{PG.TECHS[study['tech']]['name']}, learned in {PG.research_eta(agent):.1f}h"
+                     if study else "nothing -- research(tech) to start; it lands on its own"),
+        "known": [PG.TECHS[t]["name"] for t in agent.tech] or "none yet",
+        "could_study_next": can[:6],
+    }
 
     # BUY ORDERS (2026-10-17): somebody has named a price for a thing. Shown to
     # the owners who could fill one -- a business of theirs holds it or makes
@@ -2335,6 +2447,10 @@ def render(obs: dict[str, Any]) -> str:
         ("you_can", "WHAT YOU CAN DO FROM HERE"),
         ("nobody_makes", "WHAT NOBODY IN YOUR CITY IS MAKING"),
         ("nobody_uses", "WHAT YOU HOLD THAT NOBODY USES"),
+        ("your_house", "YOUR HOUSE (your family: your first workers, and your heirs)"),
+        ("marriage_proposals_to_you", "MARRIAGE PROPOSALS TO YOUR HOUSE"),
+        ("houses_you_could_marry_into", "HOUSES WITH SOMEONE TO MARRY (propose_marriage)"),
+        ("know_how", "KNOW-HOW (one study at a time; each makes you better at something for good)"),
         ("your_raid", "YOUR RAID (you are lying in wait)"),
         ("raids_to_join", "RAIDS YOUR NEIGHBOURS ARE LYING IN WAIT ON (join_raid)"),
         ("on_the_roads", "LOADS ON THE ROADS RIGHT NOW"),

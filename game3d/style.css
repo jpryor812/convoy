@@ -379,3 +379,242 @@ table.grid input.price.qty{width:52px;margin-right:4px}
 .mk-act input.price{width:64px;padding:4px 6px;border:2px solid var(--cream3);border-radius:8px;font:600 14px var(--body)}
 .mk-act input.price.qty{width:52px}
 .bidcta{background:#fff8e6;border:2px dashed var(--cream3);border-radius:12px;margin:0 0 8px}
+
+/* people + private thread (2026-10-18) */
+.chip{display:inline-block;padding:1px 7px;margin:2px 4px 0 0;border-radius:10px;background:#f3e3bf;font-size:12px;font-weight:700;color:var(--ink)}
+.chip i{font-style:normal;color:var(--soft);font-weight:600}
+.chip.calling{background:#dcebff}
+.person .skills{margin-top:2px}
+.person.me{background:#fff6cf}
+#thread{position:fixed;right:84px;bottom:20px;width:min(340px,calc(100% - 32px));height:min(460px,70vh);z-index:30;display:none;flex-direction:column;padding:0;overflow:hidden}
+#thread.open{display:flex}
+#thread header{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:2px solid var(--cream3);background:#fff8e6}
+#thread header>div{flex:1;min-width:0} #thread header small{display:block;color:var(--soft);font-size:12px}
+#th-msgs{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:6px;background:#fffdf6}
+.bub{max-width:78%;padding:7px 11px;border-radius:16px;font:600 14px var(--body);line-height:1.35;word-wrap:break-word}
+.bub i{display:block;font-style:normal;font-size:10.5px;opacity:.6;margin-top:2px}
+.bub.them{align-self:flex-start;background:#e9e3d6;color:var(--ink);border-bottom-left-radius:5px}
+.bub.me{align-self:flex-end;background:#2f7de1;color:#fff;border-bottom-right-radius:5px}
+.th-send{display:flex;gap:6px;padding:8px;border-top:2px solid var(--cream3);background:#fff8e6}
+.th-send input{flex:1;padding:8px 12px;border-radius:18px;border:2px solid var(--cream3);font:600 14px var(--body)}
+#th-offer{white-space:nowrap;padding:5px 10px;font-size:13px}
+
+/* coming up, know-how, house, projects (2026-10-18) */
+#coming{margin-top:8px}
+#coming h4{margin:0 0 4px}
+.cu{display:flex;justify-content:space-between;gap:8px;padding:3px 0;font:700 13px var(--body);border-top:1px dashed #0001}
+.cu:first-child{border-top:0}
+.cu b{color:#c46a00;white-space:nowrap}
+.cu-empty{font-size:12.5px;color:var(--soft)}
+.kh-now{background:#eef6ff;border:2px solid #bcd6f0;border-radius:12px;padding:8px 10px;margin-bottom:10px}
+.kh-now.idle{background:#fff6cf;border-color:#e8cf7a}
+.bar{height:8px;background:#0001;border-radius:5px;overflow:hidden;margin-top:5px}
+.bar i{display:block;height:100%;background:var(--green);border-radius:5px}
+.kh-tree{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.kh-th{font:700 12px var(--head);color:var(--soft);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
+.kh-node{border:2px solid var(--cream3);border-radius:10px;padding:7px 8px;margin-bottom:6px;font-size:12.5px;background:#fff}
+.kh-node b{display:block;font-size:13.5px}
+.kh-node.known{background:#eaf7e2;border-color:#a8d58f}
+.kh-node.studying{background:#eef6ff;border-color:#7fb2e6}
+.kh-node.locked{opacity:.6}
+.kh-worth{color:#c46a00;font-weight:700;margin-top:3px}
+.kh-act{margin-top:5px}
+.proj{background:#fff8e6;border:2px solid var(--cream3);border-radius:12px;padding:8px 10px}
+
+/* your home and family on the map (2026-10-18) */
+.lbl-biz.home b{font:700 13px var(--head)}
+.lbl-fam{display:flex;align-items:center;gap:5px;background:#fffdf6ee;border:2px solid var(--ink);border-radius:12px;padding:2px 8px 2px 4px;
+  font:700 11.5px var(--body);color:var(--ink);white-space:nowrap;box-shadow:0 2px 0 var(--ink);transform:translateY(-6px);pointer-events:none}
+.lbl-fam .fam-ic{font-size:16px;line-height:1}
+.lbl-fam b{display:block;font-size:12px;line-height:1.1}
+.lbl-fam small{display:block;color:var(--soft);font-weight:700;font-size:10.5px;line-height:1.1}
+.lbl-fam .fam-ring{width:18px;height:18px;border-radius:50%;background:conic-gradient(var(--green) calc(var(--p) * 1%), #0002 0);
+  -webkit-mask:radial-gradient(circle,transparent 5px,#000 6px);mask:radial-gradient(circle,transparent 5px,#000 6px)}
+
+/* the guide, avatars (2026-10-18) */
+#onboard{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(460px,calc(100% - 32px));z-index:40;display:none;
+  padding:22px 22px 14px;text-align:center}
+#onboard.open{display:block}
+#onboard .x{position:absolute;right:10px;top:8px}
+#onboard .ob-ic{font-size:44px;line-height:1;margin-bottom:6px}
+#onboard h2{margin:0 0 8px;font:700 21px var(--head)}
+#onboard p{margin:0 0 12px;font:600 14.5px/1.45 var(--body);color:var(--ink)}
+.ob-nav{display:flex;align-items:center;justify-content:space-between;margin-top:10px}
+#ob-dots i{display:inline-block;width:8px;height:8px;border-radius:50%;background:#0002;margin:0 3px}
+#ob-dots i.on{background:var(--gold)}
+.avatar{font-size:20px;margin-right:6px;vertical-align:-3px}
+
+/* delivery compass (2026-10-18) */
+#compass{position:fixed;top:96px;left:50%;transform:translateX(-50%);width:360px;z-index:22;display:none;pointer-events:none}
+#compass.on{display:block}
+#cp-strip{position:relative;height:30px;border-radius:15px;background:linear-gradient(90deg,#0000,#1d1a14cc 18%,#1d1a14cc 82%,#0000);overflow:hidden}
+#cp-strip span{position:absolute;top:5px;transform:translateX(-50%);font:800 14px var(--head);color:#fff}
+#cp-strip span.cp-sub{font-size:11px;top:8px;color:#e9dcc0}
+#cp-strip i{position:absolute;top:12px;width:2px;height:7px;background:#ffffff66;transform:translateX(-1px)}
+#cp-strip .cp-mark{position:absolute;top:-2px;transform:translateX(-50%);color:#ffcc33;font-size:15px;text-shadow:0 1px 2px #000}
+#cp-strip .cp-mark.edge{opacity:.6}
+#cp-text{margin-top:3px;text-align:center;font:800 12.5px var(--body);color:#fff;text-shadow:0 1px 3px #000}
+#toasts{top:150px}
+.lbl-biz.camp b{color:#8a1d12}
+.mission.done{opacity:.7}
+.mission.locked{opacity:.55}
+.mission.active{background:#fff6cf}
+.holo-tag small.hint,small.hint{display:block;color:#2f8a3a;font-weight:800}
+.lbl-place.claim{font-size:12px;opacity:.9}
+.lbl-biz.outpost b{color:#a8621a}
+
+/* ---- health, fights, what people own (2026-10-18) ---- */
+#unitcard .bar.hp i,.bar.hp i{background:linear-gradient(90deg,#c0392b,#e8553f)}
+#portrait{cursor:pointer}
+#portrait:hover{box-shadow:0 0 0 4px var(--gold)}
+.lb-row{cursor:pointer}
+.lb-row:hover{background:#ffe9a855}
+.row.click{cursor:pointer}
+.row.click:hover{background:#c9a24a18}
+.worthbar{display:flex;height:14px;border-radius:7px;overflow:hidden;border:2px solid var(--ink);margin:8px 0 6px}
+.worthbar span{display:block;height:100%}
+.wbdot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:-1px}
+.wb0{background:#e2b93b}.wb1{background:#5c9e4a}.wb2{background:#5b8fd0}.wb3{background:#a46bc9}.wb4{background:#d07a4a}
+#fighthud{position:fixed;top:132px;left:50%;transform:translateX(-50%);min-width:300px;padding:10px 14px;z-index:40;display:none}
+#fighthud.on{display:block}
+#fighthud .fh-title{font:700 17px var(--head);text-align:center;margin-bottom:6px}
+#fighthud .fh-row{display:flex;align-items:center;gap:8px;font:700 13px var(--body);margin:3px 0}
+#fighthud .fh-row span{width:60px}
+#fighthud .fh-row b{width:28px;text-align:right;font-family:var(--head)}
+#fighthud .fh-bar{flex:1;height:10px;border-radius:6px;background:#0002;overflow:hidden;border:2px solid var(--ink)}
+#fighthud .fh-bar u{display:block;height:100%;background:#c0392b;text-decoration:none}
+#fighthud .fh-bar.you u{background:#3f9d4a}
+#fighthud .fh-keys{font:600 12px var(--body);text-align:center;margin-top:6px;opacity:.85}
+.foe-tag{font:700 11px var(--body);color:#fff;text-shadow:0 1px 2px #000;text-align:center;pointer-events:none;width:64px}
+.foe-tag i{display:block;height:5px;background:#0006;border-radius:3px;overflow:hidden;margin-top:2px}
+.foe-tag u{display:block;height:100%;background:#e74c3c;text-decoration:none}
+.foe-tag em{display:none;font:900 22px var(--head);color:#ff3b2f;font-style:normal;line-height:1}
+.foe-tag.wind em{display:block;animation:fxpulse .3s infinite alternate}
+.fx-float{font:900 18px var(--head);color:#fff;text-shadow:0 2px 3px #000;pointer-events:none;animation:fxup .9s ease-out forwards}
+.fx-float.crit{color:#ffd23f;font-size:22px}
+.fx-float.hurt{color:#ff6b5b}
+.fx-float.block{color:#b9dcff}
+@keyframes fxup{from{transform:translateY(0);opacity:1}to{transform:translateY(-34px);opacity:0}}
+@keyframes fxpulse{from{transform:scale(1)}to{transform:scale(1.25)}}
+body.ouch::after{content:"";position:fixed;inset:0;box-shadow:inset 0 0 120px #d0201a99;pointer-events:none;z-index:60}
+#t-foodbox{cursor:pointer}
+#t-foodbox:hover{filter:brightness(1.08)}
+.wear{margin:8px 0;padding:6px 8px;border-radius:8px;background:#0000000a}
+.bar.wearbar i{background:linear-gradient(90deg,#a0522d,#6b8e23)}
+.bar.airbar i{background:linear-gradient(90deg,#9a9a8a,#5a5048)}
+
+/* ======================================================================
+   THE FRONTIER LOOK (2026-10-19). Supersedes the bubbly 2026-10-17 look above:
+   "Red Dead Redemption 2's colourway and vibe ... slightly more muted colours
+   and grittier design." Parchment and ink, dark leather, brass; serif type
+   (Spectral to read, Spectral SC for figures, IM Fell for titles); square-ish
+   corners; the HUD over the world is dark and quiet so the land is the colour.
+   ====================================================================== */
+:root{
+  --cream:#e8dabb; --cream2:#dccaa2; --cream3:#c9b384;
+  --wood:#5b4029; --wooddk:#2c1f14; --ink:#2a1e14; --soft:#6a553d; --dim:#8d7859;
+  --green:#6d8740; --green2:#4d6328; --sky:#5b7487; --sky2:#3e5567; --orange:#a5652b; --orange2:#7a4516;
+  --red:#a5432f; --red2:#7a2b1d; --gold:#c4a052; --gold2:#ddc488;
+  --good:#4d6a26; --bad:#9c3224; --blue:#3e5567;
+  --head:"Spectral SC",Georgia,serif; --body:"Spectral",Georgia,serif; --ui:"Spectral",Georgia,serif;
+  --title:"IM Fell English SC",Georgia,serif;
+  --outline:0 1px 2px #000c,0 0 6px #0008;
+  --hud:rgba(26,20,14,.84); --hudtext:#eadfc6; --brass:#b8955a;
+}
+html,body{background:#2a2219;font-size:15px}
+.frame{background:linear-gradient(180deg,#ece0c4,#e2d2ad);border:2px solid var(--wooddk);border-radius:6px;
+  box-shadow:inset 0 0 0 1px #f8efd9aa, inset 0 0 36px #7a5a2a33, 0 8px 22px #0008}
+
+/* top bar: dark HUD strips, not pills */
+#topbar .res,#topbar .clock,#topbar select,#topbar .tbtn{background:var(--hud);color:var(--hudtext);border:1px solid #b8955a88;
+  border-radius:5px;box-shadow:0 2px 8px #0006;text-shadow:none;font-family:var(--head)}
+#topbar .res svg{filter:sepia(.6) saturate(.7)}
+#topbar .res.warn{background:#5a1f16e0;animation:none}
+#topbar .clock{background:#2f3d47e0}
+#topbar .tbtn{background:#5a3a1ce8;color:var(--gold2)}
+#topbar .spend{background:#0006;color:#cdbf9f}
+
+/* right-hand menus: brass studs */
+#advisors button{background:radial-gradient(circle at 35% 30%,#5a4632,#2c2016 75%);border:1px solid var(--brass);color:var(--gold2);
+  box-shadow:0 3px 8px #0008;border-radius:50%}
+#advisors button.on{background:radial-gradient(circle at 35% 30%,#8a6a3a,#4a3420 75%);color:#fff3d6}
+#advisors button .tip{background:var(--hud);color:var(--hudtext);border:1px solid var(--brass);border-radius:4px}
+#advisors .badge,.badge{background:#9c3224;border-color:#2c1f14;color:#fff}
+
+/* buttons: leather and brass */
+.btn{background:linear-gradient(#6e5338,#4a3522);color:#f3e6c8;border:1px solid #2c1f14;border-radius:4px;
+  box-shadow:inset 0 1px 0 #ffffff22,0 2px 0 #1a120b;text-shadow:0 1px 0 #0008;font-family:var(--head);letter-spacing:.02em}
+.btn.go{background:linear-gradient(#6f8a42,#4b6227)}
+.btn.ghost{background:#efe4cc;color:var(--ink)}
+.btn:hover{filter:brightness(1.1);transform:none}
+
+/* panels */
+#panel{border-radius:6px}
+#panel header{background:linear-gradient(#3a2a1b,#2a1e13);border-bottom:2px solid var(--brass)}
+#panel h2{font:400 23px var(--title);color:var(--gold2);text-shadow:0 1px 0 #000;letter-spacing:.02em}
+#panel .x{background:#5a2a1c;border:1px solid var(--brass);color:#f3e6c8;border-radius:4px;box-shadow:none}
+#pbody h3{font:600 15px var(--head);color:var(--wood);border-bottom:1px solid #9a7f5555;padding-bottom:2px}
+.howto,.tip{color:var(--soft)}
+.row{border-color:#9a7f5544!important}
+
+/* left column cards */
+#leftcol h4{background:linear-gradient(#3a2a1b,#2a1e13);color:var(--gold2);text-shadow:none;border-radius:5px 5px 0 0;
+  border-bottom:1px solid var(--brass);font:600 15px var(--head)}
+#goals h4{background:linear-gradient(#2f3d47,#222c33)}
+#leftcol h4 small{color:#cdbf9f;text-shadow:none}
+.mini{background:#efe4cc;border:1px solid var(--wooddk);border-radius:3px}
+.move{border-bottom:1px dashed #9a7f5566}
+.goal i{background:#efe4cc;border:2px solid #9a7f55}
+
+/* leaderboard */
+#lboard h4{background:linear-gradient(#3a2a1b,#2a1e13);color:var(--gold2);text-shadow:none;font:600 15px var(--head)}
+.lb-row.you{background:linear-gradient(90deg,#d8bf7e,#ecdcb4)}
+.lb-row .ttl{color:#8a6a1a}
+
+/* unit card and portrait */
+#portrait{border:3px solid var(--brass);background:radial-gradient(circle at 40% 35%,#6a5a46,#2c2016);
+  box-shadow:0 0 0 2px #2c1f14,0 6px 14px #0008}
+#unitcard .bar{border:1px solid var(--wooddk);background:#cdbb92;border-radius:2px}
+#unitcard .bar i{background:linear-gradient(90deg,#8a3a24,#b8913f 45%,#6d8740)}
+
+/* build menu */
+.bb{background:#efe4cc;border:1px solid var(--wooddk);box-shadow:0 2px 0 #2c1f14;border-radius:4px}
+.bb.on{background:linear-gradient(#d8c08a,#b8955a)}
+.bb .cost{color:#7a5a1a}
+.bb .own{background:var(--green2);border:1px solid var(--wooddk)}
+.holo-tag{background:#1f1810e8;border:1px solid var(--brass);color:var(--hudtext);box-shadow:0 4px 12px #0008;border-radius:4px}
+.holo-tag small{color:#cdbf9f}
+
+/* holdings bar */
+.hold{background:linear-gradient(180deg,#ece0c4,#e2d2ad);border:1px solid var(--wooddk);box-shadow:0 3px 8px #0007;border-radius:5px}
+.hold.good{background:linear-gradient(180deg,#e3e2bf,#d4d3a6)} .hold.bad{background:linear-gradient(180deg,#ecd2c0,#dfbca6)}
+.hold .bar i{background:linear-gradient(90deg,#4d6328,#8aa05a)}
+
+/* labels in the world: engraved type, no cartoon outline */
+.lbl-place{font:400 19px var(--title);color:#f3e8cf;text-shadow:0 1px 3px #000,0 0 10px #000a;letter-spacing:.03em}
+.lbl-place.city{font-size:32px;color:var(--gold2)}
+.lbl-place small{font:600 12px var(--head);color:#d9cfae}
+.lbl-biz{background:#1f1810e0;color:var(--hudtext);border:1px solid var(--brass);border-radius:4px;box-shadow:0 2px 8px #0008;font-family:var(--head)}
+.lbl-biz small{color:#cdbf9f}
+.lbl-biz.mine{background:#3a2c14e8;border-color:var(--gold)}
+.lbl-biz.sale{background:#22301be0;border-color:#8aa05a;color:#dfe9c8}
+.lbl-biz .ic{background:#efe4cc;border:1px solid var(--wooddk)}
+.lbl-biz .price{color:var(--gold2)}
+.ptimer,.btimer{background:#1f1810e0!important;color:var(--hudtext)!important;border:1px solid var(--brass)!important;box-shadow:0 2px 6px #0008!important}
+.ptimer small,.btimer small{color:#cdbf9f}
+.ptimer .bg,.btimer .bg{stroke:#4a3c2a} .ptimer .fg,.btimer .fg{stroke:#9cb46a}
+.pop{color:#f3e8cf;text-shadow:0 1px 3px #000}
+.bubble{background:radial-gradient(circle at 35% 30%,#d8b06a,#8a5a24);border:1px solid #2c1f14;box-shadow:0 3px 8px #0008}
+.callout{background:#efe4cc;border:1px solid var(--wooddk);border-left:5px solid var(--orange);box-shadow:0 3px 8px #0007;border-radius:4px}
+
+/* toasts */
+.toast{border-radius:4px;font-family:var(--body)}
+.toast.milestone{background:linear-gradient(#efe1b8,#d9c28a);font:600 16px var(--head)}
+
+/* loading cover */
+#cover{background:radial-gradient(circle at 50% 40%,#5a4632,#1c140d)}
+#cover .meter i{background:linear-gradient(90deg,#6d8740,#b8955a)}
+#keys{color:#e6dcc4;text-shadow:0 1px 2px #000}
+#topbar .res.c-blue,#topbar .res{color:var(--hudtext)}
+#minimapbox{background:#2a1e14;border:2px solid var(--brass)!important}
+#minimapbox .cap{color:var(--hudtext);font-family:var(--head)}

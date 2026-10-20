@@ -42,6 +42,15 @@ from . import observe as O
 from . import schemas as S
 from . import world_map as M
 from .engine import TICK_SECONDS, Engine, EngineConfig
+from .world_setup import state_offers
+from . import family as FAM
+from . import delivery as DL
+from . import missions as MI
+from . import combat as CB
+from . import ground as GR
+
+# Raiders leave a newcomer alone for their first game day.
+NEWCOMER_PROTECTION_HOURS = 24.0
 from .events import EventLog, Significance
 from . import actions as A
 from . import advisor as ADV
@@ -73,7 +82,7 @@ class Settings:
     page, and every one is saved with the game so a reload says what it was."""
 
     # Agents per city, in map order; 1 to 3 cities. Counts may differ.
-    cities: dict[str, int] = field(default_factory=lambda: {"aldermarch": 25, "cinderhold": 25})
+    cities: dict[str, int] = field(default_factory=lambda: {"aldermarch": 20, "cinderhold": 20})
     # The city the player lives in. Their seat is one of that city's count.
     your_city: str = "aldermarch"
     model: str = DEFAULT_MODEL
@@ -82,9 +91,27 @@ class Settings:
     # Hard stop on API spend, in dollars. The game pauses itself at it.
     budget: float = 10.0
     workers: int = 16
-    rpm: float = 60.0
+    # Requests a minute to the model. 60 held the clock back with 40 agents
+    # (the "freezes" of 2026-10-18); 240 is what the head start uses.
+    rpm: float = 240.0
     raids: bool = True            # agents may plan raids on the roads
     government: bool = False
+    # The state's Tavern, Farm, Mine and Refinery in each city, and no other
+    # government (see World.starter_sites).
+    starter_sites: bool = True
+    # Your character: one of data.CALLINGS. Agents are dealt one at random.
+    calling: str = "Farmer"
+    # Game hours the towns run without you before you arrive (0: you start
+    # with everyone at hour zero). With a head start the city counts are the
+    # agents, and you arrive as one more. See convoy/town.py.
+    head_start: float = 8.0
+    # SOLO (designer request, 2026-10-18): you start in a new town of your own,
+    # next to the towns the agents run -- your own patch, nobody else in it yet.
+    # `cities` are then the agents' towns and `your_city` is not among them.
+    solo: bool = False
+    # You and your partner: "m" or "f".
+    sex: str = "m"
+    partner_sex: str = "f"
 
     def validate(self) -> None:
         if not 1 <= len(self.cities) <= 3:
@@ -94,8 +121,17 @@ class Settings:
                 raise ValueError(f"unknown city {key!r}")
             if not 1 <= int(n) <= 60:
                 raise ValueError(f"{M.CITIES[key].name} needs 1 to 60 agents")
-        if self.your_city not in self.cities:
+        if self.solo:
+            if self.your_city in self.cities or self.your_city not in M.CITIES:
+                raise ValueError("in a solo start your town is a new one, not one of the agents'")
+        elif self.your_city not in self.cities:
             raise ValueError("you must live in one of the game's cities")
+        if self.sex not in ("m", "f") or self.partner_sex not in ("m", "f"):
+            raise ValueError("choose a man or a woman, for you and for your partner")
+        if self.calling and self.calling not in D.CALLINGS:
+            raise ValueError(f"unknown character {self.calling!r}")
+        if not 0 <= self.head_start <= 48:
+            raise ValueError("a head start is 0 to 48 game hours")
         if self.pace <= 0 or self.budget <= 0:
             raise ValueError("pace and budget must be positive")
 
@@ -137,7 +173,8 @@ def _rosters(settings: Settings) -> tuple[dict[str, list[tuple[str, str]]], int]
                for i in range(int(n))]
         for city, n in settings.cities.items()
     }
-    seat = random.randrange(int(settings.cities[settings.your_city]))
+    seat = (random.randrange(int(settings.cities[settings.your_city]))
+            if settings.your_city in settings.cities else 0)
     return rosters, seat
 
 
@@ -148,6 +185,8 @@ class Game:
                  human_id: str, spent_before: float = 0.0, models: Any = None):
         self.run_dir = run_dir
         self.world = world
+        # Claims on open land are places of this world (convoy/claims.py).
+        M.register_claims(world.claims.values())
         self.log = log
         self.settings = settings
         self.human_id = human_id
@@ -170,6 +209,11 @@ class Game:
         meta_path = run_dir / "game.json"
         meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
         self.claims: dict[str, str] = dict(meta.get("claims") or {})
+        # Town reports bought on other cities: city key -> the snapshot.
+        self.intel: dict[str, dict[str, Any]] = dict(meta.get("intel") or {})
+        # A fight in progress (convoy/combat.py): the page plays it, this keeps score.
+        self.fight: CB.Fight | None = None
+        self.last_ambush = -1e12
         # `models` is for tests: anything with `decide`, `usage` and `world_lock`.
         self.models = models if models is not None else llm.LLMPolicy(
             log=log, requests_per_minute=settings.rpm,
@@ -183,6 +227,10 @@ class Game:
             reflexes=True,
             restock=True,
             manual_agents=frozenset({human_id}),
+            # The clock may run this far ahead of a decision still being
+            # thought about: wider than the default, so a slow answer does not
+            # freeze the world under the player's feet.
+            max_decision_lag_minutes=20.0,
         ), on_checkpoint=lambda w: self.save())
         self._thread: threading.Thread | None = None
 
@@ -200,12 +248,83 @@ class Game:
         run_dir.mkdir(parents=True, exist_ok=True)
         log = EventLog(run_dir / "events.jsonl", echo_min=99)
         rosters, seat = _rosters(settings)
-        world = new_world(log, [], rosters, government=settings.government)
+        world = new_world(log, [], rosters, government=settings.government,
+                          starter_sites=settings.starter_sites)
         world.npc_bandits = False
+        if settings.solo:
+            from . import town as TOWN
+            deal = random.Random(world.land_seed)
+            for a in world.agents.values():
+                a.calling = deal.choice(list(D.CALLINGS))
+                FAM.found_household(world, a, deal)
+                FAM.give_donkey(world, a)
+            you = TOWN.settle(world, log, settings)
+            game = cls(run_dir, world, log, settings, you, models=models)
+            game._welcome()
+            game._write_meta()
+            return game
         human = world.agents_in(settings.your_city)[seat]
+        # Characters: yours as chosen, everyone else's dealt evenly at random.
+        deal = random.Random(world.land_seed)
+        kinds = list(D.CALLINGS)
+        for a in world.agents.values():
+            a.calling = deal.choice(kinds)
+            if a.id != human.id:
+                FAM.found_household(world, a, deal)
+        FAM.found_household(world, human, deal, sex=settings.sex, partner_sex=settings.partner_sex)
+        for a in world.agents.values():
+            FAM.give_donkey(world, a)
+        human.calling = settings.calling
+        human.protected_until = world.sim_time + NEWCOMER_PROTECTION_HOURS * 3600.0
         game = cls(run_dir, world, log, settings, human.id, models=models)
         game._write_meta()
         return game
+
+    @classmethod
+    def from_town(cls, settings: Settings, template: Path, games_dir: Path = GAMES_DIR,
+                  models: Any = None) -> "Game":
+        """A new game in towns that have already been running: you arrive."""
+        from . import town as TOWN
+        settings.validate()
+        run_dir = games_dir / time.strftime("%Y%m%d-%H%M%S")
+        n = 2
+        while run_dir.exists():
+            run_dir = games_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{n}"
+            n += 1
+        world, log, you, spent = TOWN.arrive(template, run_dir, settings)
+        game = cls(run_dir, world, log, settings, you, spent_before=spent, models=models)
+        game._welcome()
+        game._write_meta()
+        return game
+
+    def _welcome(self) -> None:
+        """What you walk into: the town as it stands when you arrive."""
+        w, you = self.world, self.you
+        city = w.city_of(you)
+        mine = [b for b in w.businesses.values()
+                if not b.closed and not b.is_government and M.city_of(b.location) == city]
+        kinds = Counter(b.type.split(" /")[0] for b in mine)
+        top = sorted((a for a in w.agents_in(city) if a.id != you.id),
+                     key=lambda a: -a.net_worth(w))[:1]
+        plural = lambda k, n: k if n == 1 else (k[:-1] + "ies" if k.endswith("y") else k + "s")
+        made = ", ".join(f"{n} {plural(k, n)}" for k, n in kinds.most_common())
+        if not [a for a in w.agents_in(city) if a.id != you.id]:
+            others = [c for c in w.cities if c != city]
+            n = sum(len(w.agents_in(c)) for c in others)
+            biz = sum(1 for b in w.businesses.values()
+                      if not b.closed and not b.is_government and M.city_of(b.location) in others)
+            self._push("milestone", (
+                f"You settle {M.CITIES[city].name}, a town of your own, at hour {w.sim_hour:.0f}. "
+                f"Your home stands in the square and its border is marked around it. "
+                f"Next door, {n} people in {' and '.join(M.CITIES[c].name for c in others)} "
+                f"run {biz} businesses -- your first buyers. Open the guide (?) to begin."))
+            return
+        self._push("milestone", (
+            f"You arrive in {M.CITIES[city].name} at hour {w.sim_hour:.0f}. "
+            f"{len(w.agents_in(city)) - 1} people have been at it since dawn"
+            + (f" and own {made}" if made else ", and nobody has founded anything yet")
+            + (f"; the richest, {top[0].name}, is worth {top[0].net_worth(w):.0f}" if top else "")
+            + f". You have {you.denari:.0f} and a calling ({you.calling}). The Market and People pages show what is going on."))
 
     @classmethod
     def load(cls, run_dir: Path, models: Any = None) -> "Game":
@@ -246,6 +365,7 @@ class Game:
             "spent": round(self.spent(), 4),
             "saved_at": time.strftime("%Y-%m-%d %H:%M"),
             "claims": getattr(self, "claims", {}),
+            "intel": getattr(self, "intel", {}),
         }, indent=2))
 
     def save(self) -> None:
@@ -282,9 +402,36 @@ class Game:
                 continue
             self.engine.config.speed = self.settings.pace
             # A game minute at a time, so pause and pace take effect at once.
-            self.engine.step_until(w.sim_time + TICK_SECONDS)
-            self._collect_feed()
-            self._on_the_hour()
+            #
+            # A BAD TICK MUST NOT STOP THE WORLD (2026-10-18). An exception here
+            # used to kill this thread silently: the page went on animating its
+            # timers against a clock that had stopped, and the player's farm
+            # "made" nothing. Now it is logged, the player is told once, and
+            # the clock goes on.
+            try:
+                self.engine.step_until(w.sim_time + TICK_SECONDS)
+                # A delivery waiting at your business loads the moment there is
+                # something to load and you are standing there (2026-10-18).
+                you = self.you
+                if you.delivery and not you.delivery["loaded"]:
+                    with self.engine.world_lock:
+                        line = DL.load(w, self.log, you)
+                    if line.startswith("Loaded"):
+                        self._push("wake", line)
+                self._collect_feed()
+                self._on_the_hour()
+            except Exception as exc:                  # noqa: BLE001
+                import traceback
+                traceback.print_exc()
+                with self.engine.world_lock:
+                    self.log.emit(w.sim_time, "game_error", error=f"{type(exc).__name__}: {exc}")
+                if not getattr(self, "_told_error", False):
+                    self._told_error = True
+                    self._push("alert", f"Something went wrong in the simulation ({type(exc).__name__}); "
+                                        f"it has carried on. The details are in the terminal.")
+                if w.sim_time < getattr(self, "_last_error_at", -1) + 1:
+                    time.sleep(0.5)            # a fault on every tick must not spin the CPU
+                self._last_error_at = w.sim_time
         self.engine.drain()
         self.save()
 
@@ -348,6 +495,8 @@ class Game:
                            if a.alive and a.activity.kind == "work"
                            and a.activity.detail.get("business") == b.id
                            and a.activity.ends_at > w.sim_time]
+                # Family and hired hands are always on shift (2026-10-18).
+                workers += [e.agent_id for e in b.roster if e.is_npc]
                 if not workers:
                     continue
                 rate = self.engine.production_rate(b)
@@ -450,16 +599,42 @@ class Game:
             postings = [{"id": p.id, "role": p.role, "wage": round(p.wage, 2),
                          "applicants": [{"id": a, "name": w.agents[a].name if a in w.agents else a} for a in p.applicants]}
                         for p in w.job_postings.values() if p.business_id == b.id and p.is_live(w.sim_time)]
+            fam_names = {f"family:{m.id}": f"{m.name} (family)" for m in self.you.family}
+            # PROJECTS: the one under way, and the ones you could start.
+            from . import progress as PG
+            proj = None
+            if b.project:
+                rate, extra = PG.project_rate(w, b, self.you)
+                proj = {"kind": b.project["kind"], "pct": round(b.project["done"] / b.project["total"], 3),
+                        "eta": round(PG.eta_hours(w, b, self.you), 2), "rate": round(rate, 2),
+                        "material": PG.PROJECTS[b.project["kind"]]["material"],
+                        "material_have": b.inventory.get(PG.PROJECTS[b.project["kind"]]["material"], 0),
+                        "with_one_more": round(max(0.0, b.project["total"] - b.project["done"])
+                                               / max(0.1, rate + 1 + extra), 2)}
+            projects = [{"kind": k, "cost": PG.project_cost(b, k), "work": round(PG.project_work(b, k), 1),
+                         "does": v["does"], "material": v["material"], "level": b.improvements.get(k, 0),
+                         "max": v["max"]}
+                        for k, v in PG.PROJECTS.items() if k in PG.available(b)]
+            # YOUR FAMILY, from the business itself (2026-10-18): who is grown
+            # and free to put to work here, and who already is.
+            family = [{"id": m.id, "name": m.name, "role": m.role, "sex": m.sex,
+                       "works_here": m.works_at == b.id, "works_at": m.works_at}
+                      for m in self.you.family if m.adult] if b.owner == self.human_id else []
             return {
+                "family": family, "places_total": places,
+                "project": proj, "projects": projects,
                 "id": b.id, "type": b.type, "location": b.location, "cash": round(b.cash, 2),
                 "producing": producing, "status": status,
                 "stall_reason": why if status == "stalled" else "",
                 "rate_now": round(rate_now, 2),
                 "storage": {"used": sum(b.inventory.values()), "cap": E.business_storage_capacity(w, b)},
-                "staff": [{"id": e.agent_id, "name": w.agents[e.agent_id].name if e.agent_id in w.agents else e.agent_id,
+                "staff": [{"id": e.agent_id,
+                           "name": (w.agents[e.agent_id].name if e.agent_id in w.agents
+                                    else fam_names.get(e.agent_id, e.agent_id)),
+                           "family": e.agent_id.startswith("family:"),
                            "role": e.role, "wage": round(e.wage, 2),
-                           "on_shift": (e.agent_id in w.agents and w.agents[e.agent_id].activity.kind == "work"
-                                        and w.agents[e.agent_id].activity.detail.get("business") == b.id)}
+                           "on_shift": e.is_npc or (e.agent_id in w.agents and w.agents[e.agent_id].activity.kind == "work"
+                                                    and w.agents[e.agent_id].activity.detail.get("business") == b.id)}
                           for e in staff],
                 "places": places, "places_free": max(0, places - n),
                 "you_work_here": any(e.agent_id == self.human_id for e in staff),
@@ -468,6 +643,8 @@ class Game:
                 "land": ({"item": b.land_bonus_item, "pct": b.land_bonus_pct} if b.land_revealed else None)
                         if b.type in LAND.GOODS else None,
                 "land_pending": b.type in LAND.GOODS and not b.land_revealed,
+                # The ground wearing and the air fouling (convoy/ground.py).
+                **GR.view(w, b),
                 "payroll_per_hour": round(payroll, 2),
                 "insolvent": b.insolvent_since is not None,
                 "owed": round(b.insolvent_debt, 2),
@@ -504,10 +681,14 @@ class Game:
                         row[3] += e.detail["qty"]
             listings, cheapest = [], {}
             for b in w.businesses.values():
-                if b.closed or b.is_government:
+                if b.closed or (b.is_government and M.city_of(b.location) != city):
                     continue
-                for item, qty in b.inventory.items():
-                    if qty <= 0 or item not in b.retail_prices:
+                # The state's sites (your own town's) sell what they make,
+                # without limit, at the state's fixed price.
+                stock = ({i: 999 for i in state_offers(b)} if b.is_government
+                         else b.inventory)
+                for item, qty in stock.items():
+                    if qty <= 0 or (item not in b.retail_prices and not b.is_government):
                         continue
                     price = b.price_for(item)
                     kind = "order" if D.is_intermediate(item) else "counter"
@@ -515,7 +696,9 @@ class Game:
                         cheapest[item] = min(cheapest.get(item, 1e18), price)
                     listings.append({
                         "business": b.id, "type": b.type, "item": item, "qty": qty, "price": round(price, 2),
-                        "seller": w.agents[b.owner].name if b.owner in w.agents else b.owner,
+                        "seller": (w.agents[b.owner].name if b.owner in w.agents
+                                   else "The state" if b.is_government else b.owner),
+                        "state": b.is_government,
                         "mine": b.owner == me.id, "place": b.location, "city": M.city_of(b.location),
                         "open": b.is_staffed(w), "here": b.location == me.location, "kind": kind,
                         "receivers": [{"id": m.id, "type": m.type} for m in mine
@@ -568,8 +751,37 @@ class Game:
                 if ins:
                     can_ask.append({"id": b.id, "type": b.type, "place": b.location,
                                     "items": [{"item": i, **stat(i)} for i in ins]})
+            # WHO WOULD BUY (2026-10-18): for every good you hold or make, the
+            # businesses bidding for it now, best price first, in any town.
+            wants = {g["item"] for g in goods} | {o for b in mine for o in (b.spec.outputs or ())}
+            bids: dict[str, list[dict[str, Any]]] = {}
+            for item in sorted(wants):
+                rows = []
+                for b in w.businesses.values():
+                    if b.owner == me.id or b.closed:
+                        continue
+                    # The state pays the same everywhere: show only your town's site.
+                    if b.is_government and M.city_of(b.location) != city:
+                        continue
+                    bid = A.standing_bid(w, b, item)
+                    if bid is None:
+                        continue
+                    rows.append({"business": b.id, "type": b.type, "place": b.location,
+                                 "city": M.CITIES[M.city_of(b.location)].name, "state": b.is_government,
+                                 "owner": "the state" if b.is_government else name(b.owner),
+                                 "price": bid[0], "qty": bid[1],
+                                 "fetch": 0.0 if b.is_government else round(bid[0] * 0.1, 2)})
+                rows.sort(key=lambda r: -r["price"])
+                # One state row: it pays the same at all four of its sites.
+                state_row = next((r for r in rows if r["state"]), None)
+                rows = [r for r in rows if not r["state"]] + ([state_row] if state_row else [])
+                rows.sort(key=lambda r: -r["price"])
+                if rows:
+                    bids[item] = rows[:8]
             items = sorted(set(sold) | {r["item"] for r in listings})
-            return {"listings": listings, "goods": goods, "carried": carried,
+            return {"listings": listings, "goods": goods, "carried": carried, "bids": bids,
+                    "deliveries": DL.offers(w, me)[:10],
+                    "delivery_room": max(0, me.carry_capacity(w) - me.carried_units()),
                     "wanted": wanted, "my_orders": my_orders, "can_ask": can_ask,
                     "cash": round(me.denari, 2),
                     "prices": [{"item": i, **stat(i)} for i in items],
@@ -636,6 +848,276 @@ class Game:
         self._push("did", f"{action}: {message}" if ok else f"{action} refused: {message}")
         return ok, message
 
+    # -- delivery runs (2026-10-18) -------------------------------------------
+
+    def deliveries(self) -> dict[str, Any]:
+        """Buyers who want your goods brought to them, and the run you are on."""
+        with self.engine.world_lock:
+            w, you = self.world, self.you
+            d = you.delivery
+            cur = None
+            if d:
+                b = w.businesses.get(d["buyer"])
+                cur = {**d, "type": b.type if b else "", "buyer_name": b.name if b else "",
+                       "city_name": M.CITIES[d["city"]].name, "total": round(d["unit"] * d["qty"], 2),
+                       "from_place": w.businesses[d["from"]].location if d["from"] in w.businesses else ""}
+            return {"offers": DL.offers(w, you)[:24], "current": cur,
+                    "room": max(0, you.carry_capacity(w) - you.carried_units()),
+                    "capacity": you.carry_capacity(w)}
+
+    def delivery(self, body: dict[str, Any]) -> dict[str, Any]:
+        with self.engine.world_lock:
+            w, you = self.world, self.you
+            if body.get("action") == "drop":
+                you.delivery = None
+                msg = "Delivery dropped; anything you loaded is still with you."
+                self._push("did", msg)
+                return {"ok": True, "message": msg}
+            if body.get("action") == "load":
+                d = you.delivery
+                if not d:
+                    return {"ok": False, "message": "no delivery to load"}
+                if d["loaded"]:
+                    return {"ok": False, "message": "already loaded: follow the compass"}
+                src = w.businesses.get(d["from"])
+                if src and you.location != src.location:
+                    return {"ok": False, "message": f"go to your {src.type.split(' /')[0]} at {src.location} to load"}
+                msg = DL.load(w, self.log, you) or "nothing to load yet"
+                self._push("did", msg)
+                return {"ok": bool(you.delivery and you.delivery["loaded"]), "message": msg}
+            ok, msg = DL.take(w, self.log, you, str(body.get("business_id", "")),
+                              str(body.get("buyer_business_id", "")), str(body.get("item", "")),
+                              int(body.get("qty", 0) or 0))
+        self._push("did" if ok else "alert", msg)
+        return {"ok": ok, "message": msg}
+
+    # -- missions (2026-10-18) ------------------------------------------------
+
+    def missions(self) -> dict[str, Any]:
+        with self.engine.world_lock:
+            w, you = self.world, self.you
+            m = you.mission
+            return {"board": MI.board(w, you), "active": m,
+                    "odds": round(MI.odds(w, you), 2) if m and m.get("id") == "bounty" else None,
+                    "at_camp": bool(m and m.get("id") == "bounty" and you.location == m.get("place"))}
+
+    def mission(self, body: dict[str, Any]) -> dict[str, Any]:
+        with self.engine.world_lock:
+            w, you = self.world, self.you
+            act = body.get("action")
+            if act == "start":
+                ok, msg = MI.start(w, self.log, you, str(body.get("id", "")))
+                if ok and you.delivery and you.delivery.get("mission"):
+                    extra = DL.load(w, self.log, you)
+                    if extra:
+                        msg += " " + extra
+            elif act == "attack":
+                if not (you.mission and you.mission.get("id") == "bounty" and you.location == you.mission.get("place")):
+                    ok, msg = MI.attack(w, self.log, you)            # says why not
+                    self._push("did", msg)
+                    return {"ok": False, "message": msg}
+                won, msg = MI.attack(w, self.log, you)
+                # A lost fight is an outcome, not a refusal: told once, plainly.
+                self._push("did", msg)
+                return {"ok": True, "won": won, "message": msg}
+            elif act == "abandon":
+                ok, msg = True, MI.abandon(w, self.log, you)
+            else:
+                ok, msg = False, "start, attack or abandon"
+        self._push("did", msg)
+        return {"ok": ok, "message": msg}
+
+    # -- fights (2026-10-18): your bat against bandits ---------------------------
+
+    def fight_op(self, body: dict[str, Any]) -> dict[str, Any]:
+        """One step of a fight, played by the page and scored here. Ops:
+        camp (start the bounty camp's fight), road (out between places: are
+        you set upon?), swing (at a foe), struck (a foe's blow, blocked or
+        not), flee, and state."""
+        op = str(body.get("op", "state"))
+        with self.engine.world_lock:
+            w, you = self.world, self.you
+            f, line = self.fight, ""
+            if op == "camp":
+                mi = you.mission or {}
+                if mi.get("id") != "bounty" or you.location != mi.get("place"):
+                    return {"ok": False, "message": "no bandit camp here"}
+                if you.health < CB.FIT_TO_FIGHT:
+                    return {"ok": False, "message": (f"You are too hurt to take them on ({you.health:.0f} health; "
+                                                     f"{CB.FIT_TO_FIGHT:.0f} to fight). Eat and rest: health comes back while you are fed.")}
+                if f is None or f.over:
+                    self.fight = f = CB.start_camp(w, you, int(mi.get("bandits", 2)))
+                    line = "The bandits come at you! R to swing, hold F to block."
+            elif op == "road":
+                if f is None:
+                    nf = CB.road_check(w, self.log, you, self.last_ambush)
+                    if nf is not None:
+                        self.fight, self.last_ambush, f = nf, w.sim_time, nf
+                        line = "Bandits! They want what you carry. R to swing, hold F to block -- or run."
+                        self._push("alert", line)
+            elif f is None:
+                return {"ok": False, "message": "no fight", "fight": None}
+            elif op == "swing":
+                landed, line = CB.swing(w, self.log, you, f, str(body.get("foe", "")))
+                if not landed and line == "too soon":
+                    return {"ok": False, "message": line, "fight": CB.view(f, you)}
+            elif op == "struck":
+                _dmg, line = CB.struck(w, self.log, you, f, str(body.get("foe", "")), bool(body.get("blocked")))
+            elif op == "flee":
+                f.over = f.over or "fled"
+            if f is not None and f.over:
+                line = (line + " " + self._settle_fight(f)).strip()
+            out = {"ok": True, "message": line, "fight": CB.view(f, you)}
+            if f is not None and f.over:
+                self.fight = None
+        return out
+
+    def _settle_fight(self, f: CB.Fight) -> str:
+        """The end of a fight. Call with the world lock held."""
+        w, you = self.world, self.you
+        if f.over == "won":
+            if f.kind == "camp":
+                msg = MI.finish(w, self.log, you, "bounty", "You drove the bandits off.")
+            else:
+                coins = CB.spoils(w, you, f)
+                msg = f"You beat them off. They dropped {coins:.0f} coins as they ran."
+        elif f.over == "lost":
+            msg = (CB.rob(w, self.log, you) if f.kind == "ambush" else
+                   "The bandits beat you back. Catch your breath -- health returns while you are fed -- and try again.")
+        else:
+            msg = "You got away." if f.kind == "ambush" else "You fall back from the camp."
+        self._push("did", msg)
+        return msg
+
+    def depart(self) -> dict[str, Any]:
+        """The player walked out of the place they stood in. A shift there ends:
+        you cannot work a bench you have walked away from (designer report,
+        2026-10-18: "I'm still producing grain when I'm running to get my stuff")."""
+        with self.engine.world_lock:
+            you, w = self.you, self.world
+            if you.activity.kind == "work" and you.activity.ends_at > w.sim_time:
+                A.end_shift(w, self.log, you)
+                self._push("wake", "You left your shift.")
+                return {"ok": True, "message": "You left your shift."}
+        return {"ok": True, "message": ""}
+
+    # -- what someone owns (designer request, 2026-10-18) ------------------------
+
+    def assets(self, agent_id: str) -> dict[str, Any]:
+        """Why someone is rich or poor: their net worth, line by line. What is
+        counted is what the map shows anyway -- buildings, land, carts -- plus
+        coin and goods; what they trade and with whom is a town report."""
+        with self.engine.world_lock:
+            w = self.world
+            a = w.agents.get(agent_id)
+            if a is None:
+                return {"error": "no such citizen"}
+            city = w.city_of(a)
+            biz = []
+            for bid in a.owned_businesses:
+                b = w.businesses.get(bid)
+                if b is None or b.closed:
+                    continue
+                stock = E.realizable_value(w, b.inventory, M.city_of(b.location))
+                biz.append({"id": b.id, "type": b.type, "place": b.location, "worth": round(b.valuation(w), 1),
+                            "cash": round(b.cash, 1), "stock": round(stock, 1),
+                            "staff": len(b.production_staff()), "making": b.active_production,
+                            "profit_day": round(b.daily_profit(w), 1),
+                            "state": b.is_government})
+            biz.sort(key=lambda x: -x["worth"])
+            goods = E.realizable_value(w, a.inventory, city)
+            carts = [w.vehicles[v].type for v in a.owned_vehicles if v in w.vehicles]
+            plots = sum(1 for p in w.plots.values() if p.owner == a.id)
+            prop = w.properties[a.owned_property].assessed_value() if a.owned_property else 0.0
+            total = a.net_worth(w)
+            lines = [["Coins", round(a.denari, 1)],
+                     ["Businesses", round(sum(x["worth"] for x in biz), 1)],
+                     ["Goods carried", round(goods, 1)],
+                     ["Vehicles", round(sum(D.VEHICLES[t].base_price for t in carts), 1)]]
+            if prop:
+                lines.append(["Property", round(prop, 1)])
+            return {"id": a.id, "name": a.name, "you": a.id == self.human_id, "house": a.house,
+                    "city": city, "city_name": M.CITIES[city].name if city in M.CITIES else city,
+                    "calling": a.calling, "worth": round(total, 1), "lines": lines,
+                    "businesses": biz, "vehicles": carts, "plots": plots,
+                    "goods": {i: q for i, q in sorted(a.inventory.items()) if q > 0},
+                    "weapon": a.equipped_weapon, "family": len(a.family),
+                    "job": (w.businesses[a.current_job[0]].type
+                            if a.current_job and a.current_job[0] in w.businesses else None)}
+
+    # -- you: health, food and what you can eat (designer request, 2026-10-18) ---
+
+    def me(self) -> dict[str, Any]:
+        with self.engine.world_lock:
+            w, you = self.world, self.you
+            here = [b for b in w.businesses_at(you.location, "Tavern / Inn") if not b.closed]
+            menu = []
+            for t in here:
+                tier = 0 if t.is_government else t.research.quality_tier
+                meal = E.best_meal_for_tier(tier, "duration")
+                if t.is_government or t.inventory.get(meal, 0) > 0:
+                    menu.append({"tavern": t.id, "name": t.name, "meal": meal,
+                                 "price": round(t.price_for(meal), 2), "hours": E.meal_window(meal),
+                                 "staffed": A.is_staffed(w, t)})
+            taverns = [b for b in w.businesses.values() if b.type == "Tavern / Inn" and not b.closed
+                       and M.city_of(b.location) == w.city_of(you)]
+            near = min(taverns, key=lambda b: (b.location != you.location, b.price_for("Meal")), default=None)
+            # Taverns, so the card can say where food is: yours first, then the
+            # other towns' (a solo town starts with none of its own).
+            home = w.city_of(you)
+            everywhere = [b for b in w.businesses.values() if b.type == "Tavern / Inn" and not b.closed
+                          and M.city_of(b.location) in w.cities]
+            town = []
+            for t in sorted(everywhere, key=lambda b: (b.location != you.location, M.city_of(b.location) != home,
+                                                       b.price_for("Meal")))[:8]:
+                tier = 0 if t.is_government else t.research.quality_tier
+                meal = E.best_meal_for_tier(tier, "duration")
+                town.append({"id": t.id, "name": t.name, "place": t.location, "here": t.location == you.location,
+                             "city_name": M.CITIES[M.city_of(t.location)].name, "home": M.city_of(t.location) == home,
+                             "meal": meal, "price": round(t.price_for(meal), 2), "hours": E.meal_window(meal),
+                             "open": A.is_staffed(w, t) and (t.is_government or t.inventory.get(meal, 0) > 0),
+                             "owner": "the state" if t.is_government else
+                                      (w.agents[t.owner].name if t.owner in w.agents else "")})
+            fed_left = you.last_meal_window - you.hours_since_last_meal
+            return {"name": you.name, "house": you.house, "health": round(you.health, 1),
+                    "stage": you.sustenance_stage, "fed_hours": round(max(0.0, fed_left), 1),
+                    "weapon": you.equipped_weapon, "armour": {k: v for k, v in you.equipped_armor.items() if v},
+                    "carried": [{"meal": m, "qty": q, "hours": E.meal_window(m)}
+                                for m, q in sorted(you.inventory.items()) if m in D.MEALS and q > 0],
+                    "menu": menu, "coins": round(you.denari, 2),
+                    "nearest_tavern": ({"id": near.id, "place": near.location, "name": near.name}
+                                       if near else None),
+                    "taverns": town}
+
+    def eat(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Eat from the character card: a meal you carry, or one bought at a
+        tavern where you stand."""
+        with self.engine.world_lock:
+            if body.get("carried"):
+                ok, msg = A.eat_meal(self.world, self.log, self.you, str(body.get("meal", "")))
+                self._push("did" if ok else "alert", msg)
+            else:
+                args = {"business_id": body["tavern"]} if body.get("tavern") else {}
+                ok, msg = self._do("buy_meal", args)
+        return {"ok": ok, "message": msg}
+
+    # -- claims on open land (2026-10-18) -------------------------------------
+
+    def wild_claim(self, body: dict[str, Any]) -> dict[str, Any]:
+        from . import claims as CL
+        with self.engine.world_lock:
+            try:
+                x, y = float(body.get("x")), float(body.get("y"))
+            except (TypeError, ValueError):
+                return {"ok": False, "message": "where?"}
+            if body.get("quote"):
+                return {"ok": True, **CL.quote(self.world, x, y)}
+            ok, msg, c = CL.claim(self.world, self.log, self.you, x, y, str(body.get("purpose", "")))
+        self._push("did" if ok else "alert", msg)
+        self._map_dirty = True
+        return {"ok": ok, "message": msg, "place": c.name if c else None,
+                "claim": ({"name": c.name, "x": c.x, "y": c.y, "road": c.road, "city": c.city} if c else None)}
+
     def _haul_on_arrival(self) -> tuple[str, str | None]:
         """Walking in with a haul to do does it: load at the origin, hand over
         at the destination. Returns what happened and where to go next."""
@@ -671,6 +1153,111 @@ class Game:
             return f" Could not load {con.item}: {msg}", None
         return "", None
 
+    # -- people (designer request, 2026-10-18) ---------------------------------
+
+    REPORT_COST = 100.0
+
+    def _town(self, city: str) -> dict[str, Any]:
+        """Everyone in a city: what they own, where they work (not the wage --
+        that is theirs to tell), their calling and their experience. Call with
+        the world lock held."""
+        w, me = self.world, self.you
+        people = []
+        for a in w.agents_in(city):
+            if not a.alive:
+                continue
+            job = None
+            if a.current_job:
+                biz = w.businesses.get(a.current_job[0])
+                if biz is not None:
+                    job = {"business": biz.id, "type": biz.type, "role": a.current_job[1],
+                           "employer": ("the state" if biz.is_government
+                                        else "themself" if biz.owner == a.id
+                                        else w.agents[biz.owner].name if biz.owner in w.agents else biz.owner)}
+            skills = sorted(({"role": r, "hours": round(h, 1), "level": E.skill_label(h)}
+                             for r, h in a.skill_hours.items() if h >= 0.5),
+                            key=lambda x: -x["hours"])
+            people.append({
+                "id": a.id, "name": a.name, "you": a.id == me.id, "calling": a.calling,
+                "house": a.house, "household": len(a.family), "ally": a.id in me.allies,
+                "worth": round(a.net_worth(w), 0), "location": a.location,
+                "owns": [{"id": b, "type": w.businesses[b].type, "place": w.businesses[b].location}
+                         for b in a.owned_businesses if b in w.businesses and not w.businesses[b].closed],
+                "job": job, "skills": skills,
+            })
+        people.sort(key=lambda p: -p["worth"])
+        counts = Counter(b.type for b in w.businesses.values()
+                         if not b.closed and M.city_of(b.location) == city and not b.is_government)
+        state = sorted(b.type for b in w.businesses.values()
+                       if not b.closed and b.is_government and M.city_of(b.location) == city)
+        return {"city": city, "name": M.CITIES[city].name, "hour": round(w.sim_hour, 1),
+                "population": len(people), "people": people,
+                "buildings": [{"type": t, "count": n} for t, n in counts.most_common()],
+                "state_sites": state}
+
+    def citizens(self, city: str = "") -> dict[str, Any]:
+        """Your own city, live; another city, from the report you last bought."""
+        with self.engine.world_lock:
+            w = self.world
+            mine = w.city_of(self.you)
+            city = city if city in w.cities else mine
+            others = [{"key": c, "name": M.CITIES[c].name,
+                       "report_hour": (self.intel.get(c) or {}).get("hour")}
+                      for c in w.cities if c != mine]
+            # CLANS: across towns. A secret one is seen only by its members.
+            clans = []
+            for g in w.guilds.values():
+                members = [w.agents[m] for m in g.members if m in w.agents]
+                inside = self.you.id in g.members
+                if g.secret and not inside:
+                    continue
+                clans.append({"id": g.id, "name": g.name, "secret": g.secret, "mine": inside,
+                              "members": len(members), "worth": round(sum(a.net_worth(w) for a in members)),
+                              "towns": sorted({M.CITIES[w.city_of(a)].name for a in members}),
+                              "names": [a.name for a in members] if inside or not g.secret else []})
+            clans.sort(key=lambda c: (not c["mine"], -c["worth"]))
+            base = {"cities": others, "your_city": mine, "report_cost": self.REPORT_COST,
+                    "cash": round(self.you.denari, 2), "clans": clans,
+                    "my_clan": self.you.guild or ""}
+            if city == mine:
+                return {**base, **self._town(city), "live": True}
+            snap = self.intel.get(city)
+            if snap is None:
+                return {**base, "city": city, "name": M.CITIES[city].name, "locked": True,
+                        "population": len(w.agents_in(city))}
+            return {**base, **snap, "live": False}
+
+    def buy_report(self, city: str) -> dict[str, Any]:
+        """A report on another town: who lives there, what they own and what they
+        are good at, as of now. The money goes to nobody -- it is the cost of
+        sending someone to look."""
+        with self.engine.world_lock:
+            w, you = self.world, self.you
+            if city not in w.cities or city == w.city_of(you):
+                return {"ok": False, "message": "pick another town"}
+            if you.denari < self.REPORT_COST:
+                return {"ok": False, "message": f"a report costs {self.REPORT_COST:.0f}; you have {you.denari:.0f}"}
+            you.denari -= self.REPORT_COST
+            self.intel[city] = self._town(city)
+            self.log.emit(w.sim_time, "report_bought", actor=you.id, city=city,
+                          cost=self.REPORT_COST)
+        self._push("did", f"Bought a report on {M.CITIES[city].name} for {self.REPORT_COST:.0f}.")
+        return {"ok": True, "message": f"Report on {M.CITIES[city].name} bought."}
+
+    def thread(self, other: str) -> dict[str, Any]:
+        """Your private messages with one person, oldest first."""
+        with self.engine.world_lock:
+            w, me = self.world, self.human_id
+            a = w.agents.get(other)
+            if a is None:
+                return {"ok": False, "message": "no such person"}
+            msgs = [{"from_me": m.sender == me, "text": m.text, "hour": round(m.sim_time / 3600.0, 2)}
+                    for m in w.chat
+                    if m.channel == "direct" and {m.sender, m.recipient} == {me, other}]
+            return {"ok": True, "with": {"id": a.id, "name": a.name, "calling": a.calling,
+                                         "city": M.CITIES[w.city_of(a)].name},
+                    "messages": msgs[-80:]}
+
     def plots(self) -> dict[str, Any]:
         """Every owned plot in the world, and the squares the player chose for
         theirs. The 3D page lays each place out as a block of grid squares and
@@ -678,7 +1265,8 @@ class Game:
         with self.engine.world_lock:
             w = self.world
             rows = [{"id": q.id, "place": q.location, "owner": q.owner, "business": q.business,
-                     "developed": q.developed, "for_sale": q.for_sale_at}
+                     "developed": q.developed, "for_sale": q.for_sale_at, "home": q.home,
+                     "structure": q.structure}
                     for q in w.plots.values() if q.owner]
             return {"plots": rows, "claims": dict(self.claims),
                     "totals": {p: M.plots_at(p) for c in w.cities for p in M.places_in(c)}}
@@ -693,7 +1281,7 @@ class Game:
             if business_id:
                 mine = [q for q in mine if q.business == business_id]
             else:
-                mine = [q for q in mine if not q.business and q.id not in self.claims]
+                mine = [q for q in mine if not q.business and not q.home and q.id not in self.claims]
             mine.sort(key=lambda q: q.id, reverse=not business_id)
             taken = set(self.claims.values())
             done = 0
@@ -797,6 +1385,29 @@ class Game:
             return "you", f"Autopilot: {d.get('did', d.get('reflex'))}"
         if e.actor == me and e.type in _OWN_ACTION_ECHOES:
             return None
+        if e.actor == me and e.type == "delivered":
+            return "milestone", f"Delivered {d.get('qty')} {d.get('item')}: +{d.get('paid', 0):.0f}."
+        # The countdowns landing, and the household (2026-10-18).
+        if e.actor == me and e.type == "tech_learned":
+            return "milestone", f"You learned {d.get('name')}."
+        if e.actor == me and e.type == "project_done":
+            biz = self.world.businesses.get(e.subject)
+            return "milestone", f"{d.get('project')} finished at your {biz.type.split(' /')[0] if biz else 'business'}."
+        if e.actor == me and e.type == "came_of_age":
+            return "family", f"{d.get('name')} has come of age: put them to work, or marry them into another house."
+        if e.actor == me and e.type == "child_born":
+            return "family", f"A child is born to {' and '.join(p for p in d.get('parents', []) if p)}: {d.get('name')}."
+        if e.type == "marriage_proposed" and e.subject == me:
+            return "family", (f"{d.get('house')} proposes their {d.get('member')} for your "
+                              f"{d.get('their_member')}, with a dowry of {d.get('dowry', 0):.0f}.")
+        if e.type == "married" and me in (e.actor, e.subject):
+            return "milestone", (f"{' and '.join(d.get('couple', []))} are married: "
+                                 f"{' and '.join(d.get('houses', []))} are allies.")
+        if e.type == "marriage_declined" and e.subject == me:
+            return "family", f"{self._name(e.actor)} turned down your proposal."
+        if e.type == "succession" and e.actor == me:
+            return "alert", (f"You died ({d.get('cause')}). {d.get('heir')} takes over {d.get('house')}: "
+                             f"what you carried is lost, everything you own stays in the family.")
         if e.type == "buy_order_filled" and d.get("buyer") == me and e.actor != me:
             where = (f"It waits at {e.location}: fetch it from Market, Deliveries."
                      if d.get("consignment") else "It is in your stock.")
@@ -899,7 +1510,9 @@ class Game:
                     continue
                 line = self._describe(e)
                 if line is not None:
-                    self._push(line[0], line[1], e.sim_hour)
+                    # A message carries who sent it, so the page can open the thread.
+                    self._push(line[0], line[1], e.sim_hour,
+                               ref=e.actor if line[0] == "message" else None)
             self._scan_listings()
 
     def _scan_listings(self) -> None:
@@ -938,6 +1551,120 @@ class Game:
             what = "now sells" if was is None else "cut its price on"
             self._push("offer", f"{self._name(b.owner)}'s {b.type.split(' /')[0]} at {b.location} "
                                 f"{what} {item}: {qty} at {price:.2f}.", w.sim_hour, ref=item)
+
+    # -- know-how, the household, and what is coming (2026-10-18) -------------
+
+    def knowhow(self) -> dict[str, Any]:
+        """The tech tree as you stand: known, studying, open, locked -- and what
+        each would be worth to you now."""
+        from . import progress as PG
+        with self.engine.world_lock:
+            w, you = self.world, self.you
+            mine = [w.businesses[b] for b in you.owned_businesses
+                    if b in w.businesses and not w.businesses[b].closed]
+            def day_value(types) -> float:
+                total = 0.0
+                for b in mine:
+                    if b.type in types and b.active_production:
+                        total += self.engine.production_rate(b) * D.base_price(b.active_production) * 24
+                return total
+            def worth(tid: str) -> str:
+                kinds = {"irrigation": ("Farm",), "picks": ("Mining Operation",),
+                         "bellows": ("Refinery",), "hearth": D.STORE_BUSINESS_TYPES}
+                if tid in kinds:
+                    v = day_value(kinds[tid]) * 0.10
+                    return f"about +{v:.0f} a day at your businesses now" if v >= 1 else "nothing yet: you own none that it speeds"
+                if tid == "steam":
+                    return f"about +{day_value(tuple(D.BUSINESS_TYPES)) * 0.15:.0f} a day now"
+                if tid == "charter":
+                    return f"+{min(25, 5 * len(you.allies))}% with your {len(you.allies)} allies"
+                return ""
+            r = you.researching
+            nodes = []
+            for tid, t in PG.TECHS.items():
+                ok_, why = PG.can_study(you, tid)
+                status = ("known" if tid in you.tech else "studying" if r and r["tech"] == tid
+                          else "open" if ok_ else "locked")
+                nodes.append({"id": tid, "name": t["name"], "tier": t["tier"], "hours": t["hours"],
+                              "does": t["does"], "status": status, "why": "" if ok_ else why,
+                              "worth": worth(tid),
+                              "eta": round(t["hours"] / PG.research_rate(you), 1)})
+            return {"nodes": nodes, "rate": PG.research_rate(you),
+                    "studying": ({"id": r["tech"], "name": PG.TECHS[r["tech"]]["name"],
+                                  "pct": round(r["done"] / PG.TECHS[r["tech"]]["hours"], 3),
+                                  "eta": round(PG.research_eta(you), 2)} if r else None)}
+
+    def household(self) -> dict[str, Any]:
+        """Your house: who is in it, where they work, who you could marry into."""
+        from . import family as FAM
+        with self.engine.world_lock:
+            w, you = self.world, self.you
+            now = w.sim_time
+            def mrow(m, owner):
+                sp = FAM.member(owner, m.spouse) if m.spouse and m.spouse != FAM.HEAD else None
+                return {"id": m.id, "name": m.name, "adult": m.adult, "calling": m.calling,
+                        "sex": m.sex, "role": m.role, "partner": m.spouse == FAM.HEAD,
+                        "pct_grown": (None if m.adult or not m.grown_at else
+                                      round(min(1.0, max(0.0, (now - m.born_at) / max(1.0, m.grown_at - m.born_at))), 3)),
+                        "grows_in": None if m.adult else round(max(0.0, (m.grown_at - now) / 3600), 2),
+                        "works_at": m.works_at,
+                        "works_type": w.businesses[m.works_at].type if m.works_at in w.businesses else "",
+                        "spouse": "you" if m.spouse == FAM.HEAD else (sp.name if sp else ""),
+                        "from_house": m.from_house,
+                        "next_child_in": (round(max(0.0, (m.next_child_at - now) / 3600), 2)
+                                          if m.spouse and m.next_child_at else None)}
+            city = w.city_of(you)
+            houses = []
+            for a in w.agents.values():
+                if a.id == you.id or not a.alive or not a.house:
+                    continue
+                free = [mrow(m, a) for m in a.family if m.adult and not m.spouse]
+                houses.append({"agent": a.id, "name": a.name, "house": a.house,
+                               "city": M.CITIES[w.city_of(a)].name, "here": w.city_of(a) == city,
+                               "ally": a.id in you.allies, "free": free,
+                               "size": len(a.family)})
+            houses.sort(key=lambda h: (not h["here"], not h["free"], h["house"]))
+            offers_in = [{"id": o.id, "house": w.agents[o.proposer].house, "agent": o.proposer,
+                          "their": (FAM.member(w.agents[o.proposer], o.member) or type("x", (), {"name": "?"})).name,
+                          "mine": (FAM.member(you, o.their_member) or type("x", (), {"name": "?"})).name,
+                          "dowry": o.dowry}
+                         for o in w.marriage_offers.values()
+                         if o.target == you.id and o.status == "open" and o.proposer in w.agents]
+            offers_out = [{"id": o.id, "house": w.agents[o.target].house, "status": o.status, "dowry": o.dowry}
+                          for o in w.marriage_offers.values() if o.proposer == you.id and o.target in w.agents]
+            return {"house": you.house, "members": [mrow(m, you) for m in you.family],
+                    "you": {"name": you.name, "sex": you.sex, "calling": you.calling},
+                    "meals": you.inventory.get("Meal", 0),
+                    "home": next((q.location for q in w.plots.values() if q.home and q.owner == you.id), ""),
+                    "cap": FAM.cap(you), "allies": [{"agent": a, "house": w.agents[a].house}
+                                                    for a in you.allies if a in w.agents],
+                    "businesses": [{"id": b, "type": w.businesses[b].type} for b in you.owned_businesses
+                                   if b in w.businesses and not w.businesses[b].closed],
+                    "houses": houses, "offers_in": offers_in, "offers_out": offers_out,
+                    "cash": round(you.denari, 2)}
+
+    def upcoming(self) -> list[dict[str, Any]]:
+        """Every countdown you have running, soonest first: the 'next turn'."""
+        from . import progress as PG
+        w, you = self.world, self.you
+        out = []
+        if you.researching:
+            out.append({"what": f"Learn {PG.TECHS[you.researching['tech']]['name']}",
+                        "hours": PG.research_eta(you), "kind": "tech"})
+        for bid in you.owned_businesses:
+            b = w.businesses.get(bid)
+            if b and b.project and not b.closed:
+                out.append({"what": f"{b.project['kind']} at your {b.type.split(' /')[0]}",
+                            "hours": PG.eta_hours(w, b, you), "kind": "project", "ref": b.id})
+        for m in you.family:
+            if not m.adult and m.grown_at:
+                out.append({"what": f"{m.name} comes of age", "hours": max(0.0, (m.grown_at - w.sim_time) / 3600),
+                            "kind": "family"})
+            if m.spouse and m.next_child_at:
+                out.append({"what": f"{m.name}'s next child", "hours": max(0.0, (m.next_child_at - w.sim_time) / 3600),
+                            "kind": "family"})
+        out.sort(key=lambda x: x["hours"])
+        return [{**x, "hours": round(x["hours"], 2)} for x in out[:6]]
 
     def state(self) -> dict[str, Any]:
         """Everything the player's agent would be shown, as data and as text."""
@@ -995,6 +1722,11 @@ class Game:
             self.log.emit(w.sim_time, "travel", actor=you.id, location=origin,
                           destination=place, seconds=0.0, walked=True)
             haul, go = self._haul_on_arrival()
+            # A delivery run: load at your business, hand over at the buyer's.
+            if you.delivery:
+                for line in (DL.load(w, self.log, you), DL.complete(w, self.log, you)):
+                    if line:
+                        haul += " " + line
         self._push("wake", f"You arrived at {place}.{note}{haul}")
         return {"ok": True, "message": f"arrived at {place}.{note}{haul}", "haul": haul.strip(), "go": go}
 
@@ -1008,7 +1740,19 @@ class Game:
             # player they are one click, from whichever button. Already on the
             # roster there, it just starts the shift.
             you, biz = self.you, self.world.businesses.get(str(args.get("business_id", "")))
-            own_work = action == "apply_for_job" and biz is not None and biz.owner == you.id
+            # A job at the state's site is taken the same way: one click, and to work.
+            own_work = (action == "apply_for_job" and biz is not None
+                        and (biz.owner == you.id or biz.is_government))
+            # MOVING TO ANOTHER OF YOUR BENCHES (2026-10-18): working your mine
+            # after your farm used to be refused with "quit first" -- ending a
+            # shift does not leave the job. Going to work somewhere of your own
+            # (or the state's) leaves the old job for you.
+            if own_work and you.current_job and you.current_job[0] != biz.id:
+                if you.activity.kind == "work":
+                    S.dispatch(self.world, self.log, you, "end_shift", {})
+                okq, msgq = S.dispatch(self.world, self.log, you, "quit_job", {})
+                self.log.emit(self.world.sim_time, "action_call", actor=self.human_id,
+                              action="quit_job", ok=okq, detail_text=str(msgq)[:200], why="")
             if own_work and you.current_job and you.current_job[0] == biz.id:
                 ok, message = S.dispatch(self.world, self.log, you, "start_shift", {"hours": 4})
                 self.log.emit(self.world.sim_time, "action_call", actor=self.human_id,
@@ -1055,7 +1799,22 @@ class Game:
         city = w.city_of(you)
         standings = w.city_standings() if w.is_contest() else []
         mounted = w.vehicles.get(you.mounted_vehicle) if you.mounted_vehicle else None
-        return {
+        # What is up on the market now, for the page's "something new" badge.
+        market_keys = sorted(
+            [f"{b.id}:{i}" for b in w.businesses.values()
+             if not b.closed and not b.is_government and b.owner != you.id
+             for i, q in b.inventory.items() if q > 0 and i in b.retail_prices]
+            + [o.id for o in w.buy_orders.values() if o.status == "open" and o.buyer != you.id])
+        upcoming = self.upcoming()
+        # A fetch of your own (2026-10-18): the page points the way, you ride.
+        con = (w.consignments.get(you.hauling) if you.hauling else
+               next((c for c in w.consignments.values() if c.courier == you.id and c.status == "claimed"), None))
+        haul = None if con is None else {
+            "id": con.id, "item": con.item, "qty": con.qty, "loaded": you.hauling == con.id,
+            "origin": con.origin, "destination": con.destination,
+            "from": con.seller_business, "to": con.buyer_business}
+        return {"upcoming": upcoming, "market_keys": market_keys, "delivery": you.delivery, "mission": you.mission,
+            "haul": haul, "health": round(you.health, 1), "fight": CB.view(self.fight, you),
             "activity": self.activity(),
             "location": you.location,
             # What the player rides, and how much faster than walking it is:
@@ -1156,6 +1915,12 @@ class Game:
                       "spur": t in ("Farm", "Mining Operation"),
                       "makes": list(spec.outputs)}
                      for t, spec in D.BUSINESS_TYPES.items()]
+            # Land anywhere: four squares of open land, with a road (2026-10-18).
+            types += [{"name": "Land claim", "cost": D.LAND_BASE_PRICE * 4, "spur": None, "claim": True,
+                       "makes": [], "does": "Buy four squares anywhere on open land; a dirt road is laid to them."}]
+            # Defenses take one square, anywhere (2026-10-18).
+            types += [{"name": k, "cost": v["cost"], "spur": None, "defense": True, "size": 1,
+                       "makes": [], "does": v["does"]} for k, v in D.DEFENSES.items()]
             # Real estate: unsold ground at every place, at the world's price,
             # and plots other people have put up for sale.
             owned_at: Counter[str] = Counter(q.location for q in w.plots.values() if q.owner)

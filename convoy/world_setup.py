@@ -31,7 +31,27 @@ GOVERNMENT_DEFAULT_OUTPUT: dict[str, str] = {
 }
 
 
-def build_government(world: World, log: EventLog, city: str | None = None) -> None:
+STARTER_SITE_TYPES = ("Tavern / Inn", "Farm", "Mining Operation", "Refinery")
+
+
+def state_offers(biz) -> tuple[str, ...]:
+    """What a state site puts on sale: everything it makes, except that its
+    Tavern serves Meals only -- the state feeds the town; fancy bread is a
+    citizen's business."""
+    if biz.type == "Tavern / Inn":
+        # THE STATE'S STORE (2026-10-18): from its Tavern in the market square,
+        # the ceiling on every finished good -- weapons, armour, tools -- at
+        # its high fixed price. Never vehicles, which a stable breeds.
+        from . import data as D
+        finished = sorted(i for i in D.ALL_ITEMS
+                          if i != "On Foot" and i not in D.VEHICLES and not D.is_intermediate(i)
+                          and (i in D.WEAPONS or i in D.ARMOR or i == "Upgraded Tools"))
+        return ("Meal", *finished)
+    return tuple(biz.spec.outputs or ())
+
+
+def build_government(world: World, log: EventLog, city: str | None = None,
+                     only: tuple[str, ...] | None = None) -> None:
     """The state's own sites, standing on the state's own land.
 
     Government plots are recorded like anyone else's rather than left implicit,
@@ -46,6 +66,8 @@ def build_government(world: World, log: EventLog, city: str | None = None) -> No
     everywhere at once, for the same reason.
     """
     for btype, location in M.government_sites_for(city or world.cities[0]).items():
+        if only is not None and btype not in only:
+            continue
         biz = Business(
             id=world.new_id("G"),
             type=btype,
@@ -104,6 +126,7 @@ def new_world(
     rosters: dict[str, list[tuple[str, str]]] | None = None,
     *,
     government: bool = True,
+    starter_sites: bool = False,
 ) -> World:
     """A one-city world from `roster`, or a contest from `rosters`.
 
@@ -129,6 +152,10 @@ def new_world(
         if government:
             for city in world.cities:
                 build_government(world, log, city)
+        elif starter_sites:
+            world.starter_sites = True
+            for city in world.cities:
+                build_government(world, log, city, only=STARTER_SITE_TYPES)
         for city, people in rosters.items():
             spawn_agents(world, log, people, city)
     else:

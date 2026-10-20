@@ -33,6 +33,7 @@ from .state import (
     Employment,
     EscortPosting,
     Guild,
+    MarriageOffer,
     JobPosting,
     Plot,
     Property,
@@ -64,13 +65,29 @@ def travel_to(world: World, log: EventLog, agent: Agent, destination: str) -> Re
     vehicle_type = None
     if agent.mounted_vehicle:
         vehicle_type = world.vehicles[agent.mounted_vehicle].type
-    seconds = E.travel_seconds(agent.location, destination, vehicle_type)
+    by_water = vehicle_type in D.BOATS
+    if by_water:
+        # A BARGE SAILS QUAY TO QUAY (2026-10-18): from one town's market,
+        # down the river between the towns, to another's. No road, so no
+        # raiders -- and nowhere else it can go.
+        if "barges" not in agent.tech:
+            return False, "you need the River barges know-how to sail one"
+        markets = {world_map.market_of(c) for c in world.cities}
+        if agent.location not in markets or destination not in markets:
+            return False, (f"a barge sails only between the towns' quays ("
+                           f"{', '.join(sorted(markets))}); dismount to go by road")
+        seconds = E.travel_seconds(agent.location, destination, None) * D.BARGE_TIME_FACTOR
+        if "locks" in agent.tech:
+            seconds *= 0.5
+    else:
+        seconds = E.travel_seconds(agent.location, destination, vehicle_type)
     seconds /= world.government.convoy_speed_modifier
 
     origin = agent.location
     agent.in_transit = (origin, destination, 0.0)
     agent.activity = Activity(
-        "travel", world.sim_time + seconds, {"origin": origin, "destination": destination}
+        "travel", world.sim_time + seconds,
+        {"origin": origin, "destination": destination, **({"by_water": True} if by_water else {})}
     )
     # AGENT ESCORTS LEAVE WITH YOU. A guard that stayed behind while the convoy
     # it was hired to protect walked off would still be counted in the risk
@@ -658,7 +675,7 @@ def buy_from_business(
     agent.add_item(item, qty)
     if not biz.is_government:
         biz.remove_item(item, qty)
-        biz.cash += subtotal - tax            # the seller remits the revenue tax
+        _income(world, biz, subtotal - tax)   # the seller remits the revenue tax
     world.government.collect(tax)
     _record_trade(world, log, Transaction(world.sim_time, item, qty, unit, biz.id, agent.id,
                                           city=world.city_of(agent)), "shop", biz.location)
@@ -746,7 +763,8 @@ def start_business(
     if type in world_map.PLOT_CONSUMING_BUSINESSES:
         if not D.is_spur(agent.location):
             return False, f"a {type} can only be founded down a spur road"
-    elif D.is_spur(agent.location):
+    elif D.is_spur(agent.location) and not world_map.is_claim(agent.location):
+        # A claim on open land takes any building (2026-10-18).
         return False, f"a {type} belongs on the main road, not down a spur"
 
     need = D.STORE_BASE_PLOTS if type in D.STORE_BUSINESS_TYPES else D.SITE_BASE_PLOTS
@@ -948,6 +966,10 @@ def list_land(
             f"{plot_id} is built into a business; it cannot be sold out from "
             f"under it"
         )
+    if plot.home:
+        return False, "your home stands on it; it is not for sale"
+    if plot.structure:
+        return False, f"a {plot.structure} stands on it; it is not for sale"
     if price <= 0:
         return False, "name a price above zero"
     plot.for_sale_at = float(price)
@@ -1316,10 +1338,9 @@ def hire_npc_employee(
     NPC employees cost NPC_WAGE_MULTIPLIER times the smart player wage, which is
     the whole point: convenience at a premium, paid out of business cash.
     """
-    if world.no_state:
-        # A hidden tool can still be named. See `schemas.NO_STATE_HIDDEN`.
-        return False, ("there are no NPC workers here: every worker is a "
-                       "citizen. post_job to advertise, or offer_job to someone")
+    # NPC HANDS ARE BACK (2026-10-18), but slower than a person: see
+    # data.NPC_WORK_RATE. A child of your own house is the cheaper way to more
+    # workers; a citizen is the better one.
     biz = world.businesses.get(business_id)
     if not biz or biz.closed or biz.owner != agent.id:
         return False, "not your business"
@@ -1571,7 +1592,7 @@ def buy_vehicle(world: World, log: EventLog, agent: Agent, vehicle_type: str) ->
     agent.denari -= unit
     if not dealer.is_government:
         dealer.remove_item(vehicle_type, 1)
-        dealer.cash += unit - tax
+        _income(world, dealer, unit - tax)
     world.government.collect(tax)
 
     veh = VehicleInstance(
@@ -1732,6 +1753,9 @@ def buy_property(world: World, log: EventLog, agent: Agent) -> Result:
 
 def _apply_meal(world: World, log: EventLog, agent: Agent, meal: str, window: float,
                 cost: float, source: str) -> Result:
+    # A meal never shortens how long you are fed: eating a small one on a full
+    # stomach keeps what was left (designer play-test, 2026-10-18).
+    window = max(window, agent.last_meal_window - agent.hours_since_last_meal)
     agent.hours_since_last_meal = 0.0
     agent.last_meal_window = window
     agent.sustenance_stage = "Normal"
@@ -1814,13 +1838,25 @@ def buy_meal(world: World, log: EventLog, agent: Agent, business_id: str | None 
         if tavern.inventory.get(meal, 0) < 1:
             return False, f"{tavern.name} is out of {meal}"
         tavern.remove_item(meal, 1)
-        tavern.cash += price - tax
+        _income(world, tavern, price - tax)
 
     agent.denari -= price
     world.government.collect(tax)
     _record_trade(world, log, Transaction(world.sim_time, meal, 1, price, tavern.id, agent.id,
                                           city=world.city_of(agent)), "meal", tavern.location)
     return _apply_meal(world, log, agent, meal, E.meal_window(meal), price, tavern.name)
+
+
+def eat_meal(world: World, log: EventLog, agent: Agent, meal: str = "") -> Result:
+    """Eat a meal you carry (bought earlier, to take on the road)."""
+    have = [m for m, q in agent.inventory.items() if m in D.MEALS and q > 0]
+    if not have:
+        return False, "you carry no meal: eat at a tavern, or buy one there to take with you"
+    if meal and meal not in have:
+        return False, f"you carry no {meal}"
+    meal = meal or max(have, key=E.meal_window)
+    agent.remove_item(meal, 1)
+    return _apply_meal(world, log, agent, meal, E.meal_window(meal), 0.0, "carried")
 
 
 def eat_best_available(world: World, log: EventLog, agent: Agent) -> Result:
@@ -1832,6 +1868,12 @@ def eat_best_available(world: World, log: EventLog, agent: Agent) -> Result:
     # the state's Tavern by a map constant, so after a withdrawal it named a
     # building that had been demolished hours earlier -- the most expensive
     # possible moment to be wrong, since the agent reading it is out of food.
+    state_tavern = next((b for b in world.businesses.values()
+                         if b.is_government and not b.closed and b.type == "Tavern / Inn"
+                         and world_map.city_of(b.location) == world.city_of(agent)), None)
+    if state_tavern is not None and world.no_state:
+        return False, (f"{msg}. Food is served at Taverns only -- the state's Tavern "
+                       f"is at {state_tavern.location}, or eat at a citizen's.")
     if world.state_gone_at(world.city_of(agent)) is not None:
         return False, (
             f"{msg}. Food is served at Taverns only -- travel to one to eat. "
@@ -1921,13 +1963,23 @@ def visible_chat(world: World, agent: Agent, since: float = 0.0, limit: int = 40
 # GUILDS -- invite only
 # ---------------------------------------------------------------------------
 
-def create_guild(world: World, log: EventLog, agent: Agent, name: str) -> Result:
+def create_guild(world: World, log: EventLog, agent: Agent, name: str, secret: bool = False) -> Result:
     if agent.guild:
         return False, "already in a guild"
-    guild = Guild(id=world.new_id("GU"), name=name, leader=agent.id, members=[agent.id])
+    # A CLAN IS TWO HOUSES OR MORE (designer decision, 2026-10-18): it can only
+    # be founded by a house allied by marriage, and its allies are asked in.
+    allies = [a for a in agent.allies if a in world.agents and world.agents[a].alive]
+    if not allies:
+        return False, ("a clan needs two allied houses: marry one of your family into "
+                       "another house first (propose_marriage)")
+    guild = Guild(id=world.new_id("GU"), name=name, leader=agent.id, members=[agent.id],
+                  secret=bool(secret))
     world.guilds[guild.id] = guild
     agent.guild = guild.id
     agent.is_guild_leader = True
+    for a in allies:
+        if not world.agents[a].guild and a not in guild.invited:
+            guild.invited.append(a)
     log.emit(
         world.sim_time, "guild_created", actor=agent.id, subject=guild.id, name=name
     )
@@ -2381,6 +2433,20 @@ def _settle_split(
     return wanted, power.explain()
 
 
+def _income(world: World, biz: Business, amount: float) -> None:
+    """Money a business earns goes to its OWNER'S POCKET (designer decision,
+    2026-10-18): "all money should be facilitated through my personal coins
+    unless I choose to deposit money into the business." A business holds cash
+    only when its owner deposits some -- to pay others to run it -- and spends
+    that first, then the owner's pocket (`_pay_for_business`, the payroll).
+    The state keeps its own."""
+    owner = world.agents.get(biz.owner) if not biz.is_government else None
+    if owner is not None:
+        owner.denari += amount
+    else:
+        biz.cash += amount
+
+
 def _pay_for_business(biz: Business, agent: Agent, amount: float) -> str | None:
     """Pay for a business's purchase: its own cash first, the rest from the
     owner's pocket. Returns None when paid, or why it could not be.
@@ -2446,7 +2512,7 @@ def order_from_business(
         return False, f"{short} ({goods:.2f} goods + {courier_fee:.2f} carriage)"
     if not seller.is_government:
         seller.remove_item(item, qty)
-        seller.cash += goods - tax
+        _income(world, seller, goods - tax)
     world.government.collect(tax)
     _record_trade(world, log, Transaction(world.sim_time, item, qty, unit, seller.id, buyer.id,
                                           city=world_map.city_of(seller.location)),
@@ -2567,13 +2633,13 @@ def fill_buy_order(
     fee = round(order.courier_fee * take / order.qty_posted, 2) if order.qty_posted else 0.0
     tax = E.sales_tax_on(goods, world.government.sales_tax)
     seller.remove_item(order.item, take)
-    seller.cash += goods - tax
+    _income(world, seller, goods - tax)
     world.government.collect(tax)
     order.escrow = round(max(0.0, order.escrow - goods - fee), 2)
     order.qty -= take
     if order.qty <= 0:
         order.status = "filled"
-        buyer.cash += order.escrow          # rounding dust goes home
+        _income(world, buyer, order.escrow)          # rounding dust goes home
         order.escrow = 0.0
     _record_trade(world, log, Transaction(world.sim_time, order.item, take, order.price,
                                           seller.id, buyer.id,
@@ -2582,7 +2648,7 @@ def fill_buy_order(
     where = ""
     if seller.location == buyer.location:
         buyer.add_item(order.item, take)
-        buyer.cash += fee
+        _income(world, buyer, fee)
         where = "handed over on the spot"
         con_id = None
     else:
@@ -2601,7 +2667,7 @@ def fill_buy_order(
              consignment=con_id, location=seller.location)
     left = f" They still want {order.qty}." if order.qty else ""
     return True, (f"sold {take} {order.item} into {order.id} at {order.price:.2f}: "
-                  f"{goods - tax:.2f} to {seller.name}. The goods are {where}.{left}")
+                  f"{goods - tax:.2f} to you. The goods are {where}.{left}")
 
 
 def cancel_buy_order(world: World, log: EventLog, agent: Agent, order_id: str) -> Result:
@@ -2959,7 +3025,7 @@ def _settle_convoy_cost(world: World, log: EventLog, con: Consignment) -> None:
         return
     paid = min(owed, payer.cash)
     payer.cash -= paid
-    payee.cash += paid
+    _income(world, payee, paid)
     log.emit(
         world.sim_time, "convoy_cost_shared", actor=payer.id, subject=payee.id,
         location=con.destination, consignment=con.id, split=con.split_label(),
@@ -2989,7 +3055,7 @@ def deliver_consignment(world: World, log: EventLog, agent: Agent, consignment_i
         seller = world.businesses.get(con.seller_business)
         if seller is not None and not seller.closed:
             paid = E.npc_buy_price(con.item) * con.qty
-            seller.cash += paid
+            _income(world, seller, paid)
             world.government.treasury -= paid
             log.emit(
                 world.sim_time, "state_purchase", subject=seller.id,
@@ -3021,7 +3087,7 @@ def deliver_consignment(world: World, log: EventLog, agent: Agent, consignment_i
             con.seller_business if con.seller_posted else con.buyer_business
         )
         if poster is not None:
-            poster.cash += shortfall
+            _income(world, poster, shortfall)
     # WHAT IT ARRIVED ON. `robbed` has always logged the vehicle and escort
     # count, because `banditry` needs them to price the risk in the first
     # place; `consignment_delivered` never did, which made every successful
@@ -3059,7 +3125,7 @@ def cancel_consignment(world: World, log: EventLog, agent: Agent, consignment_id
         if con.status not in ("awaiting_courier", "claimed"):
             return False, f"consignment is {con.status}"
         seller.add_item(con.item, con.qty)
-        seller.cash += con.courier_fee
+        _income(world, seller, con.courier_fee)
         _return_lent_vehicle(world, con)
         con.status = "cancelled"
         log.emit(
@@ -3077,7 +3143,7 @@ def cancel_consignment(world: World, log: EventLog, agent: Agent, consignment_id
         return False, "already loaded -- it is on the road"
 
     con.status = "cancelled"
-    buyer.cash += con.courier_fee          # the carriage escrow comes back
+    _income(world, buyer, con.courier_fee)          # the carriage escrow comes back
     seller = world.businesses.get(con.seller_business)
     if seller and not seller.closed:
         seller.add_item(con.item, con.qty)  # goods sit with the seller again
@@ -3179,6 +3245,12 @@ def plan_raid(
         return False, f"{segment} is not a road in this world"
     if agent.location not in (seg.a, seg.b):
         return False, f"lie in wait from one end of {segment}: {seg.a} or {seg.b}"
+    # THE TOWN'S CORE IS PATROLLED (2026-10-18): no ambush on a road into a
+    # market square. The danger is out on the roads, not at your door. The
+    # road between towns joins two squares and stays open to raiders.
+    if (world_map.city_of(seg.a) == world_map.city_of(seg.b)
+            and any(world_map.market_of(c) in (seg.a, seg.b) for c in world.cities)):
+        return False, f"{segment} runs into a market square, which is patrolled: lie in wait further out"
     if agent.in_transit:
         return False, "you are on the road already"
     if agent.activity.kind == "raid":
@@ -3266,3 +3338,309 @@ def equip(world: World, log: EventLog, agent: Agent, item: str) -> Result:
         log.emit(world.sim_time, "equipped", actor=agent.id, item=item, replaced=old)
         return True, f"you now wear a {item}" + (f"; your {old} is in your pack" if old else "")
     return False, f"{item} is neither a weapon nor armour"
+
+
+# ---------------------------------------------------------------------------
+# PROJECTS AND KNOW-HOW (2026-10-18). See convoy/progress.py.
+# ---------------------------------------------------------------------------
+
+def start_project(world: World, log: EventLog, agent: Agent, business_id: str, project: str) -> Result:
+    """Build something at your business. Work goes in every hour -- more with
+    people on shift there and the project's material in the yard."""
+    from . import progress as PG
+    biz = world.businesses.get(business_id)
+    if not biz or biz.closed or biz.owner != agent.id:
+        return False, "not your business"
+    spec = PG.PROJECTS.get(project)
+    if spec is None or project not in PG.available(biz):
+        return False, f"no such project here; choose from {', '.join(PG.available(biz))}"
+    if biz.project:
+        return False, f"{biz.name} is already building {biz.project['kind']}"
+    if biz.improvements.get(project, 0) >= spec["max"]:
+        return False, f"{project} is as far as it goes here"
+    cost = PG.project_cost(biz, project)
+    short = _pay_for_business(biz, agent, cost)
+    if short:
+        return False, short
+    biz.project = {"kind": project, "done": 0.0, "total": round(PG.project_work(biz, project), 2)}
+    eta = PG.eta_hours(world, biz, agent)
+    log.emit(world.sim_time, "project_started", actor=agent.id, subject=biz.id,
+             location=biz.location, project=project, cost=cost)
+    return True, (f"{project} started at {biz.name} for {cost:.2f}: ready in about {eta:.1f}h. "
+                  f"Faster with people on shift there and {spec['material']} in the yard.")
+
+
+def research(world: World, log: EventLog, agent: Agent, tech: str) -> Result:
+    """Study a piece of know-how. One at a time; it lands on its own."""
+    from . import progress as PG
+    ok, why = PG.can_study(agent, tech)
+    if not ok:
+        return False, why
+    if agent.researching:
+        old = PG.TECHS[agent.researching["tech"]]["name"]
+        agent.researching = {"tech": tech, "done": 0.0}
+        note = f" (dropped {old})"
+    else:
+        agent.researching = {"tech": tech, "done": 0.0}
+        note = ""
+    t = PG.TECHS[tech]
+    log.emit(world.sim_time, "research_started", actor=agent.id, tech=tech, name=t["name"])
+    return True, f"studying {t['name']}: learned in {PG.research_eta(agent):.1f}h. {t['does']}{note}"
+
+
+# ---------------------------------------------------------------------------
+# THE HOUSEHOLD (2026-10-18). See convoy/family.py.
+# ---------------------------------------------------------------------------
+
+def assign_family(world: World, log: EventLog, agent: Agent, member_id: str, business_id: str = "") -> Result:
+    """Put a grown member of your household to work at one of your businesses
+    (unpaid, always on shift), or bring them home with business_id ""."""
+    from . import family as FAM
+    m = FAM.member(agent, member_id)
+    if m is None:
+        return False, "no such member of your household"
+    if not m.adult:
+        return False, f"{m.name} is still a child"
+    FAM.leave_work(world, m)
+    if not business_id:
+        return True, f"{m.name} is home"
+    biz = world.businesses.get(business_id)
+    if not biz or biz.closed or biz.owner != agent.id:
+        return False, "not your business"
+    if not biz.spec.production_roles:
+        return False, f"{biz.type} has no work for them"
+    cap = employee_cap(world, biz)
+    if cap is not None and len(biz.production_staff()) >= cap:
+        return False, f"no room ({len(biz.production_staff())}/{cap}): develop more land there first"
+    biz.roster.append(Employment(FAM.worker_id(m), biz.spec.production_roles[0], 0.0, is_npc=True))
+    m.works_at = biz.id
+    log.emit(world.sim_time, "family_assigned", actor=agent.id, subject=biz.id,
+             member=m.id, name=m.name)
+    return True, f"{m.name} works at {biz.name} now, unpaid and always on shift"
+
+
+def propose_marriage(
+    world: World, log: EventLog, agent: Agent, agent_id: str, member_id: str,
+    their_member_id: str, dowry: float = 0.0,
+) -> Result:
+    """Propose a match between a grown, unmarried member of your house and one of
+    theirs. Accepted, theirs joins your household, you pay the dowry, the two
+    houses become allies, and the couple has children."""
+    from . import family as FAM
+    other = world.agents.get(agent_id)
+    if other is None or not other.alive or other.id == agent.id:
+        return False, "no such house to marry into"
+    mine, theirs = FAM.member(agent, member_id), FAM.member(other, their_member_id)
+    if mine is None or theirs is None:
+        return False, "name one member of each house"
+    for m, who in ((mine, "your"), (theirs, "their")):
+        if not m.adult:
+            return False, f"{who} {m.name} is a child"
+        if m.spouse:
+            return False, f"{who} {m.name} is already married"
+    if dowry < 0 or dowry > agent.denari:
+        return False, f"a dowry must be between 0 and what you have ({agent.denari:.0f})"
+    if len(agent.family) >= FAM.cap(agent):
+        return False, "your household is full"
+    oid = world.new_id("M")
+    world.marriage_offers[oid] = MarriageOffer(
+        id=oid, proposer=agent.id, member=mine.id, target=other.id,
+        their_member=theirs.id, dowry=round(dowry, 2), created_at=world.sim_time)
+    log.emit(world.sim_time, "marriage_proposed", actor=agent.id, subject=other.id,
+             offer=oid, member=mine.name, their_member=theirs.name, dowry=round(dowry, 2),
+             house=agent.house, their_house=other.house)
+    return True, (f"proposed {mine.name} of {agent.house} to {theirs.name} of {other.house}"
+                  f" with a dowry of {dowry:.0f} (offer {oid})")
+
+
+def accept_marriage(world: World, log: EventLog, agent: Agent, offer_id: str) -> Result:
+    """Accept a match proposed to your house. Your member joins theirs, the
+    dowry is yours, and your two houses are allies."""
+    from . import family as FAM
+    o = world.marriage_offers.get(offer_id)
+    if o is None or o.target != agent.id or o.status != "open":
+        return False, "no such open proposal to you"
+    proposer = world.agents.get(o.proposer)
+    mine = FAM.member(agent, o.their_member)
+    theirs = FAM.member(proposer, o.member) if proposer else None
+    if proposer is None or mine is None or theirs is None or mine.spouse or theirs.spouse:
+        o.status = "declined"
+        return False, "the match can no longer be made"
+    if proposer.denari < o.dowry:
+        o.status = "declined"
+        return False, f"{proposer.name} can no longer pay the dowry"
+    proposer.denari -= o.dowry
+    agent.denari += o.dowry
+    FAM.leave_work(world, mine)
+    agent.family.remove(mine)
+    mine.from_house = agent.house
+    mine.role = "in-law"
+    mine.spouse, theirs.spouse = theirs.id, mine.id
+    theirs.next_child_at = world.sim_time + FAM.child_every(proposer) * 3600.0
+    proposer.family.append(mine)
+    for a, b in ((agent, proposer), (proposer, agent)):
+        if b.id not in a.allies:
+            a.allies.append(b.id)
+    o.status = "accepted"
+    log.emit(world.sim_time, "married", actor=agent.id, subject=proposer.id,
+             significance=Significance.HIGH, offer=o.id,
+             couple=[theirs.name, mine.name], houses=[proposer.house, agent.house],
+             dowry=o.dowry)
+    return True, (f"{mine.name} of {agent.house} marries {theirs.name} of {proposer.house}; "
+                  f"the dowry of {o.dowry:.0f} is yours and your houses are allies")
+
+
+def decline_marriage(world: World, log: EventLog, agent: Agent, offer_id: str) -> Result:
+    """Turn down a match proposed to your house."""
+    o = world.marriage_offers.get(offer_id)
+    if o is None or o.target != agent.id or o.status != "open":
+        return False, "no such open proposal to you"
+    o.status = "declined"
+    log.emit(world.sim_time, "marriage_declined", actor=agent.id, subject=o.proposer, offer=o.id)
+    return True, "declined"
+
+
+def feed_family(world: World, log: EventLog, agent: Agent, member_id: str) -> Result:
+    """Feed a child of your house a Meal you carry: they grow up a day sooner."""
+    from . import family as FAM
+    m = FAM.member(agent, member_id)
+    if m is None:
+        return False, "no such member of your household"
+    if m.adult:
+        return False, f"{m.name} is grown"
+    if agent.inventory.get("Meal", 0) <= 0:
+        return False, "you carry no Meal: buy one at a tavern first"
+    agent.remove_item("Meal", 1)
+    left = FAM.feed(agent, m, world.sim_time)
+    log.emit(world.sim_time, "family_fed", actor=agent.id, member=m.id, name=m.name,
+             hours_left=round(left, 1))
+    return True, f"fed {m.name}: grown in {left / 24:.1f} days"
+
+
+# ---------------------------------------------------------------------------
+# SELLING TO WHOEVER BIDS (2026-10-18)
+# ---------------------------------------------------------------------------
+#
+# A business that uses a good and is short of it is a buyer at a price: the
+# state's sites at their fixed 0.4x book, a citizen's at what its output can
+# afford (the same test as `reflexes.restock`). `standing_bid` says what, and
+# `sell_to_bidder` takes it -- so a farmer picks the refinery that pays best.
+
+BID_TARGET_UNITS = 8           # a buyer wants inputs for this many units of output
+BID_MARGIN = 0.85              # the most of the output's value inputs may cost
+BID_CAP = 1.25                 # never more than this times book
+
+
+def standing_bid(world: World, biz: Business, item: str) -> tuple[float, int] | None:
+    """(price per unit, how many) this business would buy now, or None."""
+    if biz.closed:
+        return None
+    if biz.is_government:
+        # THE FLOOR (2026-10-18): the state buys ANY good, at its fixed low
+        # price, so goods can always be turned into money. Kept low so that a
+        # citizen, a buy order or a delivery always beats it.
+        if item == "On Foot" or item in D.VEHICLES or item not in D.ALL_ITEMS:
+            return None
+        return (round(E.npc_buy_price(item), 2), 999)
+    out = biz.active_production
+    recipe = (D.REFINING_RECIPES.get(out) or D.CRAFTING_RECIPES.get(out)) if out else None
+    if not recipe or item not in recipe.inputs:
+        return None
+    q = recipe.inputs[item]
+    coming = sum(c.qty for c in world.consignments.values()
+                 if c.buyer_business == biz.id and c.item == item
+                 and c.status in ("awaiting_courier", "claimed"))
+    need = q * BID_TARGET_UNITS - biz.inventory.get(item, 0) - coming
+    if need <= 0:
+        return None
+    value = biz.retail_prices.get(out) or D.base_price(out)
+    others = sum(D.base_price(i) * n for i, n in recipe.inputs.items() if i != item)
+    price = min(D.base_price(item) * BID_CAP, (BID_MARGIN * value - others) / q)
+    if price < D.base_price(item) * 0.5:
+        return None
+    owner = world.agents.get(biz.owner)
+    budget = max(0.0, biz.cash) + (owner.denari if owner else 0.0) - 15.0
+    afford = int(budget // (price * 1.1)) if price > 0 else 0
+    qty = min(need, afford)
+    return (round(price, 2), qty) if qty > 0 else None
+
+
+def sell_to_bidder(
+    world: World, log: EventLog, agent: Agent, business_id: str, buyer_business_id: str,
+    item: str, qty: int = 0,
+) -> Result:
+    """Sell your business's stock to a business that is bidding for it, at its
+    bid. The state's sites pay their fixed price and collect at once; a
+    citizen's pays you now and its goods wait in your yard for its courier."""
+    seller = world.businesses.get(business_id)
+    if not seller or seller.closed or seller.owner != agent.id:
+        return False, "not your business"
+    buyer = world.businesses.get(buyer_business_id)
+    if not buyer or buyer.closed or buyer.id == seller.id or buyer.owner == agent.id:
+        return False, "no such buyer"
+    if world_map.city_of(buyer.location) not in world.cities:
+        return False, "there is no road to that buyer"
+    have = seller.inventory.get(item, 0)
+    if have <= 0:
+        return False, f"{seller.name} has no {item}"
+    bid = standing_bid(world, buyer, item)
+    if bid is None:
+        return False, f"{buyer.name} is not buying {item} now"
+    price, wanted = bid
+    take = min(have, wanted, int(qty) if qty and qty > 0 else have)
+    goods = round(price * take, 2)
+    seller.remove_item(item, take)
+    if buyer.is_government:
+        _income(world, seller, goods)
+        world.government.treasury -= goods
+        _record_trade(world, log, Transaction(world.sim_time, item, take, price, seller.id, buyer.id,
+                                              city=world_map.city_of(seller.location)),
+                      "sell", seller.location)
+        return True, f"sold {take} {item} to the state's {buyer.type} for {goods:.2f}; its cart collects it"
+    owner = world.agents.get(buyer.owner)
+    fee = 0.0 if buyer.location == seller.location else round(max(1.0, goods * 0.10), 2)
+    short = _pay_for_business(buyer, owner, goods + fee) if owner else "no buyer"
+    if short:
+        seller.add_item(item, take)
+        return False, f"{buyer.name} cannot pay right now"
+    _income(world, seller, goods)
+    _record_trade(world, log, Transaction(world.sim_time, item, take, price, seller.id, buyer.id,
+                                          city=world_map.city_of(seller.location)),
+                  "order", seller.location)
+    if fee == 0.0:
+        buyer.add_item(item, take)
+        where = "handed over"
+    else:
+        con = Consignment(
+            id=world.new_id("C"), seller_business=seller.id, buyer_business=buyer.id,
+            item=item, qty=take, goods_price=goods, courier_fee=fee,
+            origin=seller.location, destination=buyer.location, created_at=world.sim_time,
+            qty_posted=take,
+        )
+        world.consignments[con.id] = con
+        where = f"waiting in your yard; {buyer.name} pays a courier {fee:.2f} to fetch it"
+    log.emit(world.sim_time, "sold_to_bidder", actor=agent.id, subject=buyer.id,
+             item=item, qty=take, price=price, buyer_owner=buyer.owner)
+    return True, f"sold {take} {item} to {buyer.name} at {price:.2f} ({goods:.2f}); {where}"
+
+
+def build_defense(world: World, log: EventLog, agent: Agent, kind: str) -> Result:
+    """Raise a Guard post or a Catapult on one plot where you stand. It guards
+    the roads at this place against raiders, for everyone's loads."""
+    spec = D.DEFENSES.get(kind)
+    if spec is None:
+        return False, f"choose one of {', '.join(D.DEFENSES)}"
+    if agent.in_transit:
+        return False, "you are on the road"
+    if world_map.plots_free(world, agent.location) < 1:
+        return False, f"{agent.location} has no free plot left"
+    if agent.denari < spec["cost"]:
+        return False, f"a {kind} costs {spec['cost']:.0f}; you have {agent.denari:.0f}"
+    agent.denari -= spec["cost"]
+    q = Plot(id=world.new_id("L"), location=agent.location, owner=agent.id,
+             developed=True, structure=kind)
+    world.plots[q.id] = q
+    log.emit(world.sim_time, "defense_built", actor=agent.id, location=agent.location,
+             significance=Significance.MEDIUM, kind=kind, plot=q.id, cost=spec["cost"])
+    return True, f"built a {kind} at {agent.location} (plot {q.id}). {spec['does']}"
+

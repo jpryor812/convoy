@@ -632,7 +632,41 @@ def same_city(a: str, b: str) -> bool:
 
 
 def places_in(city: str) -> list[str]:
-    return CITIES[city].places
+    return list(CITIES[city].places) + [n for n in _CLAIMS if CITY_OF.get(n) == city]
+
+
+# ---------------------------------------------------------------------------
+# Claims: places made on open land (2026-10-18)
+# ---------------------------------------------------------------------------
+
+CLAIM_PLOTS = 4
+_CLAIMS: set[str] = set()
+
+
+def is_claim(place: str) -> bool:
+    return place in _CLAIMS
+
+
+def register_claims(claims) -> None:
+    """Make a world's claims places like any other -- a spur off their nearest
+    junction, so travel, plots, cities and every lookup work unchanged. Called
+    whenever a world is made or loaded, and when a claim is added. Claims of a
+    previous world are forgotten first: one game runs at a time."""
+    for name in list(_CLAIMS):
+        SPUR_BY_NAME.pop(name, None)
+        CITY_OF.pop(name, None)
+        ROLE_OF.pop(name, None)
+        if name in EVERY_PLACE:
+            EVERY_PLACE.remove(name)
+        _CLAIMS.discard(name)
+    for c in claims:
+        SPUR_BY_NAME[c.name] = Spur(c.name, c.junction, c.seconds, CLAIM_PLOTS,
+                                    f"A claim on open land, by dirt road from {c.junction}.")
+        CITY_OF[c.name] = c.city
+        ROLE_OF[c.name] = ROLE_SPUR
+        if c.name not in EVERY_PLACE:
+            EVERY_PLACE.append(c.name)
+        _CLAIMS.add(c.name)
 
 
 def locations_in(city: str) -> list[str]:

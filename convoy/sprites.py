@@ -376,6 +376,7 @@ ACTION_FAMILY = {
 
         "set_retail_price", "offer_trade", "accept_trade", "decline_trade",
         "collect_business_inventory", "stock_business_inventory", "store_at_home",
+        "post_buy_order", "cancel_buy_order", "fill_buy_order", "sell_to_bidder",
     ),
     "travel": (
         "travel_to", "mount", "dismount", "accept_courier_job", "drop_courier_job",
@@ -384,7 +385,7 @@ ACTION_FAMILY = {
     ),
     "work": (
         "start_shift", "end_shift", "set_production", "equip_tools", "equip",
-        "allocate_research", "collect_from_safehouse", "stash_in_safehouse",
+        "allocate_research", "research", "assign_family", "collect_from_safehouse", "stash_in_safehouse",
         "loot_ground",
     ),
     "hire": (
@@ -397,14 +398,16 @@ ACTION_FAMILY = {
         "start_business", "upgrade_garage", "upgrade_storage",
         "upgrade_site_storage",
         "develop_plot",     # raw ground into floor space -- construction
+        "build_defense", "start_project",
 
     ),
     "chat": (
         "post_world_chat", "post_guild_chat", "send_direct_message",
         "create_guild", "invite_to_guild", "accept_guild_invite", "leave_guild",
         "remove_guild_member",
+        "propose_marriage", "accept_marriage", "decline_marriage",
     ),
-    "food": ("eat_best_available",),
+    "food": ("eat_best_available", "feed_family"),
     "warning": ("wait",),
 }
 

@@ -146,11 +146,11 @@ def test_every_worker_is_a_citizen() -> None:
     biz = world.businesses[owner.owned_businesses[0]]
     tools = {t["function"]["name"]: t["function"]["description"]
              for t in S.tool_schemas(state_gone=True, no_state=True)}
-    ok("no NPC hiring offered", "hire_npc_employee" not in tools)
-    ok("and with a government it still is",
-       "hire_npc_employee" in {t["function"]["name"] for t in S.tool_schemas()})
+    # NPC hands came back on 2026-10-18, at data.NPC_WORK_RATE of a person.
+    ok("NPC hiring is offered", "hire_npc_employee" in tools)
     okh, msg = A.hire_npc_employee(world, log, owner, biz.id, biz.spec.production_roles[0])
-    ok("named anyway, it is refused", not okh, msg)
+    ok("and works", okh, msg)
+    biz.roster = [e for e in biz.roster if not e.is_npc]
     ok("apply_for_job says it is for your own business", "YOUR OWN" in tools["apply_for_job"])
     okj, msg = A.apply_for_job(world, log, owner, biz.id)
     ok("and an owner can still staff their own", okj, msg)

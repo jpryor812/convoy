@@ -359,3 +359,41 @@ labour-market fixes). One run settles both.
 Roughly $3 and ~12h wall clock at 20 agents / 84h. Nothing above it in this
 document is blocked by it, but §1–§7 are all judged against it, so doing it
 early means building against real content rather than a nearly empty log.
+
+## The frontier look and its asset pipeline (2026-10-19)
+
+Direction: Red Dead Redemption 2's palette and mood (late afternoon, dust,
+muted earth and sage, weathered timber), Civilization V's overhead view as the
+strategy camera.
+
+- **World (browser, three.js):** `game3d/terrain.js` (rolling terrain, flat
+  under roads/places/rivers; ridged mountains with rock and snow; photographed
+  ground blended by splat weights and slope), `game3d/flora.js` (card firs and
+  broadleaf trees, a grass field that follows the camera), a photographed HDRI
+  sky that also lights the scene, soft shadows, and a colour grade
+  (`main.js`). Falls back to the painted look if the textures do not load.
+- **Textures and sky:** Poly Haven, CC0 -- `art/generated/3d/polyhaven/`
+  (see its CREDITS.md). Poly Haven's scanned trees are film assets (millions of
+  polygons); only their branch/leaf textures are used, on card geometry.
+- **Models:** Meshy text-to-3D. `python3 scripts/meshy.py make <name> "<prompt>"`
+  (key: `MESHY_API_KEY` in `.env`) writes `art/Meshy/<name>-meshy.glb` (never
+  overwriting -- an older one is kept with a timestamp) and `<name>.json`
+  with the prompt and task ids. `sh scripts/web_model.sh <name>` shrinks it to
+  `art/generated/3d/<name>.glb` (1024px WebP, about half the vertices, ~1.5-2
+  MB). Bump `MODELS_V` in `main.js` when a model changes: browsers cache them.
+- **2026-10-19 set:** home (log cabin), donkey (pack donkey), farm (barn),
+  mine (headframe), refinery (stone smelter), tavern (saloon), stable,
+  blacksmith (forge), store (general store, used for the shop types with no
+  model of their own).
+- **The cast (2026-10-19):** three types, a man and a woman of each -- cowboy /
+  rancher, miner / drover, farmer / homesteader. `python3 scripts/meshy.py
+  character <name> "<prompt>"` makes one in an A-pose, rigs it (Meshy rigging)
+  and bakes Idle, Casual Walk, Run Fast, Heavy Hammer Swing, Block1 and Attack
+  into one GLB (Meshy animation library ids 0, 30, 16, 128, 138, 4). Shrink
+  with `sh scripts/web_model.sh <name> 0.6`. The client falls back to the older
+  cast for a sex with no new model. (A prospector and a smith were also made
+  and are kept in art/Meshy, unused.)
+- **Water and roads (2026-10-19):** rivers sit in a sunken channel with
+  wandering, sandy banks (gravelly_sand) and fords where roads cross; the
+  surface carries scrolling ripples (three.js waternormals) and reflects the
+  sky. Roads fray into the grass at their edges and carry two wheel ruts.

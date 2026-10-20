@@ -306,9 +306,13 @@ def restock(world: "World", log: "EventLog", agent: "Agent", rate_of) -> list[st
         for item in recipe.inputs:
             best = None
             for s in world.businesses.values():
-                if (s.closed or s.is_government or s.owner == agent.id
-                        or s.inventory.get(item, 0) <= 0 or item not in s.retail_prices
+                if (s.closed or s.owner == agent.id
                         or world_map.city_of(s.location) not in world.cities):
+                    continue
+                if s.is_government:          # the state's sites sell what they make, without limit
+                    if item not in (s.spec.outputs or ()):
+                        continue
+                elif s.inventory.get(item, 0) <= 0 or item not in s.retail_prices:
                     continue
                 ok, _ = A._may_buy_from(b, s)
                 if not ok:
@@ -323,7 +327,7 @@ def restock(world: "World", log: "EventLog", agent: "Agent", rate_of) -> list[st
                    for i, q in recipe.inputs.items())
         if cost > RESTOCK_MARGIN * value:
             continue
-        payroll = sum(e.wage for e in b.roster if e.agent_id != agent.id and not e.as_researcher)
+        payroll = sum(e.wage for e in b.roster if e.agent_id != agent.id and not e.is_researcher)
         budget = (max(0.0, b.cash) + agent.denari
                   - payroll * RESTOCK_RESERVE_HOURS - RESTOCK_FOOD_RESERVE) * 0.5
         for item, q in recipe.inputs.items():
@@ -333,7 +337,8 @@ def restock(world: "World", log: "EventLog", agent: "Agent", rate_of) -> list[st
                 continue
             unit = seller.price_for(item)
             carry = 0.0 if seller.location == b.location else RESTOCK_COURIER_SHARE
-            qty = min(need, seller.inventory.get(item, 0), int(budget // (unit * (1 + carry))))
+            have = 10**6 if seller.is_government else seller.inventory.get(item, 0)
+            qty = min(need, have, int(budget // (unit * (1 + carry))))
             if qty <= 0:
                 continue
             fee = round(max(1.0, unit * qty * carry), 2) if carry else 0.0

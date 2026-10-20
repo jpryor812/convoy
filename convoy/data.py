@@ -376,7 +376,9 @@ RESOURCES: dict[str, Resource] = {
         # WATER; neither is edible. A refinery mills the one into Grain and
         # purifies the other, and only then can a tavern bake with them.
         Resource("Dirty Water", "Common", "Farm", 1, 72),
-        Resource("Wheat", "Common", "Farm", 2, 72),
+        # Half speed (designer request, 2026-10-18): 72 an hour filled a yard
+        # in two hours and made Wheat the easiest money in the valley.
+        Resource("Wheat", "Common", "Farm", 2, 36),
         Resource("Wood", "Common", "Mining Operation", 2, 72),
         Resource("Stone", "Common", "Mining Operation", 3, 72),
         Resource("Clay", "Common", "Mining Operation", 2, 72),
@@ -463,7 +465,10 @@ CRAFTING_RECIPES: dict[str, Recipe] = {
         Recipe("2-Horse Chariot", {"Seasoned Hardwood": 1, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 700),
         Recipe("4-Horse Chariot", {"Iron": 1, "Seasoned Hardwood": 1, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 1600),
         Recipe("Camel", {"Purified Water": 15, "Grain": 10, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 150),
+        Recipe("Donkey", {"Purified Water": 10, "Grain": 8}, "Vehicle Dealer / Stable", 120),
         Recipe("Horse", {"Purified Water": 20, "Grain": 15, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 200),
+        # A flat-bottomed boat for the river between the towns (2026-10-18).
+        Recipe("River Barge", {"Lumber": 6, "Tanned Leather": 1}, "Vehicle Dealer / Stable", 600),
         # Other stores
         Recipe("Upgraded Tools", {"Lumber": 1, "Bronze": 1}, "Mining/Farming Equipment Store", 130),
         Recipe("Property Upgrade", {"Cut Stone": 1, "Fired Brick": 1, "Lumber": 1}, "Home Improvement Store", 50),
@@ -566,6 +571,9 @@ class Weapon:
 WEAPONS: dict[str, Weapon] = {
     w.name: w
     for w in [
+        # Everyone's starting weapon (designer, 2026-10-18): a club to swing at
+        # bandits and to fend off an attacker. Free, like the Slingshot was.
+        Weapon("Bat", "Common", "Melee", 12, 0, 0.80, 1.5, "backstab"),
         Weapon("Slingshot", "Common", "Ranged", 10, 0, 0.90, 2.0, "headshot"),
         Weapon("Sling", "Common", "Ranged", 14, 50, 0.80, 2.0, "headshot"),
         Weapon("Wooden Spear", "Common", "Melee", 22, 60, 0.70, 1.5, "backstab"),
@@ -625,13 +633,21 @@ VEHICLES: dict[str, Vehicle] = {
     v.name: v
     for v in [
         Vehicle("On Foot", "Common", "Slowest", 0.5, ON_FOOT_CAPACITY, "None", 0),
+        # Everyone starts with one (designer decision, 2026-10-18): ten goods,
+        # three times a walk.
+        Vehicle("Donkey", "Common", "Fast", 1.5, 10, "None", 120),
         Vehicle("Camel", "Common", "Slow", 0.75, 20, "None", 150),
         Vehicle("Horse", "Common", "Medium", 1.0, 15, "None", 200),
         Vehicle("Donkey Cart", "Uncommon", "Slow", 0.75, 100, "None", 400),
         Vehicle("2-Horse Chariot", "Rare", "Fast", 1.5, 80, "Light", 700),
         Vehicle("4-Horse Chariot", "Rare", "Fastest", 2.0, 200, "Medium", 1600),
+        # By water only, quay to quay between the towns (2026-10-18). See
+        # actions.travel_to and the River barges know-how.
+        Vehicle("River Barge", "Uncommon", "Fast", 1.5, 150, "None", 600),
     ]
 }
+BOATS = ("River Barge",)
+BARGE_TIME_FACTOR = 0.5        # a barge takes half the road's time, before Canal locks
 
 # ---------------------------------------------------------------------------
 # Businesses tab
@@ -1148,3 +1164,45 @@ ALL_ITEMS = sorted(
 # Everything that is not feedstock is something a person buys. Derived here
 # rather than beside INTERMEDIATE_GOODS because ALL_ITEMS only exists by now.
 FINAL_GOODS: frozenset[str] = frozenset(ALL_ITEMS) - INTERMEDIATE_GOODS
+
+
+# ---------------------------------------------------------------------------
+# CALLINGS (designer decision, 2026-10-18)
+# ---------------------------------------------------------------------------
+# Every citizen has one, for life: the player picks theirs on the start screen,
+# an agent is dealt one at random. Four make the businesses you OWN of one kind
+# work faster; the Hauler carries more, on foot and in any vehicle.
+# DEFENSES (designer request, 2026-10-18): one-square structures that guard
+# the roads at their place. Raiders on a road with one at either end fight at
+# `strength` of their power, each further one compounding, never below a fifth.
+DEFENSES: dict[str, dict] = {
+    "Guard post": {"cost": 500.0, "strength": 0.50,
+                   "does": "Raiders on the roads at this place fight at half strength."},
+    "Catapult": {"cost": 250.0, "strength": 0.75,
+                 "does": "Raiders on the roads at this place fight at three quarters strength."},
+}
+DEFENSE_FLOOR = 0.20
+
+CALLING_BONUS = 0.10
+# A hired NPC hand works at this share of a person's rate (2026-10-18). Family
+# members of the house work at full rate.
+NPC_WORK_RATE = 0.6
+CALLINGS: dict[str, str] = {
+    "Farmer": "Your farms grow 10% faster.",
+    "Miner": "Your mines dig 10% faster.",
+    "Refiner": "Your refineries refine 10% faster.",
+    "Maker": "Your taverns, smithies, stables and stores make 10% faster.",
+    "Hauler": "You carry 10% more, on foot and in any vehicle.",
+}
+_CALLING_TYPES: dict[str, tuple[str, ...]] = {
+    "Farmer": ("Farm",),
+    "Miner": ("Mining Operation",),
+    "Refiner": ("Refinery",),
+    "Maker": STORE_BUSINESS_TYPES,
+}
+
+
+def calling_speeds(calling: str, business_type: str) -> bool:
+    """Does an owner with this calling make this kind of business faster?"""
+    return business_type in _CALLING_TYPES.get(calling, ())
+

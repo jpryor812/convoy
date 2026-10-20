@@ -362,7 +362,10 @@ def test_prefix_cost_is_within_budget():
     # enum. Measured on the real configuration: 16,326 tokens, nearly all of it
     # cached at $0.01/Mtok -- about a cent over a whole run. The lever left is
     # still the `item` enum repeated across tools (most of the 10.7k in tools).
-    ok("cached prefix under 17k tokens", prefix_tok < 17000, f"~{prefix_tok} tokens")
+    # +1.5k on 2026-10-18 for projects, know-how, the household, feeding,
+    # selling to bidders and NPC hands coming back.
+    # +100 more the same day for build_defense.
+    ok("cached prefix under 18.6k tokens", prefix_tok < 18600, f"~{prefix_tok} tokens")
     ok("prefix is large enough to cache", prefix_tok > 1024, f"~{prefix_tok} tokens")
 
 

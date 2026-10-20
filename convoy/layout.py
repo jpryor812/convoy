@@ -998,3 +998,58 @@ def bounds(places: dict[str, Place]) -> tuple[float, float, float, float]:
             xs.append(q.x); ys.append(q.y)
     pad = 90.0
     return min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad
+
+
+# ---------------------------------------------------------------------------
+# MOUNTAINS (designer request, 2026-10-18)
+# ---------------------------------------------------------------------------
+#
+# Ranges along the outside of the settled land: down both long edges of the
+# valleys and across their ends. Drawn by the 3D page, and read by
+# `convoy/land.py`: ground near mountains is likelier to hold a rich seam, as
+# ground near water is likelier to farm well.
+
+MOUNTAIN_GAP = 240.0            # metres between peaks along a range
+MOUNTAIN_OFFSET = 210.0         # how far outside the settled land a range stands
+
+
+def mountains(cities: list[str] | None = None) -> list[dict[str, float]]:
+    """Peaks as {x, y, r}, the same every time for the same cities."""
+    key = tuple(cities or [M.HOME_CITY])
+    if key in _MOUNTAIN_CACHE:
+        return _MOUNTAIN_CACHE[key]
+    places = build(list(key))
+    minx, miny, maxx, maxy = bounds(places)
+    peaks: list[dict[str, float]] = []
+    def peak(x: float, y: float, tag: str) -> None:
+        r = _rng("mountain", tag)
+        peaks.append({"x": x + r.uniform(-40.0, 40.0), "y": y + r.uniform(-40.0, 40.0),
+                      "r": r.uniform(85.0, 175.0), "h": r.uniform(120.0, 280.0)})
+    y = miny - MOUNTAIN_OFFSET
+    i = 0
+    while y <= maxy + MOUNTAIN_OFFSET:
+        peak(minx - MOUNTAIN_OFFSET, y, f"w{i}")
+        peak(maxx + MOUNTAIN_OFFSET, y, f"e{i}")
+        y += MOUNTAIN_GAP
+        i += 1
+    x = minx
+    i = 0
+    while x <= maxx:
+        peak(x, miny - MOUNTAIN_OFFSET, f"s{i}")
+        peak(x, maxy + MOUNTAIN_OFFSET, f"n{i}")
+        x += MOUNTAIN_GAP
+        i += 1
+    _MOUNTAIN_CACHE[key] = peaks
+    return peaks
+
+
+_MOUNTAIN_CACHE: dict[tuple, list[dict[str, float]]] = {}
+_PLACE_CACHE: dict[tuple, dict[str, "Place"]] = {}
+
+
+def places_cached(cities: list[str]) -> dict[str, "Place"]:
+    key = tuple(cities)
+    if key not in _PLACE_CACHE:
+        _PLACE_CACHE[key] = build(list(key))
+    return _PLACE_CACHE[key]
+

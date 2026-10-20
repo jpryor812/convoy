@@ -36,13 +36,14 @@ export function createUI(ctx){
   }
   /* Fetch an order yourself: order with no courier fee (if given a seller)
      and claim the haul. The server loads it when you walk into the seller's
-     place and hands it over when you walk into yours; this walks you there. */
+     place and hands it over when you walk into yours; the compass points. */
   async function fetchIt(args){
     let r;
     try { r = await api.post("/api/fetch", args); }
     catch (e) { toast("The server did not answer.", "bad"); return {ok: false}; }
     toast(r.ok ? r.message : `Can't: ${r.message || r.error}`, r.ok ? "" : "bad");
-    if (r.ok && r.go){ close(); walkToPlace(r.go); }
+    // You ride there yourself (2026-10-18): the compass points the way.
+    if (r.ok && r.go){ close(); toast("Follow the compass at the top of the screen."); }
     CARDS = null; refreshSoon();
     return r;
   }
@@ -65,9 +66,24 @@ export function createUI(ctx){
   };
   setInterval(() => { $("t-clock").textContent = clock(S.HOUR); }, 250);
 
+  /* COMING UP (2026-10-18): every countdown you have running, soonest
+     first -- the "one more turn" list. */
+  const dur = h => h < 1 / 60 ? "now" : h < 1 ? `${Math.round(h * 60)}m` : h < 24 ? `${Math.floor(h)}h ${Math.round((h % 1) * 60)}m` : `${(h / 24).toFixed(1)} days`;
+  function renderComing(list){
+    const box = $("coming"); if (!box) return;
+    if (!list || !list.length){
+      box.style.display = "";
+      $("cu-body").innerHTML = `<div class="cu-empty">Nothing counting down. <a href="#" data-tab="knowhow">Study something</a> or start a project at a business.</div>`;
+    } else {
+      box.style.display = "";
+      $("cu-body").innerHTML = list.map(x => `<div class="cu ${esc(x.kind)}"><span>${esc(x.what)}</span><b>${dur(x.hours)}</b></div>`).join("");
+    }
+    $("cu-body").querySelectorAll("[data-tab]").forEach(a => a.onclick = e => { e.preventDefault(); openTab(a.dataset.tab); });
+  }
   function renderHUD(){
     const st = S.ST; if (!st) return;
     const y = st.you;
+    renderComing(st.upcoming);
     $("t-cash").textContent = money2(y.denari);
     $("t-worth").textContent = money(y.net_worth);
     $("t-rank").textContent = `#${st.your_rank} of ${st.population}`;
@@ -100,6 +116,7 @@ export function createUI(ctx){
     const left = Math.max(0, st.fed_hours_left), hungry = st.hunger !== "Normal";
     $("u-food").textContent = hungry ? st.hunger : `${left.toFixed(1)}h left`;
     $("u-foodbar").style.width = `${hungry ? 4 : Math.min(100, left / 24 * 100)}%`;
+    if ($("u-hp")){ const hp = st.health ?? 100; $("u-hp").textContent = `${Math.round(hp)} / 100`; $("u-hpbar").style.width = `${hp}%`; }
     if (o){
       // A load you are hauling for a business takes room too.
       const haul = ((S.BOARD && S.BOARD.hauls) || []).find(h => h.carrying);
@@ -112,10 +129,13 @@ export function createUI(ctx){
     else if (o && o.you.job) acts.push(B("Work 4h", "start_shift", {hours: 4}, true));
     const tavernHere = o && (o.here.businesses || []).some(b => b.sells && b.sells.Meal);
     if (tavernHere && (hungry || left < 8)) acts.push(B("Eat here", "buy_meal", {}, !working));
+    acts.push(`<button class="btn" data-me="1" title="Health, food and eating">Eat${hungry ? " \u26a0\ufe0f" : ""}</button>`);
     acts.push(`<button class="btn" data-tab="here">Here</button>`);
     acts.push(`<button class="btn" data-cam="1">${ctx.mode && ctx.mode() === "third" ? "Overview (Tab)" : "Take control (Tab)"}</button>`);
     $("unitacts").innerHTML = acts.join("");
     wire($("unitacts"));
+    const me = $("unitacts").querySelector("[data-me]");
+    if (me) me.onclick = () => openMe();
     const cam = $("unitacts").querySelector("[data-cam]");
     if (cam) cam.onclick = () => { ctx.toggleCamera && ctx.toggleCamera(); renderUnit(); };
   }
@@ -142,7 +162,10 @@ export function createUI(ctx){
       if (f.seq <= FEED_SEQ) continue;
       FEED_SEQ = f.seq; FEED.push(f);
       if (f.kind === "alert") toast(f.text, "bad");
-      else if (f.kind === "message") toast(f.text, "msg");
+      else if (f.kind === "message"){
+        toast(f.text, "msg", f.ref ? () => openThread(f.ref) : null);
+        if (THREAD && f.ref === THREAD) loadThread();
+      }
       else if (f.kind === "wake" && !/^You arrived/.test(f.text)) toast(f.text);
       else if (f.kind === "rival"){
         toast(short(f.text), "rival");
@@ -151,6 +174,7 @@ export function createUI(ctx){
       else if (f.kind === "milestone") toast(f.text, "milestone");
       // The market: something you could buy, someone who wants what you hold,
       // and one of your buy orders filled. Click to go straight there.
+      else if (f.kind === "family") toast(f.text, "milestone", () => { view = null; openTab("house"); });
       else if (f.kind === "offer") toast(f.text, "offer", () => openMarket("buy", f.ref));
       else if (f.kind === "wanted") toast(f.text, "offer", () => openMarket("sell"));
       else if (f.kind === "you" && /filled your buy order/.test(f.text)) toast(f.text, "", () => openMarket("deliveries"));
@@ -164,6 +188,13 @@ export function createUI(ctx){
     const onTab = t => view && view.kind === "tab" && view.ref === t;
     if (S.OBS) badge("b-chat", onTab("chat") ? 0 : Math.max(0, (S.OBS.chat || []).length - seen.chat));
     badge("b-news", onTab("news") ? 0 : Math.max(0, FEED.length - seen.news));
+    // A mission waiting to be started.
+    if (S.ST) badge("b-missions", S.ST.mission ? 0 : (S.ADV && S.ADV.advice || []).some(m => m.button && m.button.kind === "mission" && m.button.mission_action === "start") ? 1 : 0);
+    // SOMETHING NEW ON THE MARKET (2026-10-18): a red count on its button until you look.
+    if (S.ST && S.ST.market_keys){
+      if (seen.market == null || onTab("market")) seen.market = new Set(S.ST.market_keys);
+      badge("b-market", S.ST.market_keys.filter(k => !seen.market.has(k)).length);
+    }
     if (S.BOARD) badge("b-jobs", S.BOARD.jobs.filter(j => j.to_me || (j.mine && Array.isArray(j.applicants) && j.applicants.length)).length);
   }
 
@@ -194,12 +225,20 @@ export function createUI(ctx){
     });
     root.querySelectorAll("[data-building]").forEach(b => b.onclick = e => { e.stopPropagation(); openBuilding(b.dataset.building); });
     root.querySelectorAll("[data-person]").forEach(b => b.onclick = e => { e.stopPropagation(); openPerson(b.dataset.person); });
+    root.querySelectorAll("[data-msg]").forEach(b => b.onclick = e => { e.stopPropagation(); openThread(b.dataset.msg); });
+    root.querySelectorAll("[data-assets]").forEach(b => b.onclick = e => { e.stopPropagation(); openAssets(b.dataset.assets); });
+    // Point the way without walking you there: the compass shows it.
+    root.querySelectorAll("[data-point]").forEach(b => b.onclick = e => {
+      e.stopPropagation(); S.errand = {place: b.dataset.point, label: b.dataset.label || `Go to ${b.dataset.point}`}; close();
+      toast(`${S.errand.label}: follow the compass.`);
+    });
   }
 
   /* ---------------------------------------------------------- the panel */
   const TITLES = {here: "Where you stand", travel: "Travel", business: "Businesses & land", jobs: "Jobs",
     market: "Market", chat: "Chat", news: "News", ranks: "Rankings", menu: "Orders & game",
-    ledger: "Ledger", guide: "Guide: what makes what"};
+    ledger: "Ledger", guide: "Guide: what makes what", people: "People",
+    knowhow: "Know-how", house: "Your house", missions: "Missions"};
   function show(title, html){
     if ($("p-title").textContent !== title) $("pbody").scrollTop = 0;   // a new panel opens at its top
     $("p-title").textContent = title;
@@ -250,6 +289,32 @@ export function createUI(ctx){
         if (!force) $("pbody").scrollTop = top;
         return;
       }
+      if (view.ref === "missions"){
+        const data = await api.get("/api/missions");
+        if (!view || view.ref !== "missions") return;
+        show(TITLES.missions, missionsPanel(data));
+        $("pbody").querySelectorAll("[data-mission]").forEach(b => b.onclick = () => missionAct(b.dataset.mission, b.dataset.id));
+        if (!force) $("pbody").scrollTop = top;
+        return;
+      }
+      if (view.ref === "knowhow" || view.ref === "house"){
+        const ref = view.ref, data = await api.get(ref === "knowhow" ? "/api/knowhow" : "/api/household");
+        if (!view || view.ref !== ref) return;
+        if (!force && $("pbody").contains(document.activeElement) && /INPUT|SELECT/.test(document.activeElement.tagName)) return;
+        show(TITLES[ref], ref === "knowhow" ? knowhowPanel(data) : housePanel(data));
+        if (ref === "house") wireHouse(data);
+        if (!force) $("pbody").scrollTop = top;
+        return;
+      }
+      if (view.ref === "people"){
+        const data = await api.get(`/api/citizens?city=${encodeURIComponent(pplCity)}`);
+        if (!view || view.ref !== "people") return;
+        if (!force && $("pbody").contains(document.activeElement) && /INPUT|SELECT/.test(document.activeElement.tagName)) return;
+        show(TITLES.people, peoplePanel(data));
+        wirePeople(data);
+        if (!force) $("pbody").scrollTop = top;
+        return;
+      }
       if (view.ref === "ledger" || view.ref === "guide"){
         if (!force) return;                     // fetched on open; not every poll
         const ref = view.ref, data = await api.get(ref === "ledger" ? "/api/ledger" : "/api/chains");
@@ -284,12 +349,72 @@ export function createUI(ctx){
       const c = (await cards())[view.ref];
       if (!view || view.kind !== "person") return;
       show(c ? short(c.name) : "Citizen", personPanel(view.ref, c));
+    } else if (view.kind === "assets"){
+      const a = await api.get(`/api/assets?id=${encodeURIComponent(view.ref)}`);
+      if (!view || view.kind !== "assets" || a.error) return;
+      show(a.you ? "What you own" : `What ${short(a.name)} owns`, assetsPanel(a));
+      if (!force) $("pbody").scrollTop = top;
+    } else if (view.kind === "me"){
+      const m = await api.get("/api/me");
+      if (!view || view.kind !== "me" || m.error) return;
+      show("You", mePanel(m));
+      $("pbody").querySelectorAll("[data-eat]").forEach(b => b.onclick = async () => {
+        const body = b.dataset.eat === "carried" ? {carried: true, meal: b.dataset.meal} : {tavern: b.dataset.eat};
+        const r = await api.post("/api/eat", body);
+        toast(r.ok ? r.message : `Can't: ${r.message}`, r.ok ? "" : "bad");
+        refreshSoon(); setTimeout(() => renderView(true), 300);
+      });
+      if (!force) $("pbody").scrollTop = top;
     }
     if (!force) $("pbody").scrollTop = top;
   }
   function openBuilding(id){ view = {kind: "building", ref: id}; CARDS = null; renderView(true); }
   function openLand(place){ view = {kind: "land", ref: place}; renderView(true); }
   function openPerson(id){ view = {kind: "person", ref: id}; CARDS = null; renderView(true); }
+  function openAssets(id){ view = {kind: "assets", ref: id}; renderView(true); }
+  function openMe(){ if (view && view.kind === "me"){ close(); return; } view = {kind: "me", ref: ""}; renderView(true); }
+
+  /* WHY ARE THEY RICH (designer request, 2026-10-18): tap anyone on the
+     leaderboard and see what their net worth is made of. */
+  function assetsPanel(a){
+    const total = Math.max(1, a.worth);
+    let out = `<div class="howto">${esc(a.house || "")}${a.house ? " \u00b7 " : ""}${esc(a.calling || "")} in ${esc(a.city_name)}${a.job ? ` \u00b7 works at a ${esc(a.job.split(" /")[0])}` : ""}. Net worth <b>${money(a.worth)}</b>.</div>`;
+    out += `<div class="worthbar">` + a.lines.filter(l => l[1] > 0).map((l, i) => `<span class="wb${i}" style="width:${l[1] / total * 100}%" title="${esc(l[0])}: ${money(l[1])}"></span>`).join("") + `</div>`;
+    out += a.lines.map((l, i) => `<div class="row"><div class="grow"><i class="wbdot wb${i}"></i>${esc(l[0])}</div><b>${money(l[1])}</b></div>`).join("");
+    out += `<h3>Businesses (${a.businesses.length})</h3>`;
+    out += a.businesses.length ? a.businesses.map(b => `<div class="row"><div class="grow"><b>${esc(b.type.split(" /")[0])}</b> <span class="dim">at ${esc(b.place)}</span><small>${b.making ? `making ${esc(b.making)}` : "idle"} \u00b7 ${b.staff} working \u00b7 ${b.profit_day > 0 ? `<span class="c-good">+${money(b.profit_day)}/day</span>` : b.profit_day < 0 ? `<span class="c-bad">${money(b.profit_day)}/day</span>` : "no profit yet"} \u00b7 stock ${money(b.stock)}</small></div><b>${money(b.worth)}</b></div>`).join("")
+      : `<div class="empty">None. ${a.you ? "You" : "They"} earn by working for others.</div>`;
+    const goods = Object.entries(a.goods || {});
+    out += `<h3>Carrying</h3>` + (goods.length ? `<div class="dim">${goods.map(([i, q]) => `${q} ${esc(i)}`).join(", ")}</div>` : `<div class="empty">Nothing.</div>`);
+    out += `<h3>Other</h3><div class="row"><div class="grow">Land plots</div><b>${a.plots}</b></div>`
+      + `<div class="row"><div class="grow">Vehicles</div><b>${a.vehicles.length ? esc(a.vehicles.join(", ")) : "none"}</b></div>`
+      + `<div class="row"><div class="grow">Weapon</div><b>${esc(a.weapon)}</b></div>`
+      + `<div class="row"><div class="grow">Household</div><b>${a.family}</b></div>`;
+    if (!a.you) out += `<div class="dim" style="margin-top:8px">What they buy and sell, and from whom, is in a town report (People page).</div>`;
+    return out;
+  }
+
+  /* YOU (designer request, 2026-10-18): tap your portrait to see your health
+     and food, and eat. */
+  function mePanel(m){
+    const hungry = m.stage !== "Normal";
+    let out = `<div class="row"><div class="grow">Health</div><b>${Math.round(m.health)} / 100</b></div><div class="bar hp"><i style="width:${m.health}%"></i></div>`;
+    out += `<div class="row"><div class="grow">Food</div><b class="${hungry ? "c-bad" : ""}">${hungry ? esc(m.stage) : `fed for ${m.fed_hours.toFixed(1)}h`}</b></div><div class="bar"><i style="width:${hungry ? 4 : Math.min(100, m.fed_hours / 24 * 100)}%"></i></div>`;
+    out += `<div class="dim">Health comes back slowly while you are fed. Hungry, you work and fight slower; starving costs health.</div>`;
+    out += `<h3>Eat</h3><div class="tip">\u{1F37A} <b>Food is sold at taverns</b>, and only there -- you cannot cook. Walk into a tavern and eat there, or buy a Meal there to carry and eat later from this card.</div>`;
+    let any = false;
+    for (const c of m.carried){ any = true; out += `<div class="row"><div class="grow"><b>${esc(c.meal)}</b> <span class="dim">you carry ${c.qty} \u00b7 ${c.hours}h</span></div><button class="btn go" data-eat="carried" data-meal="${esc(c.meal)}">Eat</button></div>`; }
+    for (const t of m.menu){ any = true; out += `<div class="row"><div class="grow"><b>${esc(t.meal)}</b> <span class="dim">at ${esc(t.name)} \u00b7 ${t.hours}h${t.staffed ? "" : " \u00b7 nobody serving"}</span></div><button class="btn go" data-eat="${esc(t.tavern)}" ${t.staffed && m.coins >= t.price ? "" : "disabled"}>Eat (${money(t.price)})</button></div>`; }
+    if (!any) out += `<div class="empty">No food where you stand and none on you.</div>`;
+    const away = (m.taverns || []).filter(t => !t.here);
+    if (away.length && !away.some(t => t.home)) out += `<div class="dim">Your town has no tavern yet. The nearest food is in the next town -- or found a tavern yourself.</div>`;
+    if (away.length) out += `<h3>Where to eat</h3>` + away.map(t => `<div class="row"><div class="grow"><b>${esc(t.name)}</b> <span class="dim">at ${esc(t.place)}${t.home ? "" : ", " + esc(t.city_name)} \u00b7 ${esc(t.meal)} ${money(t.price)} \u00b7 ${t.hours}h${t.open ? "" : " \u00b7 not serving now"}</span></div><button class="btn" data-point="${esc(t.place)}" data-label="To the tavern at ${esc(t.place)}">Show me the way</button></div>`).join("");
+    else if (!(m.taverns || []).length) out += `<div class="empty">There is no tavern anywhere yet -- found one.</div>`;
+    out += `<h3>Kit</h3><div class="row"><div class="grow">Weapon</div><b>${esc(m.weapon)}</b></div>`
+      + `<div class="row"><div class="grow">Armour</div><b>${Object.values(m.armour).length ? esc(Object.values(m.armour).join(", ")) : "none"}</b></div>`
+      + `<div class="dim"><b>R</b> swings, hold <b>F</b> to block.</div>`;
+    return out;
+  }
 
   /* ---------------------------------------------------------- what each panel says */
   const placeOf = name => S.places[name] || {};
@@ -313,16 +438,16 @@ export function createUI(ctx){
   function buildingPanel(id, c){
     if (!c) return `<div class="empty">Nothing is known about this building yet.</div>`;
     const mine = c.owner_id === G.you, here = atPlace(c.place);
-    const staffed = (c.staff || []).some(s => /working/.test(s.doing || ""));
+    const staffed = c.government || (c.staff || []).some(s => /working/.test(s.doing || ""));
     let out = `<div class="card"><div class="t">${esc(c.type)}${mine ? ' <span class="yours">(yours)</span>' : ""}</div>
-      <div class="m">${mine ? "Owned by you" : `Owned by ${esc(short(c.owner))}`} · ${esc(c.place)}, ${esc(kindOf(c.place))}</div>
-      <div class="m">${c.closed ? '<span class="warn">Closed for good</span>' : staffed ? '<span class="good">Open: someone is at work</span>'
+      <div class="m">${mine ? "Owned by you" : c.government ? "The state's: always open, sells high, buys low, hires at a fixed wage" : `Owned by ${esc(short(c.owner))}`} · ${esc(c.place)}, ${esc(kindOf(c.place))}</div>
+      <div class="m">${c.closed ? '<span class="warn">Closed for good</span>' : c.government ? '<span class="good">Always open</span>' : staffed ? '<span class="good">Open: someone is at work</span>'
         : '<span class="warn">Nobody on shift: it will not sell to you right now</span>'}${c.producing ? ` · making ${esc(c.producing)}` : ""}${c.blocked ? ' <span class="warn">(stalled)</span>' : ""}</div></div>`;
     if (c.land && c.land.item) out += `<div class="card rich-card"><div class="t">Rich ground</div><div class="m">This land makes <b>${esc(c.land.item)}</b> ${Math.round(c.land.pct * 100)}% faster.${mine ? " Making it here pays best." : ""}</div></div>`;
     else if (c.land) out += `<div class="tip">Ordinary ground: no bonus here.</div>`;
     else if (mine && (c.type === "Farm" || c.type === "Mining Operation")) out += `<div class="tip">The ground shows what it is with the first harvest.</div>`;
     if (!here && !mine) out += `<div class="tip">You are at ${esc(S.OBS.you.location)}. Go there to buy or sell in person.</div><div class="acts">${goButtons(c.place, id)}</div>`;
-    const stock = (c.stock || []).filter(s => s.qty > 0);
+    const stock = (c.stock || []).filter(s => s.unlimited || s.qty > 0);
     out += `<h3>For sale</h3>`;
     const forSale = stock.filter(s => s.price != null);
     out += forSale.length ? forSale.map(s => {
@@ -333,7 +458,7 @@ export function createUI(ctx){
         else btn = B(`Buy 1 — ${money2(s.price)}`, "buy_from_business", {business_id: id, item: s.item, qty: 1}, true)
                  + F("More", "buy_from_business", {business_id: id, item: s.item}, `Buy ${s.item}`);
       }
-      return `<div class="row"><div class="grow"><b>${esc(s.item)}</b> <span class="dim">${s.qty} in stock</span></div><b>${money2(s.price)}</b>${btn}</div>`;
+      return `<div class="row"><div class="grow"><b>${esc(s.item)}</b> <span class="dim">${s.unlimited ? "as many as you want" : `${s.qty} in stock`}</span></div><b>${money2(s.price)}</b>${btn}</div>`;
     }).join("") : `<div class="empty">Nothing is priced for sale here.</div>`;
     const held = stock.filter(s => s.price == null);
     if (held.length) out += `<div class="tip">Also holds: ${esc(held.map(s => `${s.qty} ${s.item}`).join(", "))}</div>`;
@@ -342,6 +467,8 @@ export function createUI(ctx){
         + (here ? F("Sell to them", "sell_to_business", {business_id: id}, `Sell to ${short(c.name)}`) : "")
         + ((S.OBS.you.businesses || []).length ? F("Order a delivery to my business", "order_from_business", {seller_business_id: id, my_business_id: S.OBS.you.businesses[0].id}, `Order from ${short(c.name)}`) : "")
         + `</div>`;
+      if ((c.state_jobs || []).length) out += `<h3>Work here</h3>` + c.state_jobs.map(j => `<div class="row"><div class="grow"><b>${esc(j.role)}</b> <span class="dim">the state's fixed wage</span></div><b>${money2(j.wage)}/hr</b>`
+        + (here ? B("Take the job", "apply_for_job", {business_id: id, role: j.role}, true) : "") + `</div>`).join("");
       const jobs = (S.BOARD.jobs || []).filter(j => j.business_id === id && !j.mine);
       if (jobs.length) out += `<h3>Hiring</h3>` + jobs.map(j => `<div class="row"><div class="grow"><b>${esc(j.role)}</b></div><b>${money2(j.wage)}/hr</b>`
         + (j.to_me ? B("Accept offer", "accept_job_offer", {posting_id: j.id}, true) : j.applied ? `<span class="dim">applied</span>` : B("Apply", "apply_to_job", {posting_id: j.id})) + `</div>`).join("");
@@ -458,23 +585,48 @@ export function createUI(ctx){
       <div class="kpi-t wide ${B.status}"><span>Status</span><b>${esc(statusText)}</b></div>
       <div class="kpi-t"><span>Rate</span><b>${B.rate_now ? num(B.rate_now) + "/h" : "\u2014"}</b></div>
       <div class="kpi-t"><span>Storage</span><b>${B.storage.used}/${B.storage.cap}</b><i class="meter"><i style="width:${pct}%" class="${pct > 90 ? "full" : ""}"></i></i></div>
-      <div class="kpi-t"><span>Cash</span><b>${money2(B.cash)}</b></div>
+      <div class="kpi-t" title="Money you deposited for others to run it. Sales go to your own coins."><span>Purse</span><b>${money2(B.cash)}</b></div>
       <div class="kpi-t"><span>Staff</span><b>${B.staff.length}/${B.places}</b></div>
       <div class="kpi-t"><span>Profit 24h</span><b class="${B.books.profit > 0 ? "good" : B.books.profit < 0 ? "warn" : ""}">${B.books.profit > 0 ? "+" : ""}${money2(B.books.profit)}</b></div>
     </div>`;
-    // MONEY FIRST: wages are paid from the business's own cash.
-    const need = Math.max(B.owed || 0, B.payroll_per_hour * 4 - B.cash, B.payroll_per_hour, 0);
-    if (B.insolvent || (B.payroll_per_hour > 0 && B.cash < B.payroll_per_hour)){
+    // WHAT IT IS MAKING, IN PLAIN TERMS (2026-10-18): how often a unit lands
+    // at the game's current speed, and how many are in the yard now.
+    const pace = S.ST && S.ST.pace ? S.ST.pace : 12;
+    if (making && B.rate_now > 0){
+      const realSecs = 3600 / B.rate_now / pace;
+      const inYard = ((B.stock || []).find(x => x.item === making.item) || {}).qty || 0;
+      out += `<div class="note prodline">One <b>${esc(making.item)}</b> every <b>${realSecs < 60 ? realSecs.toFixed(1) + " s" : (realSecs / 60).toFixed(1) + " min"}</b> at this speed (${num(B.rate_now)} a game hour). In the yard now: <b>${inYard}</b>${S.ST && S.ST.paused ? " \u2014 <span class=\"warn\">the game is paused</span>" : ""}.</div>`;
+    } else if (making){
+      out += `<div class="note">Nothing is being made: put someone on shift here (you or your family).</div>`;
+    }
+    // MONEY: wages come from this business's purse, then your own coins.
+    const pocket = S.ST ? S.ST.you.denari : 0;
+    const need = Math.max(B.owed || 0, B.payroll_per_hour * 4 - B.cash - pocket, B.payroll_per_hour, 0);
+    if (B.insolvent || (B.payroll_per_hour > 0 && B.cash + pocket < B.payroll_per_hour)){
       out += `<div class="alarm"><b>${B.insolvent ? "Can't pay wages: unpaid workers have left" : "Can't pay the next hour of wages"}</b>`
-        + `<span>Wages come out of this business's own cash (${money2(B.cash)}). Payroll is ${money2(B.payroll_per_hour)}/h.`
+        + `<span>Wages come from this business's purse (${money2(B.cash)}), then your coins (${money2(pocket)}). Payroll is ${money2(B.payroll_per_hour)}/h.`
         + `${B.closes_in_hours != null ? ` <b>It closes in ${num(B.closes_in_hours)}h</b> unless you deposit at least ${money2(Math.max(B.owed, 1))}.` : ""}</span>`
         + `<div class="acts">${B_(`Deposit ${money(need || 20)}`, "deposit", {business_id: B.id, amount: Math.ceil(need || 20)}, true)}</div></div>`;
     } else if (B.payroll_per_hour > 0){
-      out += `<div class="note">Cash covers <b>${num(B.cash / B.payroll_per_hour, 1)}h</b> of wages (${money2(B.payroll_per_hour)}/h).</div>`;
+      out += `<div class="note">Your purse and coins cover <b>${num((B.cash + pocket) / B.payroll_per_hour, 1)}h</b> of wages (${money2(B.payroll_per_hour)}/h). Sales go straight to your coins.</div>`;
     }
     if (B.land && B.land.item) out += `<div class="note rich-card">Rich ground: <b>${esc(B.land.item)}</b> +${Math.round(B.land.pct * 100)}%</div>`;
     else if (B.land) out += `<div class="note">Ordinary ground.</div>`;
     else if (B.land_pending) out += `<div class="note">Ground quality shows with the first harvest.</div>`;
+    // THE GROUND WEARS, THE AIR FOULS (2026-10-18). See convoy/ground.py.
+    if (B.ground){
+      const g = B.ground, word = g.kind === "seam" ? "Seam" : "Soil", left = Math.round(g.left * 100);
+      const slow = Math.round((1 - g.pace) * 100);
+      out += `<div class="wear"><div class="row"><div class="grow"><b>${word}</b> ${g.spent ? `<span class="c-bad">worked out</span>` : `${left}% left`}${slow > 0 && !g.spent ? ` <span class="c-bad">\u00b7 ${slow}% slower</span>` : ""}</div></div>`
+        + `<div class="bar wearbar"><i style="width:${left}%"></i></div>`
+        + `<div class="dim">${g.kind === "seam" ? "Ore runs out as it is dug and never comes back. Timbered shafts make it last; a Deeper shaft reaches fresh ore." : "Soil tires as it is farmed and recovers while the field rests. Crop rotation and manure pits keep it in heart."}</div></div>`;
+    }
+    if (B.air && (B.air.foul >= 0.03 || B.air.smoke >= 1)){
+      const foul = Math.round(B.air.foul * 100), slow = Math.round((1 - B.air.pace) * 100);
+      out += `<div class="wear"><div class="row"><div class="grow"><b>Air</b> ${foul}% foul${slow > 0 ? ` <span class="c-bad">\u00b7 work ${slow}% slower</span>` : ""}</div><span class="dim">your smoke ${B.air.smoke.toFixed(1)}</span></div>`
+        + `<div class="bar airbar"><i style="width:${foul}%"></i></div>`
+        + `<div class="dim">Refineries foul the air most, and anything run fast smokes more. It slows crops most, then miners and refinery hands, within about 600 m. A Tall chimney carries smoke off; Hedgerows shelter a farm.</div></div>`;
+    }
     // What to make.
     out += `<h3>What to make</h3><table class="grid"><tr><th>Good</th><th>Rate</th><th>Price</th><th>Worth /h</th><th></th></tr>`
       + B.outputs.map(o => `<tr class="${o.making ? "on" : ""}"><td><b>${esc(o.item)}</b>${o.land_bonus ? ` <span class="rich">+${Math.round(o.land_bonus * 100)}%</span>` : ""}`
@@ -486,8 +638,17 @@ export function createUI(ctx){
     const ref = making || B.outputs.reduce((a, o) => (o.value_per_hour > a.value_per_hour ? o : a), B.outputs[0]);
     out += `<h3>Workers</h3>`;
     out += B.staff.length ? B.staff.map(st => `<div class="row"><span class="dot ${st.on_shift ? "on" : ""}"></span><div class="grow">${st.id === G.you ? "<b>You</b>" : esc(short(st.name))} <span class="dim">${esc(st.role)}</span></div>`
-      + `<span class="dim">${st.id === G.you ? "owner" : money2(st.wage) + "/h"}</span><span class="dim">${st.on_shift ? "on shift" : "off"}</span></div>`).join("")
+      + `<span class="dim">${st.id === G.you ? "owner" : st.family ? "family, unpaid" : money2(st.wage) + "/h"}</span><span class="dim">${st.on_shift ? "on shift" : "off"}</span></div>`).join("")
       : `<div class="empty">Nobody works here yet.</div>`;
+    // Your family, from right here: the cheapest workers you have.
+    const fam = B.family || [];
+    if (fam.length){
+      const roleWord = m => m.role === "partner" ? "your partner" : m.role === "in-law" ? "married in" : `your ${m.role}`;
+      out += `<div class="famwork">` + fam.map(m => `<div class="row"><span class="avatar">${m.sex === "f" ? "\u{1F469}" : "\u{1F468}"}</span><div class="grow"><b>${esc(m.name)}</b> <span class="dim">${esc(roleWord(m))} \u00b7 ${m.works_here ? "works here" : m.works_at ? "works at another of yours" : "at home"}</span></div>`
+        + (m.works_here ? B_("Send home", "assign_family", {member_id: m.id, business_id: ""})
+           : B.places_free > 0 ? B_("Put to work here", "assign_family", {member_id: m.id, business_id: B.id}, true)
+           : `<span class="dim">no room</span>`) + `</div>`).join("") + `</div>`;
+    }
     const meOn = B.staff.some(st => st.id === G.you && st.on_shift);
     out += `<div class="acts">` + (meOn ? `<span class="good">You are on shift here.</span>` + B_("Stop work", "end_shift")
       : `<button class="btn go" id="work-me">${B.you_work_here ? "Start a 4h shift" : "Work here myself (4h)"}</button>`) + `</div>`;
@@ -498,7 +659,8 @@ export function createUI(ctx){
       if (B.places_free <= 0) out += `<div class="tip warn">No room for another worker: every place is taken. Buy and build on a plot to add one.</div>`;
       else {
         const shift = r0.suggested * 4;
-        if (B.cash < shift) out += `<div class="tip warn">A worker at ${money2(r0.suggested)}/h costs ${money(shift)} for a 4h shift, paid from this business's cash (${money2(B.cash)}). Deposit first or they will leave unpaid.</div>`;
+        if (B.cash + pocket < shift) out += `<div class="tip warn">A worker at ${money2(r0.suggested)}/h costs ${money(shift)} for a 4h shift, paid from this business's purse (${money2(B.cash)}) and then your coins (${money2(pocket)}) -- not enough: they would leave unpaid.</div>`;
+        else out += `<div class="tip">A worker at ${money2(r0.suggested)}/h costs ${money(shift)} for a 4h shift, paid from the purse and then your coins. Or use family: free.</div>`;
         out += `<div class="hire-row">
           <select id="h-role">${B.roles.map(r => `<option value="${esc(r.role)}" data-s="${r.suggested}">${esc(r.role)}</option>`).join("")}</select>
           <input id="h-wage" type="number" min="${r0.floor}" step="0.5" value="${r0.suggested.toFixed(2)}"><span class="unit">/h</span>
@@ -509,6 +671,16 @@ export function createUI(ctx){
         <div class="tip" id="h-why">${wageWhy(r0)}</div>`;
       }
       out += `</div>`;
+    }
+    // PROJECTS (2026-10-18): one at a time, sooner with a crew and material.
+    out += `<h3>Build</h3>`;
+    if (B.project){
+      const P = B.project;
+      out += `<div class="proj"><div><b>${esc(P.kind)}</b> \u2014 ready in <b>${dur(P.eta)}</b></div><div class="bar"><i style="width:${Math.round(P.pct * 100)}%"></i></div>`
+        + `<div class="tip">${num(P.rate, 1)} work an hour from the crew on shift${P.material_have ? `, plus ${esc(P.material)} from the yard (${P.material_have} left)` : ` \u2014 put ${esc(P.material)} in the yard to speed it up`}. One more on shift: ${dur(P.with_one_more)}.</div></div>`;
+    } else {
+      out += B.projects.map(p => `<div class="row"><div class="grow"><b>${esc(p.kind)}</b>${p.level ? ` <span class="dim">level ${p.level}</span>` : ""}<br><span class="dim">${esc(p.does)} About ${num(p.work, 0)} work; ${esc(p.material)} speeds it.</span></div>`
+        + (p.level >= p.max ? `<span class="dim">done</span>` : B_(`Build \u00b7 ${money(p.cost)}`, "start_project", {business_id: B.id, project: p.kind}, true)) + `</div>`).join("");
     }
     for (const pst of B.postings){
       out += `<div class="row"><div class="grow">Advert: <b>${esc(pst.role)}</b> at ${money2(pst.wage)}/h <span class="dim">${pst.applicants.length ? pst.applicants.length + " applied" : "no applicants yet"}</span></div>`
@@ -577,10 +749,11 @@ export function createUI(ctx){
     if (mkTab === "buy"){
       out += `<div class="howto"><b>How buying works.</b> Find the good below and press its button. <b>Feedstock</b> (Wheat, ore, hides&hellip;) is paid for now and waits at the seller's: you walk over, it loads, and you carry it to your business &mdash; or pay a courier. <b>Shop goods</b> (Meals, tools, weapons) are bought at the counter: the button walks you there and buys on arrival.</div>`;
       out += bidForm(M);
-      const items = [...new Set(M.listings.filter(l => !l.mine).map(l => l.item))].sort();
+      const items = [...new Set(M.listings.map(l => l.item))].sort();
       out += `<div class="hire-row"><select id="mk-item"><option value="">Every good</option>${items.map(i => `<option${i === mkItem ? " selected" : ""}>${esc(i)}</option>`).join("")}</select>`
         + `<select id="mk-city"><option value="">Every city</option><option value="${esc(M.city)}"${mkCity ? " selected" : ""}>My city only</option></select></div>`;
-      const rows = M.listings.filter(l => !l.mine && (!mkItem || l.item === mkItem) && (!mkCity || l.city === mkCity));
+      // Your own listings show too, marked, so you can see what you have up.
+      const rows = M.listings.filter(l => (!mkItem || l.item === mkItem) && (!mkCity || l.city === mkCity));
       const room = S.BOARD.carry_room || 5;
       const groups = {};
       rows.forEach(l => (groups[l.item] = groups[l.item] || []).push(l));
@@ -589,10 +762,12 @@ export function createUI(ctx){
         return `<div class="mk-good"><div class="mk-h"><b>${esc(item)}</b><span>${ls.length} seller${ls.length > 1 ? "s" : ""} \u00b7 from ${money2(ls[0].price)} each \u00b7 ${ls[0].kind === "order" ? "feedstock" : "shop good"}</span></div>`
           + ls.map(l => {
             const k = M.listings.indexOf(l);
-            const who = `<div class="mk-who"><b>${l.qty}</b> at <b>${money2(l.price)}</b> \u2014 ${esc(short(l.seller))}'s ${esc(l.type.split(" /")[0])}, ${esc(l.place)}${l.city !== M.city ? ` <span class="dim">(${esc(l.city.charAt(0).toUpperCase() + l.city.slice(1))})</span>` : ""}`
+            const who = `<div class="mk-who">${l.state ? "As many as you want" : `<b>${l.qty}</b>`} at <b>${money2(l.price)}</b> \u2014 ${l.state ? "the state's" : l.mine ? "your" : esc(short(l.seller)) + "'s"} ${esc(l.type.split(" /")[0])}, ${esc(l.place)}${l.city !== M.city ? ` <span class="dim">(${esc(l.city.charAt(0).toUpperCase() + l.city.slice(1))})</span>` : ""}`
               + (l.kind === "counter" && !l.open ? ` <span class="warn">nobody serving right now</span>` : "") + `</div>`;
             let actn;
-            if (l.kind === "order" && !l.receivers.length){
+            if (l.mine){
+              actn = `<span class="good">your listing</span>`;
+            } else if (l.kind === "order" && !l.receivers.length){
               actn = `<span class="dim">Only a business that uses ${esc(item)} can buy it, and none of yours does.</span>`;
             } else {
               const q = l.kind === "order" ? Math.max(1, Math.min(l.qty, room)) : 1;
@@ -619,6 +794,37 @@ export function createUI(ctx){
       }).join("") + `</table>` : `<div class="empty">Nothing on the road. Feedstock you buy in the Buy list shows up here until it arrives.</div>`;
     } else if (mkTab === "sell"){
       out += `<div class="howto"><b>How selling works.</b> Two ways. <b>Sell to a buyer now:</b> someone posted the price they will pay &mdash; press Sell and you are paid at once. <b>Put it on sale:</b> set your own price on what your businesses hold, and anyone can buy it from you.</div>`;
+      // YOUR DELIVERY UNDER WAY, with what to do next.
+      const cur = S.ST && S.ST.delivery;
+      if (cur){
+        out += `<div class="proj"><b>Your delivery:</b> ${cur.qty} ${esc(cur.item)} \u2014 ${cur.loaded
+          ? `loaded. Follow the compass to the yellow circle; the buyer lights up when you are close.`
+          : `<span class="warn">not loaded yet.</span> Go to your business; it loads the moment you are there with the goods.`}`
+          + `<div class="acts">${cur.loaded ? "" : `<button class="btn go" data-dl="load">Load now</button>`}<button class="btn" data-dl="drop">Drop it</button></div></div>`;
+      }
+      // DELIVER IT YOURSELF (2026-10-18): buyers who pay more at their door.
+      const dl = (M.deliveries || []).filter(o => o.have > 0);
+      out += `<h3>Deliver it yourself \u2014 pays more</h3>` + (dl.length ? dl.map(o => {
+        const n = Math.min(o.have, o.qty, M.delivery_room);
+        const btn = n > 0 ? `<button class="btn go" data-deliver='${esc(JSON.stringify({business_id: o.from, buyer_business_id: o.buyer, item: o.item, qty: n}))}'>Take the job \u00b7 ${money2(n * o.unit)}</button>` : `<span class="dim">your donkey is full</span>`;
+        return `<div class="mk-row"><div class="mk-who"><b>${n} ${esc(o.item)}</b> to a ${esc(o.type.split(" /")[0])} in <b>${esc(o.city_name)}</b> \u2014 <b>${money2(o.unit)}</b> each`
+          + `<small>${o.state ? "the state's" : "a citizen's"} \u00b7 the gate pays ${money2(o.gate)} \u00b7 you find the exact place when you get close</small></div><div class="mk-act">${btn}</div></div>`;
+      }).join("") : `<div class="empty">Nothing to deliver yet: make some goods first.</div>`);
+      // WHO WOULD BUY (2026-10-18): businesses in every town bidding for what
+      // you hold or make, best price first. Raw goods go to refineries.
+      const goodsHeld = {};
+      M.goods.forEach(g => { if (!goodsHeld[g.item] || g.qty > goodsHeld[g.item].qty) goodsHeld[g.item] = g; });
+      const bidItems = Object.keys(M.bids || {});
+      out += `<h3>Who would buy</h3>` + (bidItems.length ? bidItems.map(item => {
+        const g = goodsHeld[item];
+        return `<div class="mk-good"><div class="mk-h"><b>${esc(item)}</b><span>${g ? `you have ${g.qty} at your ${esc(g.type.split(" /")[0])}` : "you have none yet"}</span></div>`
+          + M.bids[item].map(b => {
+            const n = g ? Math.min(g.qty, b.qty) : 0;
+            const btn = n > 0 ? `<button class="btn go" data-act="sell_to_bidder" data-args='${esc(JSON.stringify({business_id: g.business, buyer_business_id: b.business, item, qty: n}))}'>Sell ${n} \u00b7 ${money2(n * b.price)}</button>` : `<span class="dim">make some first</span>`;
+            return `<div class="mk-row"><div class="mk-who"><b>${money2(b.price)}</b> each \u2014 ${b.state ? "the state's" : esc(short(b.owner)) + "'s"} ${esc(b.type.split(" /")[0])}, ${esc(b.place)} <span class="dim">(${esc(b.city)})</span>`
+              + `<small>${b.state ? "fixed low price; its cart collects at once" : `wants ${b.qty}; pays now, sends a courier to fetch it`}</small></div><div class="mk-act">${btn}</div></div>`;
+          }).join("") + `</div>`;
+      }).join("") : `<div class="empty">Found a farm or a mine and the refineries bidding for its goods appear here, best price first.</div>`);
       out += `<h3>Buyers waiting</h3>` + (M.wanted.length ? M.wanted.map(o => {
         const f = o.fill_from[0], n = f ? Math.min(f.have, o.qty) : 0;
         const btn = f ? `<button class="btn go" data-act="fill_buy_order" data-args='${esc(JSON.stringify({order_id: o.id, business_id: f.id}))}'>Sell ${n} \u00b7 ${money2(n * o.price)}</button>`
@@ -714,14 +920,24 @@ export function createUI(ctx){
         return;
       }
       const buy = () => act("buy_from_business", {business_id: l.business, item: l.item, qty: q});
-      if (l.here && l.open){ buy(); return; }
-      // Shop goods are bought in person: walk over, and buy on arrival.
+      if (l.here){ buy(); return; }
+      // Shop goods are bought in person: the compass points you there, you
+      // ride, and it is bought as you walk in (2026-10-18: no auto-walking).
       close();
-      toast(`Walking to ${l.place} to buy ${q} ${l.item}`);
-      const then = () => setTimeout(buy, 1200);
-      if (S.buildings.has(l.business)) walkToBuilding(l.business, then); else walkToPlace(l.place, then);
+      S.errand = {business: l.business, place: l.place, item: l.item, qty: q, buy};
+      toast(`Ride to ${l.place} to buy ${q} ${l.item}: follow the compass. It is bought when you walk in.`);
     });
     $("pbody").querySelectorAll("[data-fetchc]").forEach(b => b.onclick = () => fetchIt({consignment_id: b.dataset.fetchc}));
+    $("pbody").querySelectorAll("[data-dl]").forEach(b => b.onclick = async () => {
+      const r = await api.post("/api/delivery", {action: b.dataset.dl});
+      toast(r.ok ? r.message : `Can't: ${r.message}`, r.ok ? "" : "bad");
+      refreshSoon(); setTimeout(() => renderView(true), 400);
+    });
+    $("pbody").querySelectorAll("[data-deliver]").forEach(b => b.onclick = async () => {
+      const r = await api.post("/api/delivery", JSON.parse(b.dataset.deliver));
+      toast(r.ok ? r.message : `Can't: ${r.message}`, r.ok ? "milestone" : "bad");
+      if (r.ok){ close(); refreshSoon(); if (ctx.onDelivery) ctx.onDelivery(); }
+    });
     $("pbody").querySelectorAll("[data-list]").forEach(b => b.onclick = () => {
       const g = M.goods[+b.dataset.list], v = +$(`mkp-${b.dataset.list}`).value;
       if (!(v > 0)){ toast("Type a price first.", "bad"); return; }
@@ -735,6 +951,219 @@ export function createUI(ctx){
     });
   }
 
+  /* MISSIONS (2026-10-18): three state jobs in a chain, each teaching a
+     system and paying a bonus. */
+  async function missionAct(action, id){
+    const r = await api.post("/api/mission", {action, id});
+    toast(r.ok ? r.message : `Can't: ${r.message}`, !r.ok ? "bad" : r.won === false ? "rival" : "milestone");
+    refreshSoon();
+    if (r.ok && action === "start"){ close(); if (ctx.onDelivery) ctx.onDelivery(); }
+    else if (view && view.ref === "missions") renderView(true);
+  }
+  function missionsPanel(Ms){
+    const icon = {harvest: "\u{1F33E}", bounty: "\u{1F3F9}", citizen: "\u{1F91D}"};
+    let out = `<div class="howto">Three goals, one after another. Each teaches a part of the game and pays a bonus on top of anything you earn doing it. Achievements complete by themselves; the bandit camp you start when you are ready.</div>`;
+    out += Ms.board.map(m => {
+      let act = "";
+      if (m.status === "open") act = `<button class="btn go" data-mission="start" data-id="${esc(m.id)}">Start \u00b7 +${money(m.reward)}</button>`;
+      else if (m.status === "needs") act = `<span class="dim">found a farm or a mine first</span>`;
+      else if (m.status === "active" && m.auto) act = `<span class="good">completes by itself</span> <button class="btn" data-tab="market">Delivery jobs</button>`;
+      else if (m.status === "active"){
+        act = (m.id === "bounty" ? `<span class="good">${Ms.at_camp ? "walk up to the tents to fight" : "ride to the camp: follow the compass"}</span>` : `<span class="good">under way</span>`)
+          + ` <button class="btn" data-mission="abandon">Give up</button>`;
+      } else if (m.status === "done") act = `<span class="good">\u2713 done</span>`;
+      else act = `<span class="dim">finish the one before</span>`;
+      const where = m.status === "active" && m.id === "bounty" && Ms.active ? `<small>The camp is at <b>${esc(Ms.active.place)}</b>; your odds now ${Math.round(Ms.odds * 100)}%. The compass points the way.</small>` : "";
+      return `<div class="mk-row mission ${m.status}"><div class="mk-who"><span class="avatar">${icon[m.id] || "\u2B50"}</span><b>${esc(m.title)}</b> <span class="dim">+${money(m.reward)}</span><small>${esc(m.does)}</small>${where}</div><div class="mk-act">${act}</div></div>`;
+    }).join("");
+    return out;
+  }
+
+  /* THE GUIDE (2026-10-18): what the game is and what to do first, a step at
+     a time, each with a button that takes you there. Opens itself the first
+     time you play a game; "?" in the top bar brings it back. */
+  const OB = [
+    {icon: "\u{1F3E0}", title: "Welcome to your house", body: h => `You head <b>${esc(h.house)}</b>. Your home stands in your town's square, and the gold squares around it are your border. Next door, two towns full of citizens are already trading. Your goal is the richest, largest house in the valley.`},
+    {icon: "\u{1F46A}", title: "Your family is your first workforce", body: h => `Your partner works any business you own for nothing, always on shift. Your son and daughter come of age in a day or two; then they can work too, or marry into another house. A couple has a child every game month; feeding a child a Meal brings it a day sooner.`, tab: "house", label: "See your house"},
+    {icon: "\u26CF", title: "Found a farm or a mine", body: () => `Pick <b>Farm</b> or <b>Mine</b> in the Build menu on the left and place it on a spur road. Then send your partner to work it from your house page, and choose what it makes. Rich ground shows itself at the first harvest.`},
+    {icon: "\u{1F4DC}", title: "Deliver your first harvest", body: () => `Once your farm has made something, carry it to a refinery yourself: Market, Sell, <b>Deliver it yourself</b>. Your donkey carries ten, and your first delivery earns a bonus. The <b>Missions</b> page has what comes next: a bandit camp to clear, then a delivery to a citizen.`, tab: "missions", label: "Open Missions"},
+    {icon: "\u{1F4B0}", title: "Sell to the best bidder", body: () => `Open the <b>Market</b> and the <b>Sell</b> tab. Refineries in every town bid for raw goods: the state's always pays a low fixed price, citizens' pay more when they need it. Pick the best price and you are paid at once.`, tab: "market", label: "Open the Market"},
+    {icon: "\u{1F4A1}", title: "Learn something", body: () => `<b>Know-how</b> makes you better at something for good. Your first study lands in six game hours; the ones after take longer and pay more.`, tab: "knowhow", label: "Open Know-how"},
+    {icon: "\u{1F48D}", title: "Marry for allies", body: () => `When a child comes of age, propose a match with another house's son or daughter. Accepted, the houses are allies -- and two allied houses can found a <b>clan</b>.`, tab: "house", label: "Your house"},
+    {icon: "\u23F3", title: "Watch the countdowns", body: () => `<b>Coming up</b>, on the left, lists everything you have running: studies, projects, children growing up. There is always something about to land. Grow by building more, hiring citizens or slower NPC hands, and marrying well.`},
+  ];
+  let obStep = 0;
+  async function openGuide(step){
+    const h = await api.get("/api/household").catch(() => ({house: "your house"}));
+    obStep = step || 0;
+    const draw = () => {
+      const s = OB[obStep];
+      $("ob-body").innerHTML = `<div class="ob-ic">${s.icon}</div><h2>${esc(s.title)}</h2><p>${s.body(h)}</p>`
+        + (s.tab ? `<button class="btn go" id="ob-go">${esc(s.label)}</button>` : "");
+      $("ob-dots").innerHTML = OB.map((_, i) => `<i class="${i === obStep ? "on" : ""}"></i>`).join("");
+      $("ob-back").disabled = obStep === 0;
+      $("ob-next").textContent = obStep === OB.length - 1 ? "Start playing" : "Next";
+      const go = $("ob-go"); if (go) go.onclick = () => { $("onboard").classList.remove("open"); view = null; openTab(s.tab); };
+    };
+    $("ob-back").onclick = () => { if (obStep > 0){ obStep--; draw(); } };
+    $("ob-next").onclick = () => { if (obStep < OB.length - 1){ obStep++; draw(); } else $("onboard").classList.remove("open"); };
+    $("ob-close").onclick = () => $("onboard").classList.remove("open");
+    draw();
+    $("onboard").classList.add("open");
+  }
+  $("t-guide").onclick = () => openGuide(0);
+
+  /* KNOW-HOW (2026-10-18): your tech tree, by tier, with what each is worth
+     to you now. One study at a time; it lands on its own. */
+  function knowhowPanel(K){
+    let out = `<div class="howto">Learn one thing at a time; it lands on its own and makes you better at something <b>for good</b>. Tier one takes ${K.nodes.find(n => n.tier === 1).eta}h; the last, Steam, takes two days.</div>`;
+    if (K.studying) out += `<div class="kh-now"><div><b>Studying ${esc(K.studying.name)}</b> \u2014 learned in ${dur(K.studying.eta)}</div><div class="bar"><i style="width:${Math.round(K.studying.pct * 100)}%"></i></div></div>`;
+    else out += `<div class="kh-now idle"><b>You are not studying anything.</b> Pick one below.</div>`;
+    const tiers = [...new Set(K.nodes.map(n => n.tier))].sort();
+    out += `<div class="kh-tree">` + tiers.map(t => `<div class="kh-tier"><div class="kh-th">${t === 4 ? "Milestone" : "Tier " + t}</div>` + K.nodes.filter(n => n.tier === t).map(n => {
+      const btn = n.status === "open" ? B(K.studying ? `Study instead \u00b7 ${n.eta}h` : `Study \u00b7 ${n.eta}h`, "research", {tech: n.id}, !K.studying)
+        : n.status === "studying" ? `<span class="good">studying</span>` : n.status === "known" ? `<span class="good">\u2713 known</span>` : `<span class="dim">${esc(n.why)}</span>`;
+      return `<div class="kh-node ${n.status}"><b>${esc(n.name)}</b><div>${esc(n.does)}</div>${n.worth ? `<div class="kh-worth">${esc(n.worth)}</div>` : ""}<div class="kh-act">${btn}</div></div>`;
+    }).join("") + `</div>`).join("") + `</div>`;
+    return out;
+  }
+
+  /* YOUR HOUSE (2026-10-18): the household -- your first workers -- and how
+     it grows: children only to the married, marriages only by agreement
+     between houses, which then become allies. */
+  function housePanel(H){
+    const time = h => h == null ? "" : dur(h);
+    let out = `<div class="howto"><b>${esc(H.house)}</b> \u2014 ${H.members.length} of ${H.cap} in the household. Grown members work your businesses for nothing and never go off shift. Children come of age on their own; new children come only to a <b>married couple</b>, and you marry by agreement with another house, which then becomes your <b>ally</b>. A grown member is your heir if you die.</div>`;
+    if (H.offers_in.length) out += `<h3>Proposals to your house</h3>` + H.offers_in.map(o => `<div class="mk-row"><div class="mk-who"><b>${esc(o.house)}</b> proposes their <b>${esc(o.their)}</b> for your <b>${esc(o.mine)}</b>, with a dowry of <b>${money(o.dowry)}</b>.<small>Accept and ${esc(o.mine)} joins their household; your houses become allies.</small></div><div class="mk-act">${B("Accept", "accept_marriage", {offer_id: o.id}, true)}${B("Decline", "decline_marriage", {offer_id: o.id})}</div></div>`).join("");
+    const icon = m => m.adult ? (m.sex === "f" ? "\u{1F469}" : "\u{1F468}") : (m.sex === "f" ? "\u{1F467}" : "\u{1F466}");
+    const roleName = m => m.partner ? "your partner" : m.role === "in-law" ? `married in${m.from_house ? " from " + esc(m.from_house) : ""}` : m.role || "";
+    out += `<h3>Household</h3><div class="mk-row person me"><div class="mk-who"><span class="avatar">${H.you.sex === "f" ? "\u{1F469}" : "\u{1F468}"}</span><b>You</b> <span class="chip calling">${esc(H.you.calling)}</span><small>head of ${esc(H.house)}</small></div></div>`
+      + H.members.map(m => {
+      let what = m.adult ? `${roleName(m)}${!m.partner && m.spouse ? ` \u00b7 married to ${esc(m.spouse)}` : !m.partner ? " \u00b7 unmarried" : ""}`
+        : `${esc(m.role || "child")} \u00b7 old enough to work in <b>${time(m.grows_in)}</b>`;
+      if (m.next_child_in != null) what += ` \u00b7 next child in <b>${time(m.next_child_in)}</b>`;
+      const grow = m.pct_grown == null ? "" : `<div class="bar"><i style="width:${Math.round(m.pct_grown * 100)}%"></i></div>`;
+      const work = !m.adult ? (H.meals ? B("Feed a Meal \u00b7 a day sooner", "feed_family", {member_id: m.id}, true) : `<span class="dim">carry a Meal to feed them</span>`)
+        : `<select data-assign="${esc(m.id)}"><option value="">at home</option>${H.businesses.map(b => `<option value="${esc(b.id)}"${b.id === m.works_at ? " selected" : ""}>works at your ${esc(b.type.split(" /")[0])}</option>`).join("")}</select>`;
+      return `<div class="mk-row"><div class="mk-who"><span class="avatar">${icon(m)}</span><b>${esc(m.name)}</b> <span class="chip calling">${esc(m.calling)}</span><small>${what}</small>${grow}</div><div class="mk-act">${work}</div></div>`;
+    }).join("")
+      + `<div class="tip">A married couple has a child every game month; a child is old enough to work after a month, a day sooner for every Meal you feed them (you carry ${H.meals}). Hired NPC hands work at 60% of a person's pace.</div>`;
+    if (!H.businesses.length && H.members.some(m => m.adult)) out += `<div class="tip">Found a business and your family can work it from day one.</div>`;
+    if (H.allies.length) out += `<h3>Allies</h3><div class="tip">${H.allies.map(a => esc(a.house)).join(", ")}</div>`;
+    const mine = H.members.filter(m => m.adult && !m.spouse);
+    out += `<h3>Houses to marry into</h3>`;
+    if (!mine.length) out += `<div class="tip">Nobody in your house is grown and unmarried right now${H.members.some(m => !m.adult) ? " \u2014 wait for a child to come of age" : ""}.</div>`;
+    const open = H.houses.filter(h => h.free.length);
+    out += open.length ? open.slice(0, 30).map(h => `<div class="mk-row"><div class="mk-who"><b>${esc(h.house)}</b> ${h.ally ? `<span class="chip">ally</span>` : ""} <span class="dim">${esc(short(h.name))} \u00b7 ${esc(h.city)}</span>`
+        + `<small>${h.free.map(m => `${esc(m.name)} (${esc(m.calling)})`).join(", ")}</small></div>`
+        + (mine.length ? `<div class="mk-act"><select data-mine="${esc(h.agent)}">${mine.map(m => `<option value="${esc(m.id)}">your ${esc(m.name)}</option>`).join("")}</select>`
+          + `<select data-theirs="${esc(h.agent)}">${h.free.map(m => `<option value="${esc(m.id)}">their ${esc(m.name)}</option>`).join("")}</select>`
+          + `<input class="price" type="number" min="0" step="5" value="25" data-dowry="${esc(h.agent)}" title="Dowry"><button class="btn go" data-propose="${esc(h.agent)}">Propose</button></div>` : "") + `</div>`).join("")
+      : `<div class="empty">No other house has anyone grown and unmarried right now.</div>`;
+    if (H.offers_out.length) out += `<h3>Your proposals</h3>` + H.offers_out.map(o => `<div class="row"><div class="grow">To ${esc(o.house)} \u00b7 dowry ${money(o.dowry)}</div><span class="dim">${esc(o.status)}</span></div>`).join("");
+    return out;
+  }
+  function wireHouse(H){
+    $("pbody").querySelectorAll("[data-assign]").forEach(sel => sel.onchange = () =>
+      act("assign_family", {member_id: sel.dataset.assign, business_id: sel.value}).then(() => renderView(true)));
+    $("pbody").querySelectorAll("[data-propose]").forEach(b => b.onclick = () => {
+      const a = b.dataset.propose, q = s => $("pbody").querySelector(`[data-${s}="${a}"]`);
+      act("propose_marriage", {agent_id: a, member_id: q("mine").value, their_member_id: q("theirs").value,
+                               dowry: +q("dowry").value || 0}).then(() => renderView(true));
+    });
+  }
+
+  /* PEOPLE (designer request, 2026-10-18): everyone in your town -- what they
+     own, where they work, their character and what they are good at -- with a
+     job offer and a private thread a click away. Other towns cost a report. */
+  let pplCity = "", pplFilter = "";
+  function peoplePanel(P){
+    const myBiz = (S.OBS.you.businesses || []);
+    const tabs = [{key: P.your_city, name: "My town"}].concat(P.cities.map(c => ({key: c.key, name: c.name})));
+    let out = `<div class="seg">${tabs.map(t => `<button class="seg-b${(P.city === t.key) ? " on" : ""}" data-city="${esc(t.key)}">${esc(t.name)}</button>`).join("")}</div>`;
+    if (P.locked){
+      return out + `<div class="howto"><b>${esc(P.name)}</b> has ${P.population} citizens. You know nothing else about them. A report tells you who lives there, what they own, where they work and what they are good at -- as of the hour you buy it.</div>`
+        + `<div class="acts"><button class="btn go" id="buy-report"${P.cash < P.report_cost ? " disabled" : ""}>Buy a report on ${esc(P.name)} \u00b7 ${money(P.report_cost)}</button></div>`;
+    }
+    out += `<div class="howto">${P.live ? "" : `Report from hour ${P.hour} \u2014 <a href="#" id="buy-report">buy a fresh one (${money(P.report_cost)})</a>. `}`
+      + `<b>${P.population}</b> citizens. `
+      + (P.state_sites.length ? `State sites: ${P.state_sites.map(t => esc(t.split(" /")[0])).join(", ")}. ` : "")
+      + (P.buildings.length ? `Citizens own: ${P.buildings.map(b => `${b.count} ${esc(b.type.split(" /")[0])}`).join(", ")}.` : "Citizens own no businesses yet.")
+      + `<br><span class="dim">Wages are private: to hire someone good, offer a job and talk it over.</span></div>`;
+    // CLANS (2026-10-18): across towns; a secret one is seen only from inside.
+    out += `<h3>Clans</h3>` + (P.clans.length ? P.clans.map(c => `<div class="row"><div class="grow"><b>${esc(c.name)}</b>${c.secret ? ` <span class="chip">secret</span>` : ""}${c.mine ? ` <span class="good">yours</span>` : ""} <span class="dim">${c.members} members \u00b7 ${esc(c.towns.join(", "))}</span>${c.names.length && c.mine ? `<br><span class="dim">${c.names.map(n => esc(short(n))).join(", ")}</span>` : ""}</div><b>${money(c.worth)}</b></div>`).join("") : `<div class="empty">No clans yet.</div>`)
+      + (P.my_clan ? `<div class="acts">${B("Leave your clan", "leave_guild", {})}</div>`
+        : `<div class="tip">A clan needs two allied houses: marry one of your family into another house first.</div><div class="hire-row"><input id="clan-name" placeholder="Name a clan" maxlength="40"><label><input type="checkbox" id="clan-secret"> secret</label><button class="btn go" id="clan-make">Found it</button></div><div class="tip">A clan spans towns. A secret one is invisible to outsiders: you can belong to one while living in another town, and trade for it quietly.</div>`);
+    out += `<div class="hire-row"><input id="ppl-find" placeholder="Find a name, a skill (Miner) or a character (Hauler)" value="${esc(pplFilter)}" style="flex:1"></div>`;
+    const f = pplFilter.toLowerCase();
+    const rows = P.people.filter(p => !f || [p.name, p.calling, ...p.skills.map(s => s.role + " " + s.level), ...p.owns.map(o => o.type)].join(" ").toLowerCase().includes(f));
+    out += rows.map(p => {
+      const skills = p.skills.length ? p.skills.slice(0, 4).map(s => `<span class="chip">${esc(s.role)} \u00b7 ${esc(s.level)} <i>${s.hours}h</i></span>`).join("") : `<span class="dim">no work experience yet</span>`;
+      const owns = p.owns.length ? p.owns.map(o => esc(o.type.split(" /")[0])).join(", ") : "nothing";
+      const job = p.job ? `${esc(p.job.role)} at ${p.job.employer === "themself" ? "their own " + esc(p.job.type.split(" /")[0]) : esc(p.job.employer === "the state" ? "the state's" : short(p.job.employer) + "'s") + " " + esc(p.job.type.split(" /")[0])}` : "no job";
+      const acts = p.you ? `<span class="good">you</span>`
+        : `<button class="btn go" data-msg="${esc(p.id)}">Message</button>`
+          + (myBiz.length ? F("Offer a job", "offer_job", {agent_id: p.id, business_id: myBiz[0].id}, `Offer ${short(p.name)} a job`) : "")
+          + (P.my_clan ? B("Invite to clan", "invite_to_guild", {target_id: p.id}) : "");
+      return `<div class="mk-row person${p.you ? " me" : ""}"><div class="mk-who"><b>${esc(short(p.name))}</b> ${p.house ? `<span class="dim">of ${esc(p.house)}</span>` : ""} ${p.calling ? `<span class="chip calling">${esc(p.calling)}</span>` : ""}${p.ally ? ` <span class="chip">ally</span>` : ""} <span class="dim">worth ${money(p.worth)}</span>`
+        + `<small>Owns: ${owns} \u00b7 ${job}</small><div class="skills">${skills}</div></div><div class="mk-act">${acts}</div></div>`;
+    }).join("") || `<div class="empty">Nobody matches.</div>`;
+    return out;
+  }
+  function wirePeople(P){
+    $("pbody").querySelectorAll("[data-city]").forEach(b => b.onclick = () => { pplCity = b.dataset.city; renderView(true); });
+    const find = $("ppl-find");
+    if (find) find.oninput = () => { pplFilter = find.value; const at = find.selectionStart; renderView(true).then(() => { const x = $("ppl-find"); if (x){ x.focus(); x.setSelectionRange(at, at); } }); };
+    const mk = $("clan-make");
+    if (mk) mk.onclick = () => { const n = $("clan-name").value.trim(); if (!n){ toast("Name it first.", "bad"); return; }
+      act("create_guild", {name: n, secret: $("clan-secret").checked}).then(() => renderView(true)); };
+    const buy = $("buy-report");
+    if (buy) buy.onclick = async e => {
+      e.preventDefault();
+      const r = await api.post("/api/report", {city: P.city});
+      toast(r.ok ? r.message : `Can't: ${r.message}`, r.ok ? "" : "bad");
+      refreshSoon(); renderView(true);
+    };
+  }
+
+  /* A PRIVATE THREAD with one person, like a phone's messages: theirs on the
+     left, yours on the right, a box to type in. Stays open beside the map. */
+  let THREAD = null, threadTimer = null;
+  async function loadThread(){
+    if (!THREAD) return;
+    const r = await api.get(`/api/thread?with=${encodeURIComponent(THREAD)}`);
+    if (!r.ok || !THREAD) return;
+    $("th-name").textContent = short(r.with.name);
+    $("th-sub").textContent = [r.with.calling, r.with.city].filter(Boolean).join(" \u00b7 ");
+    const box = $("th-msgs"), atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+    box.innerHTML = r.messages.length ? r.messages.map(m => `<div class="bub ${m.from_me ? "me" : "them"}">${esc(m.text)}<i>${clock(m.hour)}</i></div>`).join("")
+      : `<div class="dim" style="text-align:center;margin-top:30px">No messages yet. Say hello, pitch a job, or name a price.</div>`;
+    if (atEnd) box.scrollTop = box.scrollHeight;
+  }
+  function openThread(id){
+    THREAD = id;
+    $("thread").classList.add("open");
+    $("th-text").value = ""; $("th-text").focus();
+    loadThread().then(() => { $("th-msgs").scrollTop = $("th-msgs").scrollHeight; });
+    clearInterval(threadTimer); threadTimer = setInterval(loadThread, 3000);
+  }
+  function closeThread(){ THREAD = null; clearInterval(threadTimer); $("thread").classList.remove("open"); }
+  async function sendThread(){
+    const text = $("th-text").value.trim(); if (!text || !THREAD) return;
+    $("th-text").value = "";
+    const r = await api.post("/api/act", {action: "send_direct_message", args: {target_id: THREAD, text, why: ""}});
+    if (!r.ok) toast(`Can't: ${r.message || r.error}`, "bad");
+    loadThread().then(() => { $("th-msgs").scrollTop = $("th-msgs").scrollHeight; });
+  }
+  $("th-close").onclick = closeThread;
+  $("th-send").onclick = sendThread;
+  $("th-text").addEventListener("keydown", e => { e.stopPropagation(); if (e.key === "Enter"){ e.preventDefault(); sendThread(); } });
+  $("th-offer").onclick = () => {
+    const myBiz = (S.OBS.you.businesses || []);
+    if (!myBiz.length){ toast("Found a business first: an offer is a job at one of yours.", "bad"); return; }
+    openForm("offer_job", {agent_id: THREAD, business_id: myBiz[0].id}, "Offer a job");
+  };
+
   function personPanel(id, c){
     if (!c) return `<div class="empty">Nothing is known about them yet.</div>`;
     const mineBiz = S.OBS.you.businesses || [];
@@ -743,7 +1172,7 @@ export function createUI(ctx){
       <div class="m">Worth ${money(c.net_worth)}${c.rank ? ` · rank ${c.rank} of ${c.of}` : ""}</div></div>`;
     if ((c.businesses || []).length) out += `<h3>Owns</h3>` + c.businesses.map(b => `<div class="row"><div class="grow">${esc(b.type)} <span class="dim">${esc(b.place)}</span></div><button class="btn" data-building="${esc(b.id)}">Look</button></div>`).join("");
     if ((c.employed_by || []).length) out += `<h3>Works</h3>` + c.employed_by.map(e => `<div class="tip">${esc(e.role)} at ${esc(short(e.business))}, ${money2(e.wage)}/hr</div>`).join("");
-    out += `<h3>Deal with them</h3><div class="acts">${F("Message", "send_direct_message", {target_id: id}, `Message ${short(c.name)}`)}${F("Pay", "pay", {agent_id: id}, `Pay ${short(c.name)}`)}`
+    out += `<h3>Deal with them</h3><div class="acts"><button class="btn go" data-msg="${esc(id)}">Message</button>${F("Pay", "pay", {agent_id: id}, `Pay ${short(c.name)}`)}`
       + (mineBiz.length ? F("Offer a job", "offer_job", {agent_id: id, business_id: mineBiz[0].id}, `Offer ${short(c.name)} a job`) : "")
       + `</div>`;
     return out;
@@ -753,8 +1182,8 @@ export function createUI(ctx){
     const stock = Object.entries(b.stock || {}).map(([k, v]) => `${v} ${k}`).join(", ") || "empty";
     const id = {business_id: b.id};
     const stalled = /STALLED|FULL|nothing|not set/i.test(b.production || "");
-    return `<div class="card">${inline ? "" : `<div class="t">${esc(b.type)} <span class="dim">${esc(b.id)} · ${esc(b.location)}</span></div>`}
-      <div class="m">Cash <b>${money2(b.cash)}</b> · staff ${esc(b.workers)}/${esc(b.employee_places)} · storage ${esc(b.storage_used)}/${esc(b.storage_capacity)}</div>
+    return `<div class="card">${inline ? "" : `<div class="t">${esc(b.type)} <span class="dim">${esc(b.id)} · ${esc(b.location)}</span> <button class="btn go" data-building="${esc(b.id)}">Manage</button></div>`}
+      <div class="m">Purse <b>${money2(b.cash)}</b> <span class="dim">(sales go to your coins)</span> · staff ${esc(b.workers)}/${esc(b.employee_places)} · storage ${esc(b.storage_used)}/${esc(b.storage_capacity)}</div>
       ${b.production ? `<div class="${stalled ? "warn" : "good"}">${esc(b.production)}</div>` : ""}
       <div class="m">Stock: ${esc(stock)}</div>
       <div class="acts">${B("Work here myself (4h)", "apply_for_job", id, true)}${F("Set production", "set_production", id)}${F("Set a price", "set_retail_price", id)}${F("Order supplies", "order_from_business", {my_business_id: b.id}, "Order supplies")}</div>
@@ -861,7 +1290,7 @@ export function createUI(ctx){
       const st = S.ST;
       let out = "";
       if (st.cities && st.cities.length > 1) out += `<h3>The cities</h3>` + st.cities.slice().sort((a, b) => b.total - a.total).map((c, i) => `<div class="row"><div class="grow">${i + 1}. <b>${esc(c.name)}</b>${c.key === st.city ? " (yours)" : ""}</div><b>${money(c.total)}</b></div>`).join("");
-      out += `<h3>Richest citizens</h3>` + st.leaders.map((a, i) => `<div class="row"${a.you ? ' style="background:#c9a24a22"' : ""}><div class="grow">${i + 1}. ${a.you ? "<b>You</b>" : esc(short(a.name))}</div><b>${money(a.worth)}</b></div>`).join("")
+      out += `<h3>Richest citizens</h3><div class="dim">Tap anyone to see what they own.</div>` + st.leaders.map((a, i) => `<div class="row click" data-assets="${esc(a.id)}"${a.you ? ' style="background:#c9a24a22"' : ""}><div class="grow">${i + 1}. ${a.you ? "<b>You</b>" : esc(short(a.name))}</div><b>${money(a.worth)}</b></div>`).join("")
         + (st.your_rank > st.leaders.length ? `<div class="row" style="background:#c9a24a22"><div class="grow">${st.your_rank}. <b>You</b></div><b>${money(st.you.net_worth)}</b></div>` : "");
       const ww = S.OBS.whats_working || [];
       if (ww.length) out += `<h3>What's working</h3><pre>${esc(ww.join("\n"))}</pre>`;
@@ -1027,9 +1456,10 @@ export function createUI(ctx){
     }
     else if (b.kind === "tab") openTab(b.tab);
     else if (b.kind === "fetch") fetchIt({consignment_id: b.consignment_id});
+    else if (b.kind === "mission") missionAct(b.mission_action, b.mission_id);
   }
   function renderAdvisor(){
-    const A = S.ADV; if (!A) return;
+    const A = S.ADV; if (!A || !A.advice || !A.goals) return;   // no game loaded, or a server error
     $("nm-body").innerHTML = A.advice.map((m, i) => `<div class="move"><div class="t">${esc(short(m.text))}</div><div class="w">${esc(m.why)}</div>${moveButton(m, i)}</div>`).join("");
     $("nm-body").querySelectorAll("[data-move]").forEach(b => b.onclick = () => runMove(A.advice[+b.dataset.move]));
     const done = A.goals.filter(g => g.done).length, next = A.goals.findIndex(g => !g.done);
@@ -1072,7 +1502,7 @@ export function createUI(ctx){
       : `<span class="mv"></span>`;
     const T = (S.ADV && S.ADV.titles) || {};
     const ttl = r => (T[r.id] || []).length ? `<span class="ttl" title="${esc(T[r.id].join(", "))}">\u265B${T[r.id].length > 1 ? T[r.id].length : ""}</span>` : "";
-    const line = r => `<div class="lb-row${r.you ? " you" : ""}"><span class="r">${r.rank}</span><span class="n">${r.you ? "You" : esc(short(r.name))}${ttl(r)}</span><span class="w">${money(r.worth)}</span>${mv(r)}</div>`;
+    const line = r => `<div class="lb-row${r.you ? " you" : ""}" data-assets="${esc(r.id)}" title="See what they own"><span class="r">${r.rank}</span><span class="n">${r.you ? "You" : esc(short(r.name))}${ttl(r)}</span><span class="w">${money(r.worth)}</span>${mv(r)}</div>`;
     let rows = L.top.map(line).join("");
     if (!L.top.some(r => r.you)) rows += `<div class="lb-gap">\u22ee</div>` + line(L.you);
     $("lb-rows").innerHTML = rows;
@@ -1086,7 +1516,14 @@ export function createUI(ctx){
       $("lb-cities").style.display = "flex";
     } else $("lb-cities").style.display = "none";
   }
-  $("lboard").onclick = () => openTab("ranks");
+  $("lboard").onclick = e => {
+    const row = e.target.closest("[data-assets]");
+    if (row) openAssets(row.dataset.assets); else openTab("ranks");
+  };
+  $("portrait").onclick = () => openMe();
+  $("t-foodbox").onclick = () => openMe();
+  $("t-foodbox").title = "Food: where to eat (taverns), and eat what you carry";
+  $("portrait").title = "You: health, food, eat";
   $("nm-hide").onclick = () => $("nextmove").classList.toggle("collapsed");
   $("g-hide").onclick = () => $("goals").classList.toggle("collapsed");
 
@@ -1103,6 +1540,11 @@ export function createUI(ctx){
     setInterval(pollFeed, 2000);
     await pollAdvisor();
     setInterval(pollAdvisor, 3000);
+    // The guide opens itself the first time you play each game.
+    const key = `convoy.guided.${(S.ST && S.ST.game) || ""}`;
+    let seenGuide = false;
+    try { seenGuide = !!localStorage.getItem(key); localStorage.setItem(key, "1"); } catch (e) {}
+    if (!seenGuide) setTimeout(() => openGuide(0), 1200);
   }
 
   /* ---------------------------------------------------------- the build menu */
@@ -1110,19 +1552,23 @@ export function createUI(ctx){
      its hologram on the map (main.js). Greyed when you cannot afford it. */
   const BUILD_ICON = {"Farm": "\u{1F33E}", "Mining Operation": "\u26CF\uFE0F", "Refinery": "\u{1F3ED}", "Tavern / Inn": "\u{1F372}",
     "Vehicle Dealer / Stable": "\u{1F40E}", "Weaponsmith / Armory": "\u2694\uFE0F", "Home Improvement Store": "\u{1F528}",
-    "Mining/Farming Equipment Store": "\u{1F527}", "Private Security Contractor": "\u{1F6E1}\uFE0F"};
+    "Mining/Farming Equipment Store": "\u{1F527}", "Private Security Contractor": "\u{1F4BC}",
+    "Guard post": "\u{1F6E1}\uFE0F", "Catapult": "\u{1FAA8}", "Land claim": "\u{1F6A9}"};
   let placingType = null;
   function renderBuildBar(){
     if (!S.BOARD) return;
     const cash = S.ST ? S.ST.you.denari : 0;
     const owned = {};
     for (const v of S.buildings.values()) if (v.b.owner === G.you) owned[v.b.type] = (owned[v.b.type] || 0) + 1;
+    for (const o of (S.cellOwner ? S.cellOwner.values() : [])) if (o.structure && o.owner === G.you) owned[o.structure] = (owned[o.structure] || 0) + 1;
     const html = S.BOARD.business_types.map(t => {
       const can = cash >= t.cost;
-      return `<button class="bb${can ? "" : " poor"}${placingType === t.name ? " on" : ""}" data-build="${esc(t.name)}"
-        title="${esc(t.name)}: makes ${esc(t.makes.slice(0, 5).join(", "))}. ${t.spur ? "Spur land (farms and mines)." : "Main road."}">
+      const tip = t.defense ? `${t.name}: one square, anywhere. ${t.does}` : t.claim ? `${t.name}: ${t.does}`
+        : `${t.name}: makes ${t.makes.slice(0, 5).join(", ")}. ${t.spur ? "Spur land (farms and mines)." : "Main road."}`;
+      return `<button class="bb${can ? "" : " poor"}${placingType === t.name ? " on" : ""}${t.defense ? " def" : ""}" data-build="${esc(t.name)}"
+        title="${esc(tip)}">
         <span class="ic">${BUILD_ICON[t.name] || "\u{1F3E0}"}</span>
-        <span class="nm">${esc(t.name.split(" /")[0].replace("Mining/Farming Equipment Store", "Equipment").replace("Private Security Contractor", "Guards").replace("Home Improvement Store", "Builder").replace("Mining Operation", "Mine"))}</span>
+        <span class="nm">${esc(t.name.split(" /")[0].replace("Mining/Farming Equipment Store", "Equipment").replace("Private Security Contractor", "Security firm").replace("Home Improvement Store", "Builder").replace("Mining Operation", "Mine"))}</span>
         <span class="cost">${money(t.cost)}</span>${owned[t.name] ? `<i class="own">${owned[t.name]}</i>` : ""}
       </button>`;
     }).join("");

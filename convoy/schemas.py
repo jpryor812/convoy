@@ -46,7 +46,10 @@ _NOT_ACTIONS = frozenset({
     # Helpers, not actions -- and their signatures would have been handed
     # (world, log, agent) by the dispatcher. Introspection exposes every public
     # function in the module, so anything that is not a real action must say so.
-    "employee_cap", "is_staffed", "open_courier_jobs",
+    "employee_cap", "is_staffed", "open_courier_jobs", "standing_bid",
+    # The player's own, from the character card; kept off the agents' tool list
+    # to hold their prompt budget (agents eat at the tavern where they stand).
+    "eat_meal",
 })
 
 # Engine-internal: loot transfer is driven by the combat/death path, not chosen.
@@ -209,6 +212,42 @@ DESCRIPTIONS: dict[str, str] = {
         "somebody wants the job -- a share of what the load is worth is the "
         "usual way to think about it."
     ),
+    "build_defense": (
+        "Raise a Guard post (500) or a Catapult (250) on one plot where you stand. "
+        "Raiders on the roads at this place fight at half (guard post) or three "
+        "quarters (catapult) strength -- protection for every load on those roads."
+    ),
+    "feed_family": "Feed a child of your house a Meal you carry: they grow up a day sooner (a month otherwise).",
+    "sell_to_bidder": (
+        "Sell your business's stock to a business bidding for it, at its bid -- "
+        "listed as BUSINESSES THAT WOULD BUY. The state's sites pay their fixed low "
+        "price at once; a citizen's pays now and fetches it with a courier."
+    ),
+    "hire_npc_employee": (
+        "Hire an NPC hand: always on shift, paid the NPC wage from business cash, "
+        "but slower than a person. Your own grown children work for nothing."
+    ),
+    "start_project": (
+        "Build a Storehouse or Better tools at your business. Paid now; then work "
+        "goes in every hour, more with people on shift there and the project's "
+        "material in the yard. One project at a time per business."
+    ),
+    "research": (
+        "Study one piece of know-how; it lands on its own after some hours and "
+        "makes you better at something for good. Your options are listed."
+    ),
+    "assign_family": (
+        "Put a grown member of your household to work at one of your businesses, "
+        "unpaid and always on shift -- or business_id \"\" to bring them home."
+    ),
+    "propose_marriage": (
+        "Propose a grown, unmarried member of your house to one of another "
+        "house's, with a dowry. If they accept, theirs joins your household, the "
+        "houses become allies, and the couple has children: the only way a "
+        "family grows."
+    ),
+    "accept_marriage": "Accept a marriage proposed to your house: your member joins theirs, the dowry and the alliance are yours.",
+    "decline_marriage": "Turn down a marriage proposed to your house.",
     "post_buy_order": (
         "Name the price you will pay for something your business uses, and how "
         "many -- a standing bid anyone holding it can fill with fill_buy_order. "
@@ -447,12 +486,13 @@ DESCRIPTIONS_AFTER_WITHDRAWAL: dict[str, str] = {
 # the first no-state smoke. And `apply_for_job` is only ever the owner staffing
 # their own place, which its old description did not say: in that smoke it was
 # refused 23 times in 29, agents trying it on somebody else's tavern.
-NO_STATE_HIDDEN = frozenset({"hire_npc_employee"})
+NO_STATE_HIDDEN: frozenset = frozenset()     # NPC hands came back, slower, 2026-10-18
 DESCRIPTIONS_NO_STATE: dict[str, str] = {
     "apply_for_job": (
         "Work at YOUR OWN business: puts you on its roster, at no wage -- an "
-        "owner is paid in profit. ONLY for a business you own. To work for "
-        "somebody else, answer their advert with apply_to_job, or take a job "
+        "owner is paid in profit. Also takes a job at a STATE site (its "
+        "Tavern, Farm, Mine or Refinery, where a town has them) at the fixed "
+        "wage. To work for somebody else, answer their advert with apply_to_job, or take a job "
         "they offered you with accept_job_offer. Omit the role to take the "
         "first production role. Then start_shift."
     ),
