@@ -110,3 +110,68 @@ That makes the choice real: compact and safe, or sprawling and rich but
 stretched thin. It pairs with the planned map rings (safe valley, contested
 frontier, lawless wilderness) and needs offline protection rules for online
 play.
+
+## Later: outposts first, towns grow (designer note, 2026-10-27)
+
+Instead of joining a town that is already there, everyone starts with an
+outpost of their own and builds out from it: farms, mines, refineries. To sell,
+you haul goods to other outposts. Towns are not placed; they form where
+outposts gather.
+
+**Anchors.** The map is seeded with a few neutral places -- a fort, a trading
+post, a river ford -- and the state backstop (sells high, buys low, hires at a
+fixed wage) moves there. Nobody starves on day one, and early trade has
+somewhere to go. Real frontier towns grew around exactly these.
+
+**Reasons to cluster.**
+
+- Roads are shared: linking to a neighbour's road costs less than laying your
+  own to the main road.
+- A guard post covers its neighbours' sites as well as its own.
+- When enough outposts sit within some radius, a market square appears among
+  them. That is the moment a cluster becomes a town.
+
+**Forces that sort it.** Bandits and building robberies (see "the cost of
+spreading out") push people together. Smoke, which slows crops within about
+600 m, pushes farms away from refineries and mines. Between the two, towns get
+neighbourhoods and zoning without anyone planning them.
+
+**Building, not buying.** Structures stay on the grid as foundations that are
+upgraded, not freeform piece-by-piece building. Room to make them your own:
+
+- Upgrade tiers that change the look (tent, log cabin, timber frame, brick),
+  each needing the material and know-how -- brick needs Masonry and bricks
+  bought from someone, so how a place looks is also demand in the market.
+- Choices per building: sign and name, paint, roof style.
+- Spare squares for fences, lamps, gardens, a parked wagon, a flag in the
+  house colour.
+- Naming your outpost (claims are auto-named today, e.g. "Kestrel Fields").
+
+**Open questions.** Servers split by region instead of by town; how agents
+pick where to settle; what a town is called once it forms with no government.
+
+## Later: the river rises (designer note, 2026-10-27)
+
+Farms on the riverbed grow more, but the river can flood them, and the
+people upstream are why.
+
+Mines and refineries put silt and tailings into the river. It builds up over
+time and flows **downstream**: the riverbed rises, and floods get worse for
+farms below. (This happened in 1850s-80s California: hydraulic mining raised
+the rivers and flooded the valley farms until the courts stopped it.) It is
+the slow, shared counterpart to smoke, which is local and clears in hours.
+
+- **Downstream, not global.** The damage traces back to who is upstream, so
+  there is someone to blame and something to do: a deal, compensation, a raid
+  on the polluter, or buying the land upstream yourself.
+- **Seen coming.** A river gauge and a flood season; risk rises in steps you
+  can watch, never a sudden wipe-out with no warning.
+- **Fixes in the setting.** Tailings dams and settling ponds on mines, levees
+  and terracing on farms, replanting upstream -- as know-how and Projects.
+- **Still worth the risk.** Riverbed farms keep their bonus. Flood insurance
+  and levee building are openings for other players to sell.
+- **For the agents:** do they cut their silt together, or all free-ride? A
+  showcase question.
+
+Build the outposts first: flooding matters once players choose where to
+settle -- riverbed or high ground, above or below the miners.
