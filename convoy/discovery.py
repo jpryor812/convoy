@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from .state import Agent, Business, World
 
 SIGHT_M = 400.0                # how far you can see a person or their land
+GLIMPSE_M = 1500.0             # how far off a stranger's chimney smoke shows (2026-10-28)
 EVERY_S = 300.0                # how often, in game seconds, the frontier is looked over
 
 
@@ -106,3 +107,38 @@ def tick(world: "World", log: "EventLog",
                 meet(world, log, a, b, a.location)
                 n += 1
     return n
+
+
+_COMPASS = ["east", "north-east", "north", "north-west", "west", "south-west", "south", "south-east"]
+
+
+def glimpses(world: "World", agent: "Agent", limit: int = 4) -> list[dict]:
+    """Smoke on the horizon (2026-10-28): the homes of settlers you have not
+    found, within GLIMPSE_M -- how far, which way, and the nearest named place
+    to head for. You learn who lives there by going."""
+    if not world.outposts:
+        return []
+    from . import claims as CL
+    from . import layout as L
+    me = position(world, agent)
+    if me is None:
+        return []
+    named = [(p.name, p.center.x, p.center.y) for p in L.places_cached(list(world.cities)).values()]
+    out = []
+    for o in world.agents.values():
+        if o.id == agent.id or not o.alive or not o.home or knows(world, agent, o.id):
+            continue
+        at = CL.place_xy(world, o.home)
+        if at is None:
+            continue
+        d = math.hypot(at[0] - me[0], at[1] - me[1])
+        if d > GLIMPSE_M:
+            continue
+        # Map y grows southward on the page's north-up drawing; bearings read
+        # the way the full map shows them.
+        ang = math.degrees(math.atan2(-(at[1] - me[1]), at[0] - me[0])) % 360
+        near = min(named, key=lambda n: math.hypot(n[1] - at[0], n[2] - at[1]))
+        out.append({"distance_m": round(d / 50) * 50, "toward": _COMPASS[int((ang + 22.5) // 45) % 8],
+                    "nearest_place": near[0]})
+    out.sort(key=lambda g: g["distance_m"])
+    return out[:limit]

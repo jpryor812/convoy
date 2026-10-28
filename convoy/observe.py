@@ -2105,6 +2105,10 @@ def observe(
         if groups:
             outpost["your_groups (post_group_chat)"] = [
                 f"{g.id} {g.name}: {len(g.members)} members" for g in groups[:6]]
+        smoke = DS.glimpses(world, agent)
+        if smoke:
+            outpost["smoke_on_the_horizon (settlers you have not found)"] = [
+                f"{g['distance_m']:.0f} m {g['toward']}, near {g['nearest_place']}" for g in smoke]
         outpost["to_find_more"] = (
             f"travel the roads, the spurs and to other trading posts: anyone you pass "
             f"within {DS.SIGHT_M:.0f} m, or whose land you pass, you find, and they find you")

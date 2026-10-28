@@ -268,6 +268,12 @@ rise back up.
 
 ### Outposts (2026-10-27)
 
+- **A big frontier** (2026-10-28): the mountains stand well back from the
+  trading posts, and first homes are at least 650 m apart -- beyond sight,
+  so nobody starts knowing their neighbours. A first home may have a free
+  dirt road up to 2.6 km long. Settlers you have not found show as **smoke
+  on the horizon** up to about 1.5 km off (and on your map): someone lives
+  there; who, you find out by going.
 - **Finding people** (2026-10-28): you can only trade with settlers you
   have found -- no selling to their bids, buying their stock, filling their
   orders or taking their deliveries. You find someone by coming within about

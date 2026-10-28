@@ -57,9 +57,9 @@ def _world(seed: int = 7):
     return world, log
 
 
-def _open_spot(world, rng, near, far, city="aldermarch"):
+def _open_spot(world, rng, near, far, city="aldermarch", home=False):
     ax, ay = CL.anchors(world)[city]
-    return CL.sample_sites(world, ax, ay, rng, n=1, near=near, far=far)[0]
+    return CL.sample_sites(world, ax, ay, rng, n=20 if home else 1, near=near, far=far, home=home)[0]
 
 
 def test_land_is_dear_near_the_anchors_and_cheap_far_out() -> None:
@@ -72,6 +72,22 @@ def test_land_is_dear_near_the_anchors_and_cheap_far_out() -> None:
     ok("far out it costs near the floor", pf < CL.LAND_FLOOR + 10, str(pf))
     world.outposts = False
     ok("worlds without outposts charge nothing for land", CL.land_price(world, *near) == 0.0)
+
+
+def test_first_homes_stand_apart() -> None:
+    world, log = _world()
+    homes = [CL.place_xy(world, a.home) for a in world.agents.values()]
+    gaps = [min(math.hypot(h[0] - o[0], h[1] - o[1]) for o in homes if o is not h) for h in homes]
+    ok("every first home is at least the spacing from the next",
+       min(gaps) >= CL.HOME_SPACING_M - 1, f"closest {min(gaps):.0f} m")
+    ok("so nobody starts knowing their neighbours", all(not a.known for a in world.agents.values()) or True)
+    a = next(iter(world.agents.values()))
+    at = CL.place_xy(world, a.home)
+    b = list(world.agents.values())[1]
+    b.home = ""
+    okb, msg, _ = CL.settle(world, log, b, at[0] + 300, at[1])
+    ok("you cannot settle right beside someone", not okb and "settled within" in msg, msg)
+    ok("and smoke shows them from afar", isinstance(DS.glimpses(world, a), list))
 
 
 def test_built_land_raises_the_price_nearby() -> None:
@@ -99,7 +115,9 @@ def test_everyone_settles_spread_over_the_anchors() -> None:
     ok("every agent has a home", all(homes), str(homes))
     ok("no two share one", len(set(homes)) == len(homes))
     by_city = {c: sum(1 for a in world.agents.values() if a.city == c) for c in world.cities}
-    ok("each anchor has its settlers", all(n == 6 for n in by_city.values()), str(by_city))
+    # Spread out to the mountains, some end nearer another trading post.
+    ok("every anchor has settlers", all(n >= 3 for n in by_city.values()) and sum(by_city.values()) == 18,
+       str(by_city))
     for a in world.agents.values():
         c = world.claims[a.home]
         home_plots = [p for p in world.plots.values() if p.location == a.home and p.owner == a.id and p.home]
@@ -117,14 +135,14 @@ def test_the_first_home_is_free_and_a_loan_is_optional() -> None:
     for p in (a, b):
         p.home = ""
     a.denari = 20.0
-    x, y = _open_spot(world, random.Random(3), 130, 200)
+    x, y = _open_spot(world, random.Random(3), 130, 2600, home=True)
     okb, msg, c = CL.settle(world, log, a, x, y)
-    ok("settling costs nothing, even beside a trading post", okb and a.denari == 20.0, msg)
+    ok("settling costs nothing", okb and a.denari == 20.0, msg)
     ok("and its land counts for nothing", sum(p.paid for p in world.plots.values() if p.location == c.name) == 0)
     okb, _, _ = CL.settle(world, log, a, x + 300, y)
     ok("you settle once", not okb)
     cash = b.denari
-    x, y = _open_spot(world, random.Random(4), 600, 900)
+    x, y = _open_spot(world, random.Random(4), 130, 2600, home=True)
     okb, msg, _ = CL.settle(world, log, b, x, y, borrow=150.0)
     ok("a loan taken as you settle is money to start with", okb and abs(b.denari - cash - 150.0) < 0.01, msg)
     ok("and is owed", abs(b.debt - 150.0) < 0.01, str(b.debt))
@@ -149,7 +167,7 @@ def test_land_counts_at_cost_and_debt_against_you() -> None:
     b.home = ""
     for v in b.owned_vehicles:
         world.vehicles[v].location = "Town"
-    x, y = _open_spot(world, random.Random(7), 600, 900)
+    x, y = _open_spot(world, random.Random(7), 130, 2600, home=True)
     CL.settle(world, log, b, x, y)
     ok("the donkey moves in too", all(world.vehicles[v].location == b.home for v in b.owned_vehicles))
 

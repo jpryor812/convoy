@@ -1226,7 +1226,7 @@ class Game:
             except (TypeError, ValueError):
                 return {"ok": False, "message": "where?"}
             if body.get("quote"):
-                q = CL.quote(self.world, x, y)
+                q = CL.quote(self.world, x, y, home=not self.you.home)
                 if not self.you.home:
                     # The first home and its road are free (2026-10-28).
                     q.update(total=0.0, land_cost=0.0, road_cost=0.0, free=True)

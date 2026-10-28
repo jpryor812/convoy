@@ -1019,7 +1019,10 @@ def bounds(places: dict[str, Place]) -> tuple[float, float, float, float]:
 # ground near water is likelier to farm well.
 
 MOUNTAIN_GAP = 240.0            # metres between peaks along a range
-MOUNTAIN_OFFSET = 210.0         # how far outside the settled land a range stands
+# How far outside the named places a range stands. 210 until 2026-10-28,
+# when the land was made bigger so first outposts start far apart: the
+# frontier between the trading posts and the mountains is open land.
+MOUNTAIN_OFFSET = 1300.0
 
 
 def mountains(cities: list[str] | None = None) -> list[dict[str, float]]:

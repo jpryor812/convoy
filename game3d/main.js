@@ -1700,6 +1700,57 @@ function checkKnown(){
   for (const v of S.buildings.values()) v.root.visible = landShown(v.b.owner, v.pos);
   for (const root of S.defenses.values()) shown(root, landShown(root.userData.owner, root.position));
 }
+/* SMOKE ON THE HORIZON (2026-10-28): a settler you have not found shows as
+   a thread of chimney smoke from up to 1.5 km off (discovery.GLIMPSE_M) --
+   someone lives over there -- but who, and what they have, you learn by going. */
+const GLIMPSE = 1500 * SCALE, SIGHT = 400 * SCALE;
+const SMOKE = new Map();                         // owner -> {group, pos}
+let smokeTex = null;
+function smokeTexture(){
+  if (smokeTex) return smokeTex;
+  const c = document.createElement("canvas"); c.width = c.height = 64;
+  const g = c.getContext("2d"), r = g.createRadialGradient(32, 32, 2, 32, 32, 30);
+  r.addColorStop(0, "rgba(112,104,98,0.95)"); r.addColorStop(0.5, "rgba(128,120,112,0.55)"); r.addColorStop(1, "rgba(140,132,124,0)");
+  g.fillStyle = r; g.fillRect(0, 0, 64, 64);
+  smokeTex = new THREE.CanvasTexture(c);
+  smokeTex.colorSpace = THREE.SRGBColorSpace;
+  return smokeTex;
+}
+function plume(pos){
+  const group = new THREE.Group();
+  for (let i = 0; i < 8; i++){
+    const m = new THREE.SpriteMaterial({map: smokeTexture(), color: "#4f4741", transparent: true, depthWrite: false,
+                                        opacity: 0.5, toneMapped: false});
+    const sp = new THREE.Sprite(m); sp.userData.phase = i / 8; group.add(sp);
+  }
+  group.position.set(pos.x, groundAt(pos.x, pos.z) + 6, pos.z);
+  scene.add(group);
+  return group;
+}
+function updateSmoke(now){
+  if (!outposts() || !S.player || !S.ST || !S.ST.you.settled){
+    for (const v of SMOKE.values()) v.group.visible = false;
+    return;
+  }
+  const me = S.player.root.position, t = now / 1000;
+  for (const [owner, home] of S.homeObjs){
+    if (owner === G.you) continue;
+    const d = Math.hypot(home.pos.x - me.x, home.pos.z - me.z);
+    const want = !landShown(owner, home.pos) && d < GLIMPSE && d > SIGHT * 0.5;
+    let v = SMOKE.get(owner);
+    if (!want){ if (v) v.group.visible = false; continue; }
+    if (!v){ v = {group: plume(home.pos)}; SMOKE.set(owner, v); }
+    v.group.visible = true;
+    v.group.children.forEach(sp => {
+      const k = (t * 0.08 + sp.userData.phase) % 1;         // rises, spreads, fades
+      // Tall enough to show over the hills and trees in between.
+      sp.position.set(Math.sin(k * 3 + sp.userData.phase * 9) * 4 * k, 6 + k * 84, 0);
+      sp.scale.setScalar(8 + k * 26);
+      sp.material.opacity = 0.75 * (1 - k * 0.85);
+    });
+  }
+}
+
 /* OVER THE SHOULDER BY DEFAULT (2026-10-28): the game opens behind your
    character -- once you have settled, with outposts -- and Tab or scrolling
    out still gives the overview. */
@@ -1804,7 +1855,7 @@ function updatePlacement(point){
     if (centres.some(wetHere)) why = "That is in the river";
     else if (centres.some(([x, z]) => distToRoads(x, z) < CELL * 0.62)) why = "That is on a road";
     else if ((S.mountains || []).some(mt => Math.hypot(cx - mt.x, cz - mt.z) < mt.r + CELL)) why = "That is on the mountainside";
-    else if (roadM > 1200) why = "Too far from any road";
+    else if (roadM > (spec.home ? 2600 : 1200)) why = "Too far from any road";   // claims.HOME_MAX_ROAD_M
     else if (!outposts() && cash < spec.cost + roadM * 0.12) why = `Need ${Math.ceil(spec.cost + roadM * 0.12 - cash)} more`;
     place = null;
   } else if (spec.home) why = "Settle on open land, away from the places and roads";
@@ -2630,6 +2681,7 @@ function drawBigMap(){
     marks.push(["building", v]);
   }
   for (const [owner, v] of S.homeObjs) if (landShown(owner, v.pos)) marks.push(["home", {owner, pos: v.pos}]);
+  for (const [owner, v] of SMOKE) if (v.group.visible) marks.push(["smoke", {owner, pos: v.group.position}]);
   drawFog(sx, sz, k, W, H, c);
   // Over the haze: what you know is there.
   c.textAlign = "center"; c.font = "600 12px Nunito, sans-serif";
@@ -2646,6 +2698,11 @@ function drawBigMap(){
       c.fillStyle = v.b.owner === G.you ? "#d8b65a" : tav ? "#e07b0a" : "#3a2c1e";
       c.fillRect(x - 4, z - 4, 8, 8);
       if (tav || k > 0.9) label(tav ? "\u{1F37A}" : (SHORT_TYPE[v.b.type] || v.b.type.split(" /")[0]), x, z - 8, "#fff");
+    } else if (kind === "smoke"){
+      const x = sx(o.pos.x), z = sz(o.pos.z);
+      c.fillStyle = "rgba(235,230,220,0.75)";
+      for (const [dx, dz, r] of [[0, 0, 5], [3, -6, 4], [-2, -11, 3]]){ c.beginPath(); c.arc(x + dx, z + dz, r, 0, 7); c.fill(); }
+      if (k > 0.4) label("smoke: someone lives here", x, z + 14, "#e8e2d6");
     } else {
       const x = sx(o.pos.x), z = sz(o.pos.z);
       label("\u{1F3E0}", x, z + 4, "#fff");
@@ -2718,6 +2775,7 @@ function frame(now){
   updateFamily(dt);
   updateCompass();
   updateFog(now);
+  updateSmoke(now);
   updateCamp();
   if (GRASS) GRASS.update(camMode === "strategy" ? focus : S.player.root.position);
   FIGHT.update(dt, now);

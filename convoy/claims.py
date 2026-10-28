@@ -32,6 +32,13 @@ TRACK_SPEED = 4.0              # metres a second along a track, at Medium
 MIN_FROM_PLACE = 110.0         # metres from a named place's middle
 MIN_FROM_CLAIM = 85.0          # two squares: neighbouring claims may touch, not overlap
 MAX_ROAD_M = 1200.0
+# FIRST HOMES (2026-10-28): free, and far apart -- "far enough that you can
+# see some in the distance, but not close enough that you can see many clear
+# as day right next to you". Beyond discovery's sight, so nobody starts
+# already knowing their neighbours, and with a long free road to reach the
+# open land between the trading posts and the mountains.
+HOME_SPACING_M = 650.0
+HOME_MAX_ROAD_M = 2600.0
 SUFFIX = {"Farm": "Fields", "Mining Operation": "Diggings", "Refinery": "Works"}
 
 
@@ -63,12 +70,14 @@ def nearest_road(world: "World", x: float, y: float) -> tuple[float, float, floa
     return best
 
 
-def check(world: "World", x: float, y: float) -> str:
-    """Why a claim cannot be made here, or "" if it can."""
+def check(world: "World", x: float, y: float, home: bool = False) -> str:
+    """Why a claim cannot be made here, or "" if it can. `home`: a first
+    home, which may have a longer road and must stand apart from others."""
     cities = list(world.cities)
     places = L.places_cached(cities)
     minx, miny, maxx, maxy = L.bounds(places)
-    if not (minx - 250 <= x <= maxx + 250 and miny - 250 <= y <= maxy + 250):
+    edge = L.MOUNTAIN_OFFSET - 150.0           # up to the foot of the ranges
+    if not (minx - edge <= x <= maxx + edge and miny - edge <= y <= maxy + edge):
         return "that is beyond the edge of the map"
     if abs(y - L.river_axis()) < L.RIVER_HALF_WIDTH + 30:
         return "that is in the river"
@@ -87,8 +96,15 @@ def check(world: "World", x: float, y: float) -> str:
     d, _, _ = nearest_road(world, x, y)
     if d < 30:
         return "that is on a road"
-    if d > MAX_ROAD_M:
-        return f"too far from any road ({d:.0f} m; at most {MAX_ROAD_M:.0f})"
+    reach = HOME_MAX_ROAD_M if home else MAX_ROAD_M
+    if d > reach:
+        return f"too far from any road ({d:.0f} m; at most {reach:.0f})"
+    if home and world.outposts:
+        for a in world.agents.values():
+            at = place_xy(world, a.home) if a.home else None
+            if at and math.hypot(x - at[0], y - at[1]) < HOME_SPACING_M:
+                return (f"someone has settled within {HOME_SPACING_M:.0f} m of here: "
+                        f"first homes stand further apart")
     return ""
 
 
@@ -156,15 +172,16 @@ def land_price(world: "World", x: float, y: float) -> float:
     return round(LAND_FLOOR + LAND_PREMIUM * pull, 2)
 
 
-def quote(world: "World", x: float, y: float) -> dict:
-    """What a claim here would cost and where its road would come from."""
+def quote(world: "World", x: float, y: float, home: bool = False) -> dict:
+    """What a claim here would cost and where its road would come from.
+    `home`: as a first home (a longer road, apart from other homes)."""
     d, rx, ry = nearest_road(world, x, y)
     plot = land_price(world, x, y)
     road = round(d * ROAD_COST_PER_M, 2)
     return {"road_m": round(d), "road_cost": road, "from": [rx, ry],
             "plot_price": plot, "land_cost": round(plot * M.CLAIM_PLOTS, 2),
             "total": round(road + plot * M.CLAIM_PLOTS, 2),
-            "why_not": check(world, x, y)}
+            "why_not": check(world, x, y, home=home)}
 
 
 def _nearest_junction(world: "World", x: float, y: float) -> str:
@@ -188,7 +205,7 @@ def claim(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
           purpose: str = "", free: bool = False) -> tuple[bool, str, Claim | None]:
     """Make a claim at (x, y): lay and pay for its road; its four plots are
     then for sale like any others. Returns (ok, message, claim)."""
-    why = check(world, x, y)
+    why = check(world, x, y, home=(purpose == "home"))
     if why:
         return False, why, None
     d, rx, ry = nearest_road(world, x, y)
@@ -243,7 +260,7 @@ def settle(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
     if agent.home:
         return False, f"you have settled already, at {agent.home}", None
     borrow = max(0.0, min(MAX_SETTLE_LOAN, round(float(borrow or 0.0), 2)))
-    why = check(world, x, y)
+    why = check(world, x, y, home=True)
     if why:
         return False, why, None
     agent.denari += borrow
@@ -271,7 +288,8 @@ def settle(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
 
 
 def sample_sites(world: "World", cx: float, cy: float, rng, n: int = 40,
-                 near: float = 150.0, far: float = 1100.0) -> list[tuple[float, float]]:
+                 near: float = 150.0, far: float = 1100.0,
+                 home: bool = False) -> list[tuple[float, float]]:
     """Valid open land in a ring around (cx, cy), nearest first."""
     out = []
     for _ in range(n * 6):
@@ -280,7 +298,7 @@ def sample_sites(world: "World", cx: float, cy: float, rng, n: int = 40,
         r = rng.uniform(near, far)
         a = rng.uniform(0.0, 2 * math.pi)
         x, y = cx + r * math.cos(a), cy + r * math.sin(a)
-        if not check(world, x, y):
+        if not check(world, x, y, home=home):
             out.append((round(x, 1), round(y, 1)))
     out.sort(key=lambda p: math.hypot(p[0] - cx, p[1] - cy))
     return out
@@ -291,14 +309,28 @@ def auto_settle(world: "World", log: "EventLog", agent: "Agent", city: str, rng)
     it wants to be and takes the nearest open land at that distance. The
     first home is free, so nobody borrows to settle."""
     ax, ay = anchors(world).get(city, next(iter(anchors(world).values())))
-    want = rng.choice([200.0, 350.0, 500.0, 650.0, 800.0, 950.0])
-    for attempt in range(4):
-        sites = sample_sites(world, ax, ay, rng, n=30, near=max(130.0, want - 150), far=want + 150)
+    want = rng.choice([450.0, 700.0, 950.0, 1200.0, 1450.0, 1700.0, 1950.0])
+    for attempt in range(8):
+        sites = sample_sites(world, ax, ay, rng, n=40, near=max(150.0, want - 250), far=want + 250,
+                             home=True)
         for x, y in sites:
             ok, _, _ = settle(world, log, agent, x, y)
             if ok:
                 return True
-        want += 200.0
+        want += 250.0
+    # Crowded: anywhere on the frontier, then -- rather than nowhere -- closer in.
+    global HOME_SPACING_M
+    spacing = HOME_SPACING_M
+    try:
+        for gap in (spacing, spacing * 0.6):
+            HOME_SPACING_M = gap
+            for bx, by in anchors(world).values():
+                for x, y in sample_sites(world, bx, by, rng, n=60, near=200.0, far=2600.0, home=True):
+                    ok, _, _ = settle(world, log, agent, x, y)
+                    if ok:
+                        return True
+    finally:
+        HOME_SPACING_M = spacing
     return False
 
 

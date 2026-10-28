@@ -276,7 +276,10 @@ land, and towns form where people choose to gather.
   you land among people is partly chance. **You can only trade with people
   you have found**, by coming within sight (about 400 m) of them or their
   land -- so the early game is exploring for neighbours and buyers. Agents
-  play by the same rule. Later land is priced
+  play by the same rule. **First homes stand at least 650 m apart** on a
+  bigger map (the mountains pushed out to about 1.3 km beyond the trading
+  posts' land): far enough that you see others only as smoke on the
+  horizon, not clear as day beside you. Later land is priced
   by how much is built near it: cheap far out, dear beside other people. To
   start somewhere dear you can take on **debt** from the state.
 - **Settling near friends.** Players who know each other can settle side by
