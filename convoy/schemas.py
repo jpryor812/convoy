@@ -226,6 +226,17 @@ DESCRIPTIONS: dict[str, str] = {
         "Claim a site from OPEN LAND NEAR YOU: four plots of your own and a road "
         "to them, at its listed cost. Found a business there next."
     ),
+    "say_hi": "Greet a settler you have found, with a short line. Works without their contact.",
+    "share_info": (
+        "Share one thing about you with a settler you have found: standing (worth, "
+        "rank), holdings, locations, trade (what you sell and buy), family, or "
+        "contact (lets them message you and add you to group chats)."
+    ),
+    "ask_info": "Ask a settler you have found to share one of those things with you.",
+    "answer_request": "Answer a request in REQUESTS TO YOU: accept shares it.",
+    "make_group": "Start a group chat; members are comma-separated ids of people whose contact you have.",
+    "invite_to_group": "Add someone whose contact you have to your group chat.",
+    "post_group_chat": "Say something to a group chat you are in.",
     "feed_family": "Feed a child of your house a Meal you carry: they grow up a day sooner (a month otherwise).",
     "sell_to_bidder": (
         "Sell your business's stock to a business bidding for it, at its bid -- "
@@ -373,6 +384,9 @@ def _enum_for(action: str, param: str) -> list[str] | None:
         # tokens on every tool that takes one, on every call, forever. The other
         # five vehicles stay: a Vehicle Dealer really does stock them.
         return [i for i in D.ALL_ITEMS if i != "On Foot"]
+    if param == "what" and action in ("share_info", "ask_info"):
+        from . import social as SO
+        return list(SO.KINDS)
     if param == "segment":
         # Every road by name: the valleys' own and the roads between cities.
         return [s.name for s in M.EVERY_SEGMENT]
@@ -510,7 +524,9 @@ DESCRIPTIONS_AFTER_WITHDRAWAL: dict[str, str] = {
 # refused 23 times in 29, agents trying it on somebody else's tavern.
 # Only make sense when nobody starts in a town; kept off every other run's
 # prompt, which has no budget to spare for them.
-OUTPOSTS_ONLY: frozenset = frozenset({"claim_land", "order_meal", "repay_debt"})
+OUTPOSTS_ONLY: frozenset = frozenset({"claim_land", "order_meal", "repay_debt",
+                                      "say_hi", "share_info", "ask_info", "answer_request",
+                                      "make_group", "invite_to_group", "post_group_chat"})
 NO_STATE_HIDDEN: frozenset = frozenset()     # NPC hands came back, slower, 2026-10-18
 DESCRIPTIONS_NO_STATE: dict[str, str] = {
     "apply_for_job": (

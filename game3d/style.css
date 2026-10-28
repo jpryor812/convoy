@@ -627,3 +627,16 @@ html,body{background:#2a2219;font-size:15px}
 #settle-banner .loan{margin-top:6px;font:600 12px var(--body);color:var(--ink)}
 #settle-banner .loan button{margin-left:4px;border:2px solid var(--ink);border-radius:999px;background:#fff;color:var(--ink);font:700 12px var(--head);padding:1px 10px;cursor:pointer}
 #settle-banner .loan button.on{background:var(--gold)}
+
+/* ---------- the full map (2026-10-28) ---------- */
+#bigmap{position:fixed;inset:24px;z-index:60;display:none;flex-direction:column;background:var(--cream);border:3px solid var(--ink);
+  border-radius:16px;box-shadow:0 6px 0 var(--ink);overflow:hidden}
+#bigmap .bm-top{display:flex;align-items:center;gap:12px;padding:6px 12px;border-bottom:3px solid var(--ink);background:var(--cream2)}
+#bigmap .bm-top b{font:700 18px var(--head);color:var(--ink)}
+#bigmap .bm-top span{flex:1;font:600 12px var(--body);color:var(--soft)}
+#bigmap .bm-top button{border:2px solid var(--ink);border-radius:999px;background:#fff;font:700 16px var(--head);width:32px;height:32px;cursor:pointer}
+#bm-cv{flex:1;width:100%;min-height:0;cursor:grab;touch-action:none}
+#bm-pop{position:absolute;display:none;gap:6px;align-items:center;background:var(--cream);border:2px solid var(--ink);border-radius:10px;padding:6px}
+#bm-pop button{border:2px solid var(--ink);border-radius:999px;background:var(--gold);font:700 12px var(--head);padding:3px 10px;cursor:pointer}
+#bm-pop input{border:2px solid var(--cream3);border-radius:8px;padding:3px 6px;font:600 12px var(--body);width:120px}
+@media (max-width:640px){ #bigmap{inset:8px} #bigmap .bm-top span{display:none} }

@@ -407,6 +407,8 @@ ACTION_FAMILY = {
         "create_guild", "invite_to_guild", "accept_guild_invite", "leave_guild",
         "remove_guild_member",
         "propose_marriage", "accept_marriage", "decline_marriage",
+        "say_hi", "share_info", "ask_info", "answer_request",
+        "make_group", "invite_to_group", "post_group_chat",
     ),
     "food": ("eat_best_available", "feed_family", "order_meal"),
     "warning": ("wait",),

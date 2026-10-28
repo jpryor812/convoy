@@ -279,6 +279,11 @@ class Agent:
     # The settlers this one has found (agent ids). With outposts you can only
     # trade with people you have met. See `convoy/discovery.py`.
     known: list[str] = field(default_factory=list)
+    # MEETING PEOPLE (2026-10-28): what this agent has chosen to share WITH
+    # each other settler (their id -> kinds, see `convoy/social.py`), and the
+    # player's own pins on the full map ({x, y, label}).
+    shared: dict[str, list[str]] = field(default_factory=dict)
+    pins: list[dict[str, Any]] = field(default_factory=list)
     # A delivery run under way (convoy/delivery.py), or None.
     delivery: dict[str, Any] | None = None
     # Missions (convoy/missions.py): those finished, and the one under way.
@@ -1018,6 +1023,28 @@ class Dispatch:
 
 
 @dataclass
+class ShareRequest:
+    """One settler asking another to share something (2026-10-28): their
+    standing, holdings, locations, trade, family or contact. See social.py."""
+    id: str
+    sender: str
+    target: str
+    kind: str
+    created_at: float
+    status: str = "open"             # open | accepted | declined
+
+
+@dataclass
+class ChatGroup:
+    """A group chat (2026-10-28): its owner invites people who have shared
+    their contact. Separate from clans, which are political."""
+    id: str
+    name: str
+    owner: str
+    members: list[str] = field(default_factory=list)
+
+
+@dataclass
 class MarriageOffer:
     """A proposal: your member marries theirs, who joins your household, and
     you pay the dowry. Accepted, the two houses are allies."""
@@ -1256,6 +1283,11 @@ class ChatMessage:
     text: str
     guild_id: str | None = None      # channel == "guild"
     recipient: str | None = None     # channel == "direct"
+    # OUTPOSTS (2026-10-28): public chat is heard only by those near the
+    # speaker when it was said (None: everyone, as before); group chat by the
+    # group's members.
+    heard_by: list[str] | None = None
+    group_id: str | None = None      # channel == "group"
     # The speaker's city, copied from `Agent.city` RAW rather than normalised
     # through `World.city_of`. "World" chat is a city's marketplace, not a
     # broadcast across the map: there is no road between the valleys and
@@ -1272,7 +1304,9 @@ class ChatMessage:
         # hiring, recruiting and convoys cross city lines, so talk must too.
         # The speaker's city is shown on the line, so a reader knows who's who.
         if self.channel == "world":
-            return True
+            return self.heard_by is None or agent.id == self.sender or agent.id in self.heard_by
+        if self.channel == "group":
+            return agent.id == self.sender or agent.id in (self.heard_by or [])
         if self.channel == "direct":
             return agent.id in (self.sender, self.recipient)
         if self.channel == "guild":
@@ -1283,7 +1317,9 @@ class ChatMessage:
         h = int(self.sim_time // 3600)
         m = int((self.sim_time % 3600) // 60)
         if self.channel == "world":
-            tag = "[world]"
+            tag = "[world]" if self.heard_by is None else "[nearby]"
+        elif self.channel == "group":
+            tag = f"[group {self.group_id}]"
         elif self.channel == "guild":
             tag = f"[guild {self.guild_id}]"
         else:
@@ -1439,6 +1475,11 @@ class World:
     marriage_offers: dict[str, "MarriageOffer"] = field(default_factory=dict)
     claims: dict[str, "Claim"] = field(default_factory=dict)
     dispatches: dict[str, "Dispatch"] = field(default_factory=dict)
+    share_requests: dict[str, "ShareRequest"] = field(default_factory=dict)
+    # Where anyone off the road network really stands (the player, walking
+    # the 3D world), in map metres: id -> [x, y]. See discovery.position.
+    positions: dict[str, list[float]] = field(default_factory=dict)
+    groups: dict[str, "ChatGroup"] = field(default_factory=dict)
     # OUTPOSTS (2026-10-27): nobody starts in a town. Everyone settles on open
     # land; the state's sites in each market are the anchors that feed, hire
     # and buy, and selling to the state calls its convoy. See GAME_MODES.md.

@@ -23,6 +23,7 @@ from . import banditry as B
 from . import raids as R
 from . import land as LAND
 from . import discovery as DS
+from . import social as SO
 from .state import (
     Raid,
     BuyOrder,
@@ -32,6 +33,8 @@ from .state import (
     Consignment,
     ChatMessage,
     Dispatch,
+    ShareRequest,
+    ChatGroup,
     ConvoyMember,
     Employment,
     EscortPosting,
@@ -2059,7 +2062,8 @@ MAX_CHAT_CHARS = 400
 
 
 def _post(world: World, log: EventLog, agent: Agent, channel: str, text: str,
-          guild_id: str | None = None, recipient: str | None = None) -> Result:
+          guild_id: str | None = None, recipient: str | None = None,
+          heard_by: list[str] | None = None, group_id: str | None = None) -> Result:
     text = text.strip()
     if not text:
         return False, "empty message"
@@ -2068,7 +2072,7 @@ def _post(world: World, log: EventLog, agent: Agent, channel: str, text: str,
     msg = ChatMessage(
         sim_time=world.sim_time, channel=channel, sender=agent.id,
         sender_name=agent.name, sender_city=agent.city, text=text,
-        guild_id=guild_id, recipient=recipient,
+        guild_id=guild_id, recipient=recipient, heard_by=heard_by, group_id=group_id,
     )
     world.chat.append(msg)
     log.emit(
@@ -2086,7 +2090,14 @@ def post_world_chat(world: World, log: EventLog, agent: Agent, text: str) -> Res
     reader could act on and a channel through which two populations that are
     supposed to be running the same experiment separately would learn from each
     other. See `ChatMessage.sender_city`.
+
+    OUTPOSTS (2026-10-28): heard only by the people near you -- at the same
+    place or within sight -- like calling out at a trading post.
     """
+    if world.outposts:
+        near = SO.hearers(world, agent)
+        ok, msg = _post(world, log, agent, "world", text, heard_by=near)
+        return ok, (f"{msg}; {len(near)} people near you heard it" if ok else msg)
     return _post(world, log, agent, "world", text)
 
 
@@ -2099,7 +2110,135 @@ def send_direct_message(
         return False, "no such agent"
     if target_id == agent.id:
         return False, "cannot message yourself"
+    if world.outposts and not SO.sees(world, agent, target, "contact"):
+        return False, (f"you do not have {target.name}'s contact: ask_info them for it, or "
+                       f"say_hi if you have not met")
     return _post(world, log, agent, "direct", text, recipient=target_id)
+
+
+# ---------------------------------------------------------------------------
+# MEETING PEOPLE (outposts, 2026-10-28) -- see convoy/social.py
+# ---------------------------------------------------------------------------
+
+def _met(world: World, agent: Agent, target_id: str) -> tuple[Agent | None, str]:
+    other = world.agents.get(target_id)
+    if other is None or not other.alive or other.id == agent.id:
+        return None, "no such settler"
+    if not DS.knows(world, agent, other.id):
+        return None, DS.not_found(world, other.id)
+    return other, ""
+
+
+def say_hi(world: World, log: EventLog, agent: Agent, target_id: str, text: str = "") -> Result:
+    """Greet a settler you have found, with a short line. It reaches them even
+    without their contact -- it is how an acquaintance starts."""
+    other, why = _met(world, agent, target_id)
+    if other is None:
+        return False, why
+    line = str(text or "").strip()[:200]
+    log.emit(world.sim_time, "greeted", actor=agent.id, subject=other.id, location=agent.location,
+             significance=Significance.MEDIUM, text=line, house=agent.house)
+    return True, f"you said hi to {other.name}" + (f": {line}" if line else "")
+
+
+def share_info(world: World, log: EventLog, agent: Agent, target_id: str, what: str) -> Result:
+    """Share one thing about yourself with a settler you have found: standing,
+    holdings, locations, trade, family or contact."""
+    other, why = _met(world, agent, target_id)
+    if other is None:
+        return False, why
+    if what not in SO.KINDS:
+        return False, f"share one of: {', '.join(SO.KINDS)}"
+    if not SO.share(world, agent, other, what):
+        return False, f"{other.name} already has your {what}"
+    log.emit(world.sim_time, "shared", actor=agent.id, subject=other.id, kind=what,
+             significance=Significance.MEDIUM)
+    return True, f"shared your {SO.KINDS[what].replace('their', 'your')} with {other.name}"
+
+
+def ask_info(world: World, log: EventLog, agent: Agent, target_id: str, what: str) -> Result:
+    """Ask a settler you have found to share one thing with you. They answer
+    it (answer_request); yes shares it."""
+    other, why = _met(world, agent, target_id)
+    if other is None:
+        return False, why
+    if what not in SO.KINDS:
+        return False, f"ask for one of: {', '.join(SO.KINDS)}"
+    if SO.sees(world, agent, other, what):
+        return False, f"{other.name} has shared their {what} with you already"
+    if any(r.sender == agent.id and r.target == other.id and r.kind == what and r.status == "open"
+           for r in world.share_requests.values()):
+        return False, f"you have asked {other.name} for that already"
+    rid = world.new_id("Q")
+    world.share_requests[rid] = ShareRequest(id=rid, sender=agent.id, target=other.id, kind=what,
+                                             created_at=world.sim_time)
+    log.emit(world.sim_time, "share_asked", actor=agent.id, subject=other.id, kind=what, request=rid,
+             significance=Significance.MEDIUM)
+    return True, f"asked {other.name} for their {what} (request {rid})"
+
+
+def answer_request(world: World, log: EventLog, agent: Agent, request_id: str, accept: bool) -> Result:
+    """Answer someone's request to share: accept shares it with them."""
+    r = world.share_requests.get(request_id)
+    if r is None or r.target != agent.id or r.status != "open":
+        return False, "no such request to you"
+    asker = world.agents.get(r.sender)
+    if asker is None:
+        r.status = "declined"
+        return False, "they are gone"
+    r.status = "accepted" if accept else "declined"
+    if accept:
+        SO.share(world, agent, asker, r.kind)
+    log.emit(world.sim_time, "share_answered", actor=agent.id, subject=asker.id, kind=r.kind,
+             accepted=bool(accept), significance=Significance.MEDIUM)
+    return True, (f"shared your {r.kind} with {asker.name}" if accept
+                  else f"declined to share your {r.kind} with {asker.name}")
+
+
+def make_group(world: World, log: EventLog, agent: Agent, name: str, members: str = "") -> Result:
+    """Start a group chat, with the settlers (comma-separated ids) whose
+    contact you have."""
+    name = str(name or "").strip()[:40]
+    if not name:
+        return False, "name the group"
+    gid = world.new_id("K")
+    g = ChatGroup(id=gid, name=name, owner=agent.id, members=[agent.id])
+    world.groups[gid] = g
+    added, refused = [], []
+    for mid in [m.strip() for m in str(members or "").split(",") if m.strip()]:
+        o = world.agents.get(mid)
+        if o is not None and SO.sees(world, agent, o, "contact"):
+            g.members.append(o.id)
+            added.append(o.name)
+        else:
+            refused.append(mid)
+    log.emit(world.sim_time, "group_made", actor=agent.id, group=gid, name=name, members=list(g.members))
+    out = f"made the group {name} ({gid})" + (f" with {', '.join(added)}" if added else "")
+    return True, out + (f"; you lack the contact of {', '.join(refused)}" if refused else "")
+
+
+def invite_to_group(world: World, log: EventLog, agent: Agent, group_id: str, target_id: str) -> Result:
+    """Add someone whose contact you have to a group you are in."""
+    g = world.groups.get(group_id)
+    if g is None or agent.id not in g.members:
+        return False, "no such group of yours"
+    o = world.agents.get(target_id)
+    if o is None or not SO.sees(world, agent, o, "contact"):
+        return False, "you need their contact to invite them"
+    if o.id in g.members:
+        return False, f"{o.name} is in it already"
+    g.members.append(o.id)
+    log.emit(world.sim_time, "group_joined", actor=agent.id, subject=o.id, group=g.id, name=g.name)
+    return True, f"{o.name} is in {g.name} now"
+
+
+def post_group_chat(world: World, log: EventLog, agent: Agent, group_id: str, text: str) -> Result:
+    """Say something to a group chat you are in."""
+    g = world.groups.get(group_id)
+    if g is None or agent.id not in g.members:
+        return False, "no such group of yours"
+    return _post(world, log, agent, "group", text, group_id=g.id,
+                 heard_by=[m for m in g.members if m != agent.id])
 
 
 def post_guild_chat(world: World, log: EventLog, agent: Agent, text: str) -> Result:
@@ -3602,6 +3741,8 @@ def propose_marriage(
     other = world.agents.get(agent_id)
     if other is None or not other.alive or other.id == agent.id:
         return False, "no such house to marry into"
+    if world.outposts and not SO.sees(world, agent, other, "family"):
+        return False, f"{other.house} has not shared their family with you: ask_info them for it"
     mine, theirs = FAM.member(agent, member_id), FAM.member(other, their_member_id)
     if mine is None or theirs is None:
         return False, "name one member of each house"

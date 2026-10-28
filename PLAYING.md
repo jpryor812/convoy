@@ -275,6 +275,18 @@ rise back up.
   face. Until then they, their homes and their businesses are hidden, and
   ground you have not explored stays hazy. The state's trading posts are
   always known. Agents play by the same rule.
+- **Meeting people** (2026-10-28): finding someone only shows you they
+  exist. Open them (People, or click them) to **say hi**, then **share** or
+  **ask for** each of: standing (net worth and rank), holdings, locations
+  (pinned on your map), trade (what they sell and buy), family, and
+  **contact** -- which lets you message them and add them to group chats.
+  Requests to you wait on the People page. Public chat is heard only by
+  people near you; the leaderboard shows only those who shared standing.
+- **The view and the map**: the game opens over your character's shoulder
+  once you have settled (Tab for the overview). **M**, the minimap or MAP
+  opens the full map of what you have discovered: drag, zoom, and click a
+  spot to set a waypoint the compass points to, or to drop a pin (saved
+  with the game).
 - **Your outpost** is the claim your home stands on. Later claims cost land
   (priced by what is built near it) and road. A business needs four
   plots of its own: place one on open land and you claim the land as you

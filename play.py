@@ -258,9 +258,7 @@ def make_handler(host: Host):
             if path == "/replay":
                 return self._raw(host.map_bytes(), "application/json")
             if path == "/cards":
-                with g.engine.world_lock:
-                    return self._send({"hour": round(g.world.sim_hour, 2),
-                                       "cards": INSPECT.cards(g.world)})
+                return self._send(g.cards())
             if path == "/api/status":
                 return self._send(g.status())
             if path == "/api/state":
@@ -337,6 +335,11 @@ def make_handler(host: Host):
                 out = g.wild_claim(body if isinstance(body, dict) else {})
                 host._map = None                      # the map must show it at once
                 return self._send(out)
+            if path == "/api/pins":
+                g = host.game
+                if g is None:
+                    return self._send({"error": "no game running"}, 409)
+                return self._send(g.pins(body if isinstance(body, dict) else {}))
             if path == "/api/pos":
                 g = host.game
                 if g is None:

@@ -230,6 +230,14 @@ def leaderboard(world: "World", me: "Agent", history: History, top: int = 5) -> 
     worth = {a.id: a.net_worth(world) for a in world.agents.values()}
     order = sorted(worth, key=lambda k: -worth[k])
     rank = {k: 1 + sum(1 for v in worth.values() if v > worth[k] + 1e-6) for k in worth}
+    if world.outposts:
+        # Outposts (2026-10-28): the board shows you and whoever has shared
+        # their standing with you; your own rank is still against everyone.
+        from . import social as SO
+        population = len(order)
+        order = [k for k in order if k == me.id or SO.sees(world, me, world.agents[k], "standing")]
+    else:
+        population = len(order)
     back = history.back(1)
     def row(aid):
         a = world.agents[aid]
@@ -244,7 +252,7 @@ def leaderboard(world: "World", me: "Agent", history: History, top: int = 5) -> 
     below = order[order.index(me.id) + 1] if order.index(me.id) + 1 < len(order) else None
     standings = world.city_standings() if world.is_contest() and not world.outposts else []
     return {
-        "top": rows, "you": mine, "population": len(order),
+        "top": rows, "you": mine, "population": population,
         "chasing": None if above is None else {"name": world.agents[above].name, "gap": round(worth[above] - worth[me.id], 1)},
         "chased_by": None if below is None else {"name": world.agents[below].name, "gap": round(worth[me.id] - worth[below], 1)},
         "cities": [{"key": r["city"], "name": r["name"], "total": round(r["total_net_worth"], 1)} for r in standings],

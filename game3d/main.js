@@ -853,7 +853,7 @@ function syncLand(){
   freeCells.forEach((c, i) => { m.makeTranslation(c.x, 0.09, c.z); outlines.setMatrixAt(i, m); });
   outlines.count = freeCells.length;
   // Owned squares in the owner's colour.
-  const owned = all.filter(c => S.cellOwner.has(c.key) && found(S.cellOwner.get(c.key).owner));
+  const owned = all.filter(c => S.cellOwner.has(c.key) && landShown(S.cellOwner.get(c.key).owner, c));
   const sq = new THREE.PlaneGeometry(CELL - 0.35, CELL - 0.35); sq.rotateX(-Math.PI / 2);
   tints = new THREE.InstancedMesh(sq, new THREE.MeshBasicMaterial({transparent: true, opacity: 0.2, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -1}), Math.max(1, owned.length));
@@ -1051,7 +1051,7 @@ function syncHomes(){
       const place = S.places[S.cells.get(keys[0]).place];
       root.rotation.y = place ? Math.atan2(place.c.x - pos.x, place.c.z - pos.z) : 0;
       scene.add(root);
-      shown(root, found(owner));
+      shown(root, landShown(owner, pos));
       v = {root, pos}; S.homeObjs.set(owner, v);
       colliders.push({id: "home:" + owner, x: pos.x, z: pos.z, r: 5.5});
     }
@@ -1102,7 +1102,7 @@ function syncDefenses(){
     el.className = "lbl-biz def" + (o.owner === G.you ? " mine" : "");
     el.innerHTML = `<b>${o.structure === "Guard post" ? "\u{1F6E1}\uFE0F" : "\u{1FAA8}"} ${o.structure}</b>`;
     const lbl = new CSS2DObject(el); lbl.position.set(0, 11, 0); root.add(lbl);
-    shown(root, found(o.owner));
+    shown(root, landShown(o.owner, root.position));
     scene.add(root);
     S.defenses.set(o.plot, root);
   }
@@ -1132,7 +1132,7 @@ function syncBuildings(){
     // Face the middle of its place: the doors open onto the square.
     const ang = place ? Math.atan2(place.c.x - pos.x, place.c.z - pos.z) : 0;
     root.position.copy(pos); root.rotation.y = ang;
-    root.visible = found(b.owner);
+    root.visible = landShown(b.owner, pos);
     scene.add(root);
     S.buildings.set(b.id, {root, b, pos, ang, born: performance.now(), pop: popNext === b.id || S.ready});
     if (popNext === b.id) popNext = null;
@@ -1580,7 +1580,7 @@ function updateLabels(){
     const d = Math.hypot(cp.x - p.c.x, cp.z - p.c.z);
     // Near names only: a dozen far-off names stacked on the horizon sat on
     // top of whatever building was in front of you.
-    p.label.visible = d < 170 * zoomK && (camMode === "strategy" || d > 8) && (p.kind !== "claim" || found(p.owner));
+    p.label.visible = d < 170 * zoomK && (camMode === "strategy" || d > 8) && (p.kind !== "claim" || landShown(p.owner, p.c));
     p.label.element.style.opacity = d < 40 ? 0.6 : 1;
   }
   const marks = (S.ADV && S.ADV.markers) || {};
@@ -1588,7 +1588,7 @@ function updateLabels(){
     const d = cp.distanceTo(v.pos), mk = marks[v.b.id];
     const lbl = v.root.userData.label;
     // A building with something for you shows from further off.
-    lbl.visible = found(v.b.owner) && (d < 120 * zoomK || (mk && ((mk.icons && mk.icons.length) || mk.health) && d < 280 * zoomK));
+    lbl.visible = v.root.visible && (d < 120 * zoomK || (mk && ((mk.icons && mk.icons.length) || mk.health) && d < 280 * zoomK));
     const html = signHTML(v.b, mk);
     if (lbl.element.innerHTML !== html) lbl.element.innerHTML = html;
   }
@@ -1687,14 +1687,28 @@ function shown(root, on){
   root.visible = on;
   root.traverse(o => { if (o.isCSS2DObject) o.visible = on; });
 }
+let SEEN_SIG = "";
 function checkKnown(){
   const k = (S.ST && S.ST.you && S.ST.you.known) || [];
-  if (k.length === KNOWN.size && k.every(x => KNOWN.has(x))) return;
   KNOWN = new Set(k);
+  // Re-checked on every status: what you have explored grows as you ride.
+  const sig = `${k.length}|${((S.ST && S.ST.you.locations_from) || []).length}|${Math.floor(explored.size / 10)}`;
+  if (sig === SEEN_SIG) return;
+  SEEN_SIG = sig;
   landKey = "";                                    // repaint the plots
-  for (const [owner, v] of S.homeObjs) shown(v.root, found(owner));
-  for (const v of S.buildings.values()) v.root.visible = found(v.b.owner);
-  for (const root of S.defenses.values()) shown(root, found(root.userData.owner));
+  for (const [owner, v] of S.homeObjs) shown(v.root, landShown(owner, v.pos));
+  for (const v of S.buildings.values()) v.root.visible = landShown(v.b.owner, v.pos);
+  for (const root of S.defenses.values()) shown(root, landShown(root.userData.owner, root.position));
+}
+/* OVER THE SHOULDER BY DEFAULT (2026-10-28): the game opens behind your
+   character -- once you have settled, with outposts -- and Tab or scrolling
+   out still gives the overview. */
+let POV_SET = false;
+function defaultView(){
+  if (POV_SET || !S.ST || !S.player) return;
+  if (outposts() && !S.ST.you.settled) return;
+  POV_SET = true;
+  if (camMode !== "third") enterThird();
 }
 function landQuote(cx, cz){
   const key = `${Math.round(cx / CELL)},${Math.round(cz / CELL)}`;
@@ -1722,6 +1736,7 @@ async function settleAt(cx, cz, borrow){
   }
   if (S.ST) S.ST.you.settled = true;
   settleBanner(false);
+  POV_SET = false; defaultView();
   pollPlots();
 }
 function settleBanner(on){
@@ -1995,12 +2010,13 @@ const typing = () => /INPUT|SELECT|TEXTAREA/.test((document.activeElement || {})
 addEventListener("keydown", e => {
   if (typing()) return;
   const k = e.key.toLowerCase();
-  if (k === "escape"){ if (placing){ stopPlacing(); return; } UI.close(); return; }
+  if (k === "escape"){ if (BIGMAP.open){ closeBigMap(); return; } if (placing){ stopPlacing(); return; } UI.close(); return; }
   if (k === "tab"){ e.preventDefault(); toggleCamera(); return; }
   if (k === "c"){ camMode === "strategy" ? flyTo(S.player.root.position) : findMe(); return; }
   if (k === "r"){ if (!e.repeat) FIGHT.swing(); return; }
   if (k === "f"){ FIGHT.block(true); return; }
   if (k === "e"){ usePrompt(); return; }
+  if (k === "m"){ BIGMAP.open ? closeBigMap() : openBigMap(); return; }
   if (["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright", "shift", "control", "meta"].includes(k)){
     keys.add(k); if (k.startsWith("arrow")) e.preventDefault();
   }
@@ -2190,6 +2206,7 @@ function deliveryTarget(){
     if (b) return {pos: b.pos, exact: true, label, building: id};
     return place ? {pos: place.c, exact: true, label} : null;
   }
+  if (!d && S.waypoint) return {pos: S.waypoint, exact: true, label: S.waypoint.label || "Your waypoint"};
   if (!d) return null;
   if (!d.loaded){
     const b = S.buildings.get(d.from);
@@ -2403,7 +2420,7 @@ setInterval(() => {
   api.post("/api/pos", {x: w.x, y: w.y}).catch(() => {});
 }, 2000);
 
-function drawFog(sx, sz, k, W, H){
+function drawFog(sx, sz, k, W, H, ctx = mg){
   if (fogC.width !== W){ fogC.width = W; fogC.height = H; }
   fg.globalCompositeOperation = "source-over";
   fg.fillStyle = "rgba(214,201,172,0.95)"; fg.fillRect(0, 0, W, H);
@@ -2418,7 +2435,7 @@ function drawFog(sx, sz, k, W, H){
     if (px < -rad || pz < -rad || px > W + rad || pz > H + rad) continue;
     fg.beginPath(); fg.arc(px, pz, rad, 0, 7); fg.fill();
   }
-  mg.drawImage(fogC, 0, 0);
+  ctx.drawImage(fogC, 0, 0);
 }
 
 /* ------------------------------------------------------------ minimap */
@@ -2453,7 +2470,7 @@ function drawMinimap(){
     mg.lineWidth = Math.max(1.5, hw * 2 * k); mg.beginPath(); mg.moveTo(sx(ax), sz(az)); mg.lineTo(sx(bx), sz(bz)); mg.stroke();
   }
   for (const p of Object.values(S.places)){
-    if (p.kind === "claim" && !found(p.owner)) continue;
+    if (p.kind === "claim" && !landShown(p.owner, p.c)) continue;
     mg.fillStyle = "#b59a63aa"; mg.beginPath(); mg.arc(sx(p.c.x), sz(p.c.z), Math.max(3, p.r * k * 0.8), 0, 7); mg.fill();
   }
   mg.fillStyle = "#7d7466";
@@ -2462,7 +2479,7 @@ function drawMinimap(){
     mg.beginPath(); mg.moveTo(x, z - r); mg.lineTo(x + r, z + r * 0.7); mg.lineTo(x - r, z + r * 0.7); mg.closePath(); mg.fill();
   }
   for (const v of S.buildings.values()){
-    if (!found(v.b.owner)) continue;
+    if (!v.root.visible) continue;
     mg.fillStyle = v.b.owner === G.you ? "#d8b65a" : "#3a2c1e";
     mg.fillRect(sx(v.pos.x) - 3, sz(v.pos.z) - 3, 6, 6);
   }
@@ -2502,11 +2519,161 @@ function drawMinimap(){
 }
 mm.addEventListener("click", e => {
   if (!mmBox) return;
+  if (!e.shiftKey && outposts()){ openBigMap(); return; }
   const r = mm.getBoundingClientRect();
   const x = (e.clientX - r.left) * (mm.width / r.width), z = (e.clientY - r.top) * (mm.height / r.height);
   const at = new THREE.Vector3(mmBox.x0 + (x - mmBox.ox) / mmBox.k, 0, mmBox.z0 + (z - mmBox.oz) / mmBox.k);
   if (camMode === "strategy" && !e.shiftKey) flyTo(at); else walkToPoint(at);
 });
+
+/* ------------------------------------------------------------ the full map */
+/* THE FULL MAP (2026-10-28): M, the minimap or the MAP button. Only what you
+   have discovered: explored ground, trading posts, your own land, the land of
+   people you have found where you have seen it (or anywhere, once they share
+   their locations), taverns you know, and your own pins -- kept on the server
+   so they follow you to another browser. Drag to pan, wheel to zoom, click
+   for a waypoint or a pin. */
+const BIGMAP = {open: false, cx: 0, cz: 0, k: 1, drag: null, el: null, cv: null};
+function exploredAt(x, z){ return explored.has(`${Math.floor(x / FOG_CELL)},${Math.floor(z / FOG_CELL)}`); }
+function sharedLocations(owner){ return !!(S.ST && S.ST.you && (S.ST.you.locations_from || []).includes(owner)); }
+/* A found person's land shows where you have seen it, or anywhere once they
+   share where it is. Yours, the state's, and everything without outposts: always. */
+function landShown(owner, pos){
+  if (!found(owner)) return false;
+  if (!outposts() || !owner || owner === G.you || owner === "Government") return true;
+  return sharedLocations(owner) || (pos && exploredAt(pos.x, pos.z));
+}
+function openBigMap(){
+  if (!BIGMAP.el){
+    const el = document.createElement("div"); el.id = "bigmap";
+    el.innerHTML = `<div class="bm-top"><b>Map</b><span>Drag to pan \u00b7 wheel to zoom \u00b7 click a spot for a waypoint or a pin \u00b7 M or Esc to close</span><button id="bm-x">\u00d7</button></div><canvas id="bm-cv"></canvas><div id="bm-pop"></div>`;
+    document.body.appendChild(el);
+    BIGMAP.el = el; BIGMAP.cv = el.querySelector("#bm-cv");
+    el.querySelector("#bm-x").onclick = closeBigMap;
+    const cv = BIGMAP.cv;
+    cv.addEventListener("wheel", e => { e.preventDefault(); BIGMAP.k = Math.max(0.15, Math.min(6, BIGMAP.k * (e.deltaY > 0 ? 0.87 : 1.15))); drawBigMap(); }, {passive: false});
+    cv.addEventListener("pointerdown", e => { BIGMAP.drag = {x: e.clientX, y: e.clientY, cx: BIGMAP.cx, cz: BIGMAP.cz, moved: 0}; });
+    addEventListener("pointermove", e => {
+      const d = BIGMAP.drag; if (!d) return;
+      d.moved = Math.max(d.moved, Math.hypot(e.clientX - d.x, e.clientY - d.y));
+      BIGMAP.cx = d.cx - (e.clientX - d.x) / BIGMAP.k; BIGMAP.cz = d.cz - (e.clientY - d.y) / BIGMAP.k; drawBigMap();
+    });
+    addEventListener("pointerup", e => {
+      const d = BIGMAP.drag; BIGMAP.drag = null;
+      if (d && d.moved < 5 && e.target === cv) bigMapClick(e);
+    });
+  }
+  BIGMAP.open = true; BIGMAP.el.style.display = "flex";
+  const P = S.player ? S.player.root.position : {x: 0, z: 0};
+  BIGMAP.cx = P.x; BIGMAP.cz = P.z;
+  $("bm-pop").style.display = "none";
+  drawBigMap();
+}
+function closeBigMap(){ BIGMAP.open = false; if (BIGMAP.el) BIGMAP.el.style.display = "none"; }
+function bigMapXY(e){
+  const r = BIGMAP.cv.getBoundingClientRect(), W = BIGMAP.cv.width, H = BIGMAP.cv.height;
+  const px = (e.clientX - r.left) * (W / r.width), pz = (e.clientY - r.top) * (H / r.height);
+  return {x: BIGMAP.cx + (px - W / 2) / BIGMAP.k, z: BIGMAP.cz + (pz - H / 2) / BIGMAP.k, px: e.clientX - r.left, pz: e.clientY - r.top};
+}
+function bigMapClick(e){
+  const at = bigMapXY(e), pop = $("bm-pop");
+  const pins = (S.ST && S.ST.you.pins) || [];
+  const near = pins.findIndex(p => { const c = toScene(p.x, p.y); return Math.hypot(c.x - at.x, c.z - at.z) * BIGMAP.k < 12; });
+  pop.innerHTML = `<button data-bm="way">Set waypoint</button>`
+    + (near >= 0 ? `<button data-bm="unpin">Remove pin \u201c${esc(pins[near].label)}\u201d</button>` : `<input id="bm-label" placeholder="Pin label" maxlength="40"><button data-bm="pin">Add a pin</button>`);
+  pop.style.left = `${at.px + 12}px`; pop.style.top = `${at.pz + 40}px`; pop.style.display = "flex";
+  pop.querySelectorAll("[data-bm]").forEach(b => b.onclick = async () => {
+    const w = toWorld(new THREE.Vector3(at.x, 0, at.z));
+    if (b.dataset.bm === "way"){ S.waypoint = new THREE.Vector3(at.x, 0, at.z); UI.toast("Waypoint set: the compass points to it"); }
+    else if (b.dataset.bm === "pin"){
+      const r = await api.post("/api/pins", {x: w.x, y: w.y, label: ($("bm-label") || {}).value || "Pin"});
+      if (r.ok && S.ST) S.ST.you.pins = r.pins; else if (!r.ok) UI.toast(r.message, "bad");
+    } else {
+      const r = await api.post("/api/pins", {remove: near});
+      if (r.ok && S.ST) S.ST.you.pins = r.pins;
+    }
+    pop.style.display = "none"; drawBigMap();
+  });
+  setTimeout(() => { const i = $("bm-label"); if (i) i.focus(); }, 0);
+}
+function drawBigMap(){
+  if (!BIGMAP.open || !S.DATA) return;
+  const cv = BIGMAP.cv, W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W || cv.height !== H){ cv.width = W; cv.height = H; }
+  const c = cv.getContext("2d"), k = BIGMAP.k;
+  const sx = x => W / 2 + (x - BIGMAP.cx) * k, sz = z => H / 2 + (z - BIGMAP.cz) * k;
+  const D = S.DATA;
+  c.fillStyle = "#7c7a48"; c.fillRect(0, 0, W, H);
+  c.fillStyle = "#5d7b78";
+  const rx = (D.river.axis - CY) * SCALE, rh = D.river.half * SCALE;
+  c.fillRect(sx(rx - rh), 0, rh * 2 * k, H);
+  for (const r of D.river.borders || []){ const z = (r.axis - CX) * SCALE, h2 = r.half * SCALE; c.fillRect(0, sz(z - h2), W, h2 * 2 * k); }
+  c.strokeStyle = "#c7ac78"; c.lineCap = "round";
+  for (const [ax, az, bx, bz, hw] of roadSegs){
+    c.lineWidth = Math.max(1.5, hw * 2 * k); c.beginPath(); c.moveTo(sx(ax), sz(az)); c.lineTo(sx(bx), sz(bz)); c.stroke();
+  }
+  c.fillStyle = "#7d7466";
+  for (const m of S.mountains || []){
+    const x = sx(m.x), z = sz(m.z), r = Math.max(3, m.r * k);
+    c.beginPath(); c.moveTo(x, z - r); c.lineTo(x + r, z + r * 0.7); c.lineTo(x - r, z + r * 0.7); c.closePath(); c.fill();
+  }
+  // Under the haze: only seen where you have been.
+  const marks = [];                                       // drawn over the haze
+  for (const p of Object.values(S.places)){
+    if (p.kind === "claim" && !landShown(p.owner, p.c)) continue;
+    const always = p.kind !== "claim" || p.owner === G.you || sharedLocations(p.owner);
+    (always ? marks : []).push(["place", p]);
+    if (!always){ c.fillStyle = "#b59a63aa"; c.beginPath(); c.arc(sx(p.c.x), sz(p.c.z), Math.max(3, p.r * k * 0.8), 0, 7); c.fill(); }
+  }
+  for (const v of S.buildings.values()){
+    if (!landShown(v.b.owner, v.pos)) continue;
+    marks.push(["building", v]);
+  }
+  for (const [owner, v] of S.homeObjs) if (landShown(owner, v.pos)) marks.push(["home", {owner, pos: v.pos}]);
+  drawFog(sx, sz, k, W, H, c);
+  // Over the haze: what you know is there.
+  c.textAlign = "center"; c.font = "600 12px Nunito, sans-serif";
+  const label = (t, x, z, col) => { c.fillStyle = "#000a"; c.fillText(t, x + 1, z + 1); c.fillStyle = col; c.fillText(t, x, z); };
+  const markets = new Set(((D.cities) || []).map(k2 => k2.market));
+  for (const [kind, o] of marks){
+    if (kind === "place"){
+      const p = o, x = sx(p.c.x), z = sz(p.c.z);
+      c.fillStyle = markets.has(p.name) ? "#e9c25a" : p.owner === G.you ? "#d8b65a" : "#b59a63";
+      c.beginPath(); c.arc(x, z, Math.max(4, p.r * k * 0.8), 0, 7); c.fill();
+      if (k > 0.35 || markets.has(p.name)) label(markets.has(p.name) ? `\u2696 ${p.name}` : p.name, x, z - 10, "#fff");
+    } else if (kind === "building"){
+      const v = o, x = sx(v.pos.x), z = sz(v.pos.z), tav = /Tavern/.test(v.b.type);
+      c.fillStyle = v.b.owner === G.you ? "#d8b65a" : tav ? "#e07b0a" : "#3a2c1e";
+      c.fillRect(x - 4, z - 4, 8, 8);
+      if (tav || k > 0.9) label(tav ? "\u{1F37A}" : (SHORT_TYPE[v.b.type] || v.b.type.split(" /")[0]), x, z - 8, "#fff");
+    } else {
+      const x = sx(o.pos.x), z = sz(o.pos.z);
+      label("\u{1F3E0}", x, z + 4, "#fff");
+      if (k > 0.6) label(o.owner === G.you ? "Your home" : short(ownerName(o.owner)), x, z - 10, "#ffe9b8");
+    }
+  }
+  for (const p of (S.ST && S.ST.you.pins) || []){
+    const cc = toScene(p.x, p.y), x = sx(cc.x), z = sz(cc.z);
+    c.fillStyle = "#e8463a"; c.beginPath(); c.arc(x, z - 8, 5, 0, 7); c.fill();
+    c.beginPath(); c.moveTo(x - 4, z - 6); c.lineTo(x, z); c.lineTo(x + 4, z - 6); c.fill();
+    label(p.label, x, z - 16, "#ffd0c8");
+  }
+  if (S.waypoint){
+    const x = sx(S.waypoint.x), z = sz(S.waypoint.z);
+    c.strokeStyle = "#ffd966"; c.lineWidth = 3;
+    c.beginPath(); c.moveTo(x - 7, z - 7); c.lineTo(x + 7, z + 7); c.moveTo(x + 7, z - 7); c.lineTo(x - 7, z + 7); c.stroke();
+  }
+  if (S.player){
+    const P = S.player.root.position, px = sx(P.x), pz = sz(P.z);
+    c.save(); c.translate(px, pz); c.rotate(-S.player.heading + Math.PI);
+    c.fillStyle = "#e8463a"; c.strokeStyle = "#fff"; c.lineWidth = 2;
+    c.beginPath(); c.moveTo(0, -10); c.lineTo(7, 8); c.lineTo(0, 4); c.lineTo(-7, 8); c.closePath(); c.fill(); c.stroke();
+    c.restore();
+  }
+}
+setInterval(() => { if (BIGMAP.open) drawBigMap(); }, 1000);
+
+{ const b = $("t-map"); if (b) b.onclick = () => openBigMap(); }
 
 /* ------------------------------------------------------------ portrait */
 function drawPortrait(){
@@ -2602,7 +2769,7 @@ window.convoy = {camera, scene, S, renderer, set idleAt(v){ IDLE_AT = v; for (co
 
 /* ------------------------------------------------------------ start */
 const UI = createUI({api, S, walkToPlace, walkToBuilding, fastTravel, findMe, short,
-  onStatus: () => { checkTravel(); checkSettle(); checkKnown(); }, toggleCamera: () => toggleCamera(), mode: () => camMode,
+  onStatus: () => { checkTravel(); checkSettle(); checkKnown(); defaultView(); }, toggleCamera: () => toggleCamera(), mode: () => camMode,
   foundOn: (p, c, t) => foundOn(p, c, t), buyOn: (p, c) => buyOn(p, c), clearSelection: () => clearSelection(),
   startPlacing: t => startPlacing(t), stopPlacing: () => stopPlacing(),
   // A delivery taken: down into the saddle, Red Dead style.

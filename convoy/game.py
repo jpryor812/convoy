@@ -57,6 +57,7 @@ from . import advisor as ADV
 from . import land as LAND
 from . import claims as CL
 from . import discovery as DS
+from . import social as SO
 from .state import Activity, Agent, World
 from .world_setup import new_world
 
@@ -874,6 +875,9 @@ class Game:
         """Dispatch one action for the player and record it as `act` does.
         Call with the world lock held."""
         ok, message = S.dispatch(self.world, self.log, self.you, action, dict(args))
+        if ok and action == "travel_to":
+            # Riding the road: where you last walked no longer says where you are.
+            self.world.positions.pop(self.human_id, None)
         self.log.emit(self.world.sim_time, "action_call", actor=self.human_id,
                       action=action, ok=ok, detail_text=str(message)[:200], why="")
         self._push("did", f"{action}: {message}" if ok else f"{action} refused: {message}")
@@ -1034,15 +1038,50 @@ class Game:
 
     # -- what someone owns (designer request, 2026-10-18) ------------------------
 
+    def cards(self) -> dict[str, Any]:
+        """Every clickable thing, as the page sees it. With outposts (2026-10-28)
+        only people you have found, showing what they shared with you, and only
+        the businesses of people you have found (and the state's)."""
+        from . import inspect as INSPECT
+        from . import social as SO
+        with self.engine.world_lock:
+            w, me = self.world, self.you
+            cards = INSPECT.cards(w)
+            if not w.outposts:
+                return {"hour": round(w.sim_hour, 2), "cards": cards}
+            out = {}
+            for cid, c in cards.items():
+                if c.get("kind") == "agent":
+                    a = w.agents.get(cid)
+                    if a is None or not (a.id == me.id or DS.knows(w, me, a.id)):
+                        continue
+                    if a.id != me.id:
+                        v = SO.view_of(w, me, a)
+                        c = {"kind": "agent", "id": a.id, "name": a.name, "alive": a.alive,
+                             "at": c.get("at"), "doing": c.get("doing"), "meet": v,
+                             **({"net_worth": v["standing"]["worth"], "rank": v["standing"]["rank"],
+                                 "of": v["standing"]["of"]} if "standing" in v else {}),
+                             "businesses": c["businesses"] if "holdings" in v else []}
+                    out[cid] = c
+                else:
+                    b = w.businesses.get(cid)
+                    if b is not None and not DS.business_known(w, me, b):
+                        continue
+                    out[cid] = c
+            return {"hour": round(w.sim_hour, 2), "cards": out}
+
     def assets(self, agent_id: str) -> dict[str, Any]:
         """Why someone is rich or poor: their net worth, line by line. What is
         counted is what the map shows anyway -- buildings, land, carts -- plus
         coin and goods; what they trade and with whom is a town report."""
+        from . import social as SO
         with self.engine.world_lock:
             w = self.world
             a = w.agents.get(agent_id)
             if a is None:
                 return {"error": "no such citizen"}
+            if w.outposts and not (SO.sees(w, self.you, a, "holdings") and SO.sees(w, self.you, a, "standing")):
+                return {"error": f"{a.name} has not shared their standing and holdings with you"}
             city = w.city_of(a)
             biz = []
             for bid in a.owned_businesses:
@@ -1148,6 +1187,25 @@ class Game:
 
     # -- claims on open land (2026-10-18) -------------------------------------
 
+    def pins(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Add or remove one of your own pins on the full map (map metres)."""
+        with self.engine.world_lock:
+            you = self.you
+            if body.get("remove") is not None:
+                i = int(body["remove"])
+                if 0 <= i < len(you.pins):
+                    you.pins.pop(i)
+                return {"ok": True, "pins": you.pins}
+            try:
+                x, y = float(body.get("x")), float(body.get("y"))
+            except (TypeError, ValueError):
+                return {"ok": False, "message": "where?"}
+            label = str(body.get("label") or "").strip()[:40] or "Pin"
+            if len(you.pins) >= 60:
+                return {"ok": False, "message": "you have 60 pins already: remove one first"}
+            you.pins.append({"x": round(x, 1), "y": round(y, 1), "label": label})
+            return {"ok": True, "pins": you.pins}
+
     def seen_at(self, body: dict[str, Any]) -> dict[str, Any]:
         """Where the player is standing in the 3D world, in map metres, so
         the people they walk past find them (outposts; see discovery.py)."""
@@ -1156,7 +1214,7 @@ class Game:
         except (TypeError, ValueError):
             return {"ok": False}
         with self.engine.world_lock:
-            self.engine.positions[self.human_id] = (x, y)
+            self.world.positions[self.human_id] = [round(x, 1), round(y, 1)]
         return {"ok": True}
 
     def settle(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -1243,9 +1301,14 @@ class Game:
         w, me = self.world, self.you
         here = (lambda place: True) if city is None else (lambda place: M.city_of(place) == city)
         people = []
+        from . import social as SO
         for a in (list(w.agents.values()) if city is None else w.agents_in(city)):
             if not a.alive:
                 continue
+            # Outposts: only people you have found, and only what they shared.
+            if w.outposts and a.id != me.id and not DS.knows(w, me, a.id):
+                continue
+            hide = w.outposts and a.id != me.id
             job = None
             if a.current_job:
                 biz = w.businesses.get(a.current_job[0])
@@ -1260,12 +1323,16 @@ class Game:
             people.append({
                 "id": a.id, "name": a.name, "you": a.id == me.id, "calling": a.calling,
                 "house": a.house, "household": len(a.family), "ally": a.id in me.allies,
-                "worth": round(a.net_worth(w), 0), "location": a.location,
-                "owns": [{"id": b, "type": w.businesses[b].type, "place": w.businesses[b].location}
-                         for b in a.owned_businesses if b in w.businesses and not w.businesses[b].closed],
+                "worth": (None if hide and not SO.sees(w, me, a, "standing") else round(a.net_worth(w), 0)),
+                "location": a.location,
+                "owns": ([] if hide and not SO.sees(w, me, a, "holdings") else
+                         [{"id": b, "type": w.businesses[b].type, "place": w.businesses[b].location}
+                          for b in a.owned_businesses if b in w.businesses and not w.businesses[b].closed]),
                 "job": job, "skills": skills,
+                "shared": SO.view_of(w, me, a)["shared"] if hide else list(SO.KINDS),
+                "contact": (not hide) or SO.sees(w, me, a, "contact"),
             })
-        people.sort(key=lambda p: -p["worth"])
+        people.sort(key=lambda p: -(p["worth"] or 0))
         counts = Counter(b.type for b in w.businesses.values()
                          if not b.closed and here(b.location) and not b.is_government)
         state = sorted(b.type for b in w.businesses.values()
@@ -1468,6 +1535,27 @@ class Game:
                 return None
             return "you", f"Autopilot: {d.get('did', d.get('reflex'))}"
         if e.actor == me and e.type in _OWN_ACTION_ECHOES:
+            return None
+        # MEETING PEOPLE (2026-10-28): greetings, shares and requests to you.
+        if e.subject == me and e.actor != me:
+            who = n(e.actor)
+            if e.type == "greeted":
+                return "message", f"{who} says hi" + (f": {d.get('text')}" if d.get("text") else ".")
+            if e.type == "share_asked":
+                from . import social as SO
+                return "milestone", (f"{who} asks you to share {SO.KINDS.get(d.get('kind'), d.get('kind'))}. "
+                                     f"Answer it on the People page.")
+            if e.type == "shared":
+                return "milestone", (f"{who} shared their {d.get('kind')} with you"
+                                     + (": pinned on your map." if d.get("kind") == "locations" else
+                                        ": you can message them now." if d.get("kind") == "contact" else "."))
+            if e.type == "share_answered":
+                return "you", (f"{who} {'shared' if d.get('accepted') else 'declined to share'} "
+                               f"their {d.get('kind')}.")
+            if e.type == "group_joined":
+                return "you", f"{who} added you to the group {d.get('name')}."
+        if e.actor == me and e.type in ("greeted", "shared", "share_asked", "share_answered",
+                                        "group_made", "group_joined"):
             return None
         # Outposts: someone found (2026-10-28) -- the only way to trade with them.
         if e.type == "met" and me in (e.actor, e.subject):
@@ -1950,13 +2038,26 @@ class Game:
             "you": {"id": you.id, "name": you.name, "city": w.city_of(you),
                     "settled": you.settled, "home": you.home, "debt": round(you.debt, 2),
                     "outposts": w.outposts, "known": list(you.known) + list(you.allies),
+                    # MEETING PEOPLE (2026-10-28): whose contact you hold, who shared
+                    # where their land is, requests waiting on you, your groups, pins.
+                    "contacts": SO.contacts(w, you),
+                    "locations_from": [a.id for a in w.agents.values()
+                                       if a.id != you.id and "locations" in a.shared.get(you.id, [])],
+                    "requests": [{"id": r.id, "from": r.sender, "name": w.agents[r.sender].name,
+                                  "kind": r.kind, "what": SO.KINDS[r.kind]}
+                                 for r in w.share_requests.values()
+                                 if r.target == you.id and r.status == "open" and r.sender in w.agents],
+                    "groups": [{"id": g.id, "name": g.name, "members": g.members}
+                               for g in w.groups.values() if you.id in g.members],
+                    "pins": list(you.pins),
                     "denari": round(you.denari, 2),
                     "net_worth": round(you.net_worth(w), 2), "alive": you.alive},
             "leaders": [
                 {"name": a.name, "id": a.id, "worth": round(a.net_worth(w), 1),
                  "you": a.id == you.id}
-                for a in sorted(w.agents.values(), key=lambda a: -a.net_worth(w))[:10]
-            ],
+                for a in sorted(w.agents.values(), key=lambda a: -a.net_worth(w))
+                if not w.outposts or a.id == you.id or SO.sees(w, you, a, "standing")
+            ][:10],
             # The same ranking the ledger uses: equals share a rank.
             "your_rank": 1 + sum(1 for a in w.agents.values()
                                  if a.net_worth(w) > you.net_worth(w) + 1e-6),

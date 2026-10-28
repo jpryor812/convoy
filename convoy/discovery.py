@@ -42,8 +42,10 @@ def position(world: "World", agent: "Agent",
         if a and b:
             return a[0] + (b[0] - a[0]) * p, a[1] + (b[1] - a[1]) * p
         return a or b
-    if overrides and agent.id in overrides:
-        return overrides[agent.id]
+    overrides = world.positions if overrides is None else overrides
+    if agent.id in overrides:
+        x, y = overrides[agent.id]
+        return x, y
     return _xy(world, agent.location)
 
 

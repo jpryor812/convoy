@@ -32,6 +32,7 @@ from . import banditry as B
 from . import data as D
 from . import land as LAND
 from . import discovery as DS
+from . import social as SO
 from . import economy as E
 from . import world_map as M
 from .events import EventLog, Significance
@@ -806,7 +807,9 @@ def static_briefing(
             "trading posts costs more; far out it is cheap. YOU CAN ONLY TRADE "
             "WITH PEOPLE YOU HAVE FOUND (the state excepted): you find someone "
             "by passing within sight of them or their land, so travel to meet "
-            "buyers and sellers. Short of money, "
+            "buyers and sellers. Then say_hi, share_info and ask_info: you know "
+            "only what people share, and messages need their contact. Public "
+            "chat is heard only nearby. Short of money, "
             "take the state's wage at a trading post first. If you borrowed to "
             "settle, YOUR OUTPOST says what you owe: it grows 2% a day and a "
             "fifth of what your businesses earn pays it down (repay_debt pays "
@@ -2068,15 +2071,40 @@ def observe(
         food.sort(key=lambda r: r.get("brought_to_you", 0))
         if food:
             outpost["food (order_meal(tavern) to have it brought)"] = food[:4]
-        # WHO YOU HAVE FOUND (2026-10-28): you can only trade with them.
+        # WHO YOU HAVE FOUND (2026-10-28): you can only trade with them, and
+        # you know only what each has shared with you.
         found = [world.agents[k] for k in agent.known if k in world.agents and world.agents[k].alive]
-        outpost["people_you_have_found"] = (
-            [f"{o.name} ({o.house}): home {o.home or '?'}"
-             + (", owns " + ", ".join(sorted({world.businesses[b].type.split(' /')[0]
-                                               for b in o.owned_businesses if b in world.businesses}))
-                if o.owned_businesses else "")
-             for o in found[:10]]
-            or ["nobody yet -- you can only trade with people you have found"])
+        rows = []
+        for o in found[:10]:
+            v = SO.view_of(world, agent, o)
+            bits = []
+            if "standing" in v:
+                bits.append(f"worth {v['standing']['worth']:.0f}, rank {v['standing']['rank']}")
+            if "holdings" in v and v["holdings"]["businesses"]:
+                bits.append("owns " + ", ".join(f"{n} {t}" for t, n in v["holdings"]["businesses"].items()))
+            if "locations" in v:
+                bits.append("at " + ", ".join(f"{p['what']} {p['place']}" for p in v["locations"][:3]))
+            if "trade" in v:
+                sells = ", ".join(f"{r['item']} {r['price']:.2f}" for r in v["trade"]["selling"][:3])
+                buys = ", ".join(f"{r['item']} {r['price']:.2f}" for r in v["trade"]["buying"][:3])
+                bits.append(f"sells {sells or 'nothing'}; buys {buys or 'nothing'}")
+            if "family" in v:
+                bits.append("family " + ", ".join(f"{m['name']} ({m['role']}{', grown' if m['grown'] else ''})"
+                                                  for m in v["family"][:4]))
+            bits.append("contact: yes" if v["contact"] else "no contact")
+            told = v["they_have_from_you"]
+            rows.append(f"{o.id} {o.name} ({o.house}): " + "; ".join(bits)
+                        + (f" | you shared: {', '.join(told)}" if told else " | you shared nothing"))
+        outpost["people_you_have_found"] = rows or ["nobody yet -- you can only trade with people you have found"]
+        asks = [r for r in world.share_requests.values() if r.target == agent.id and r.status == "open"]
+        if asks:
+            outpost["requests_to_you (answer_request)"] = [
+                f"{r.id}: {world.agents[r.sender].name} ({r.sender}) asks for your {r.kind}"
+                for r in asks[:6] if r.sender in world.agents]
+        groups = [g for g in world.groups.values() if agent.id in g.members]
+        if groups:
+            outpost["your_groups (post_group_chat)"] = [
+                f"{g.id} {g.name}: {len(g.members)} members" for g in groups[:6]]
         outpost["to_find_more"] = (
             f"travel the roads, the spurs and to other trading posts: anyone you pass "
             f"within {DS.SIGHT_M:.0f} m, or whose land you pass, you find, and they find you")
@@ -2172,8 +2200,10 @@ def observe(
         if any(m.adult and not m.spouse for m in agent.family):
             city = world.city_of(agent)
             matches = []
-            for other in world.agents_in(city):
+            for other in (list(world.agents.values()) if world.outposts else world.agents_in(city)):
                 if other.id == agent.id or not other.alive or not other.house:
+                    continue
+                if world.outposts and not SO.sees(world, agent, other, "family"):
                     continue
                 free = [m for m in other.family if m.adult and not m.spouse]
                 if free:

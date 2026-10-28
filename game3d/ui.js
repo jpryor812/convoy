@@ -195,6 +195,7 @@ export function createUI(ctx){
       if (seen.market == null || onTab("market")) seen.market = new Set(S.ST.market_keys);
       badge("b-market", S.ST.market_keys.filter(k => !seen.market.has(k)).length);
     }
+    if (S.ST) badge("b-people", (S.ST.you.requests || []).length);     // asked to share something
     if (S.BOARD) badge("b-jobs", S.BOARD.jobs.filter(j => j.to_me || (j.mine && Array.isArray(j.applicants) && j.applicants.length)).length);
   }
 
@@ -1103,6 +1104,10 @@ export function createUI(ctx){
     out += `<h3>Clans</h3>` + (P.clans.length ? P.clans.map(c => `<div class="row"><div class="grow"><b>${esc(c.name)}</b>${c.secret ? ` <span class="chip">secret</span>` : ""}${c.mine ? ` <span class="good">yours</span>` : ""} <span class="dim">${c.members} members${P.outposts ? "" : ` \u00b7 ${esc(c.towns.join(", "))}`}</span>${c.names.length && c.mine ? `<br><span class="dim">${c.names.map(n => esc(short(n))).join(", ")}</span>` : ""}</div><b>${money(c.worth)}</b></div>`).join("") : `<div class="empty">No clans yet.</div>`)
       + (P.my_clan ? `<div class="acts">${B("Leave your clan", "leave_guild", {})}</div>`
         : `<div class="tip">A clan needs two allied houses: marry one of your family into another house first.</div><div class="hire-row"><input id="clan-name" placeholder="Name a clan" maxlength="40"><label><input type="checkbox" id="clan-secret"> secret</label><button class="btn go" id="clan-make">Found it</button></div><div class="tip">A clan spans towns. A secret one is invisible to outsiders: you can belong to one while living in another town, and trade for it quietly.</div>`);
+    // MEETING PEOPLE (2026-10-28): what others ask you to share, answered here.
+    const reqs = (S.ST && S.ST.you.requests) || [];
+    if (reqs.length) out = `<h3>Asked of you</h3>` + reqs.map(r => `<div class="row"><div class="grow"><b>${esc(short(r.name))}</b> asks for ${esc(r.what)}</div>${B("Share it", "answer_request", {request_id: r.id, accept: true}, true)}${B("Decline", "answer_request", {request_id: r.id, accept: false})}</div>`).join("") + out;
+    if (P.outposts) out += `<div class="tip">Only the people you have found are here, and you know only what they have shared. Open someone to say hi, share, and ask.</div>`;
     out += `<div class="hire-row"><input id="ppl-find" placeholder="Find a name, a skill (Miner) or a character (Hauler)" value="${esc(pplFilter)}" style="flex:1"></div>`;
     const f = pplFilter.toLowerCase();
     const rows = P.people.filter(p => !f || [p.name, p.calling, ...p.skills.map(s => s.role + " " + s.level), ...p.owns.map(o => o.type)].join(" ").toLowerCase().includes(f));
@@ -1111,10 +1116,11 @@ export function createUI(ctx){
       const owns = p.owns.length ? p.owns.map(o => esc(o.type.split(" /")[0])).join(", ") : "nothing";
       const job = p.job ? `${esc(p.job.role)} at ${p.job.employer === "themself" ? "their own " + esc(p.job.type.split(" /")[0]) : esc(p.job.employer === "the state" ? "the state's" : short(p.job.employer) + "'s") + " " + esc(p.job.type.split(" /")[0])}` : "no job";
       const acts = p.you ? `<span class="good">you</span>`
+        : P.outposts ? `<button class="btn go" data-person="${esc(p.id)}">Meet</button>` + (p.contact ? `<button class="btn" data-msg="${esc(p.id)}">Message</button>` : "")
         : `<button class="btn go" data-msg="${esc(p.id)}">Message</button>`
           + (myBiz.length ? F("Offer a job", "offer_job", {agent_id: p.id, business_id: myBiz[0].id}, `Offer ${short(p.name)} a job`) : "")
           + (P.my_clan ? B("Invite to clan", "invite_to_guild", {target_id: p.id}) : "");
-      return `<div class="mk-row person${p.you ? " me" : ""}"><div class="mk-who"><b>${esc(short(p.name))}</b> ${p.house ? `<span class="dim">of ${esc(p.house)}</span>` : ""} ${p.calling ? `<span class="chip calling">${esc(p.calling)}</span>` : ""}${p.ally ? ` <span class="chip">ally</span>` : ""} <span class="dim">worth ${money(p.worth)}</span>`
+      return `<div class="mk-row person${p.you ? " me" : ""}"><div class="mk-who"><b>${esc(short(p.name))}</b> ${p.house ? `<span class="dim">of ${esc(p.house)}</span>` : ""} ${p.calling ? `<span class="chip calling">${esc(p.calling)}</span>` : ""}${p.ally ? ` <span class="chip">ally</span>` : ""}${p.worth == null ? "" : ` <span class="dim">worth ${money(p.worth)}</span>`}`
         + `<small>Owns: ${owns} \u00b7 ${job}</small><div class="skills">${skills}</div></div><div class="mk-act">${acts}</div></div>`;
     }).join("") || `<div class="empty">Nobody matches.</div>`;
     return out;
@@ -1173,8 +1179,45 @@ export function createUI(ctx){
     openForm("offer_job", {agent_id: THREAD, business_id: myBiz[0].id}, "Offer a job");
   };
 
+  /* MEETING SOMEONE (2026-10-28), like Civilization's diplomacy screen: say
+     hi, then for each thing a settler can share -- what they have shared with
+     you, and buttons to share yours or ask for theirs. Contact unlocks
+     messages and group chats. */
+  const KIND_LABEL = {standing: "Standing", holdings: "Holdings", locations: "Locations", trade: "Trade",
+                      family: "Family", contact: "Contact"};
+  function meetPanel(id, c){
+    const v = c.meet, mineBiz = S.OBS.you.businesses || [];
+    const mine = new Set(v.they_have_from_you || []);
+    const showKind = k => {
+      if (k === "standing" && v.standing) return `worth ${money(v.standing.worth)} \u00b7 rank ${v.standing.rank} of ${v.standing.of}`;
+      if (k === "holdings" && v.holdings) return Object.entries(v.holdings.businesses).map(([t, n]) => `${n} ${esc(t)}`).join(", ") + ` \u00b7 ${v.holdings.plots} plots` || "nothing yet";
+      if (k === "locations" && v.locations) return v.locations.map(l => `${esc(l.what)} at ${esc(l.place)}`).join(", ") + " \u00b7 on your map";
+      if (k === "trade" && v.trade) return `sells ${v.trade.selling.map(r => `${esc(r.item)} ${money2(r.price)}`).join(", ") || "nothing"}; buys ${v.trade.buying.map(r => `${esc(r.item)} ${money2(r.price)}`).join(", ") || "nothing"}`;
+      if (k === "family" && v.family) return v.family.map(m => `${esc(m.name)} (${esc(m.role)}${m.grown ? (m.married ? ", married" : ", grown") : `, grown in ${m.grows_in_hours}h`})`).join(", ");
+      if (k === "contact" && v.contact) return "you can message them and add them to groups";
+      return null;
+    };
+    let out = `<div class="card"><div class="t">${esc(short(c.name))} <span class="dim">of ${esc(v.house)}</span></div>
+      <div class="m">${esc(c.doing || "")}${c.at ? ` at ${esc(c.at)}` : ""}</div></div>`;
+    out += `<div class="acts">${F("Say hi", "say_hi", {target_id: id}, `Say hi to ${short(c.name)}`)}</div>`;
+    out += `<h3>What you know</h3>` + Object.keys(KIND_LABEL).map(k => {
+      const known = showKind(k);
+      return `<div class="row"><div class="grow"><b>${KIND_LABEL[k]}</b><br><span class="${known ? "" : "dim"}">${known || "not shared with you"}</span></div>`
+        + (known ? "" : B("Ask", "ask_info", {target_id: id, what: k}))
+        + (mine.has(k) ? `<span class="dim">yours shared</span>` : B("Share mine", "share_info", {target_id: id, what: k}, true)) + `</div>`;
+    }).join("");
+    const groups = (S.ST && S.ST.you.groups) || [];
+    out += `<h3>Deal with them</h3><div class="acts">`
+      + (v.contact ? `<button class="btn go" data-msg="${esc(id)}">Message</button>` : "")
+      + (v.contact ? groups.map(g => B(`Add to ${g.name}`, "invite_to_group", {group_id: g.id, target_id: id})).join("") : "")
+      + F("Pay", "pay", {agent_id: id}, `Pay ${short(c.name)}`)
+      + (mineBiz.length ? F("Offer a job", "offer_job", {agent_id: id, business_id: mineBiz[0].id}, `Offer ${short(c.name)} a job`) : "")
+      + `</div>` + (v.contact ? "" : `<div class="tip">Ask for their contact to message them and add them to a group chat.</div>`);
+    return out;
+  }
   function personPanel(id, c){
-    if (!c) return `<div class="empty">Nothing is known about them yet.</div>`;
+    if (!c) return `<div class="empty">You have not found them.</div>`;
+    if (c.meet) return meetPanel(id, c);
     const mineBiz = S.OBS.you.businesses || [];
     let out = `<div class="card"><div class="t">${esc(short(c.name))} <span class="dim">${esc(id)}</span></div>
       <div class="m">${esc(c.doing || "")}${c.at ? ` at ${esc(c.at)}` : ""}</div>
@@ -1290,7 +1333,9 @@ export function createUI(ctx){
       return out;
     },
     chat(){
-      return `<div class="chatlog" id="chatlog"></div><div class="compose"><select id="say-to"></select><input id="say" placeholder="Say something…" maxlength="400"><button class="btn go" id="say-send">Send</button></div>`;
+      const groupRow = S.ST && S.ST.you.outposts
+        ? `<div class="hire-row"><input id="grp-name" placeholder="New group: name it" maxlength="40"><button class="btn" id="grp-make">Make a group with my contacts</button></div>` : "";
+      return `<div class="chatlog" id="chatlog"></div><div class="compose"><select id="say-to"></select><input id="say" placeholder="Say something…" maxlength="400"><button class="btn go" id="say-send">Send</button></div>${groupRow}`;
     },
     news(){
       return `<div class="feed">` + (FEED.slice().reverse().map(f => `<div class="${esc(f.kind)}"><span class="dim">${clock(f.hour)}</span> — ${esc(f.text)}</div>`).join("") || `<div class="empty">Nothing has happened to you yet.</div>`) + `</div>`;
@@ -1341,12 +1386,27 @@ export function createUI(ctx){
     seen.chat = lines.length; badges();
   }
   function wireChat(){
-    const to = $("say-to");
+    const to = $("say-to"), you = S.ST && S.ST.you;
+    if (you && you.outposts){
+      // Outposts: public chat reaches only those near you; groups and
+      // messages need contacts (2026-10-28).
+      const name = id => (S.BOARD.agents.find(a => a.id === id) || {name: id}).name;
+      to.innerHTML = `<option value="">Nearby (whoever can hear you)</option>`
+        + (you.groups || []).map(g => `<option value="group:${esc(g.id)}">Group: ${esc(g.name)}</option>`).join("")
+        + (you.contacts || []).map(id => `<option value="${esc(id)}">${esc(short(name(id)))}</option>`).join("");
+      const mk = $("grp-make");
+      if (mk) mk.onclick = async () => {
+        const n = $("grp-name").value.trim(); if (!n) return;
+        const r = await act("make_group", {name: n, members: (you.contacts || []).join(",")});
+        if (r.ok) $("grp-name").value = "";
+      };
+    } else
     to.innerHTML = `<option value="">Everyone</option>` + S.BOARD.agents.map(a => `<option value="${esc(a.id)}">${esc(short(a.name))}</option>`).join("");
     updateChat(); $("chatlog").scrollTop = 1e6;
     const send = async () => {
       const text = $("say").value.trim(); if (!text) return;
-      const r = to.value ? await act("send_direct_message", {target_id: to.value, text}) : await act("post_world_chat", {text});
+      const r = to.value.startsWith("group:") ? await act("post_group_chat", {group_id: to.value.slice(6), text})
+        : to.value ? await act("send_direct_message", {target_id: to.value, text}) : await act("post_world_chat", {text});
       if (r.ok) $("say").value = "";
     };
     $("say-send").onclick = send;

@@ -169,10 +169,8 @@ class Engine:
         )
         self._next_restock = world.sim_time + 3600.0
         # OUTPOSTS: when the frontier is next looked over for people finding
-        # each other, and where anyone not on the road network really is (the
-        # player, walking the 3D world). See `convoy/discovery.py`.
+        # each other. See `convoy/discovery.py`.
         self._next_discovery = world.sim_time
-        self.positions: dict[str, tuple[float, float]] = {}
 
     # -- main loop ---------------------------------------------------------
 
@@ -335,7 +333,7 @@ class Engine:
         self._debt_interest(hours)
         if w.outposts and w.sim_time >= self._next_discovery:
             self._next_discovery = w.sim_time + DS.EVERY_S
-            DS.tick(w, self.log, self.positions)
+            DS.tick(w, self.log)
         self._property_tax()
         self._road_tax()
         self._expire_social()

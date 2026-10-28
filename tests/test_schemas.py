@@ -380,7 +380,11 @@ def test_prefix_cost_is_within_budget():
                                      state_gone=True)) // 4
                + len(json.dumps(S.tool_schemas(no_state=True, outposts=True,
                                                state_gone=True))) // 4)
-    ok("outposts prefix under 19.3k tokens", out_tok < 19300, f"~{out_tok} tokens")
+    # 19,300 -> 20,200 on 2026-10-28 for MEETING PEOPLE: say_hi, share_info,
+    # ask_info, answer_request, make_group, invite_to_group, post_group_chat
+    # and a briefing sentence -- asked for as one of the first mechanics.
+    # Measured 19,900; outposts worlds only.
+    ok("outposts prefix under 20.2k tokens", out_tok < 20200, f"~{out_tok} tokens")
     ok("prefix is large enough to cache", prefix_tok > 1024, f"~{prefix_tok} tokens")
 
 
