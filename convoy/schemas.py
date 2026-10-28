@@ -46,7 +46,10 @@ _NOT_ACTIONS = frozenset({
     # Helpers, not actions -- and their signatures would have been handed
     # (world, log, agent) by the dispatcher. Introspection exposes every public
     # function in the module, so anything that is not a real action must say so.
-    "employee_cap", "is_staffed", "open_courier_jobs",
+    "employee_cap", "is_staffed", "open_courier_jobs", "standing_bid",
+    # The player's own, from the character card; kept off the agents' tool list
+    # to hold their prompt budget (agents eat at the tavern where they stand).
+    "eat_meal",
 })
 
 # Engine-internal: loot transfer is driven by the combat/death path, not chosen.
@@ -209,6 +212,62 @@ DESCRIPTIONS: dict[str, str] = {
         "somebody wants the job -- a share of what the load is worth is the "
         "usual way to think about it."
     ),
+    "build_defense": (
+        "Raise a Guard post (500) or a Catapult (250) on one plot where you stand. "
+        "Raiders on the roads at this place fight at half (guard post) or three "
+        "quarters (catapult) strength -- protection for every load on those roads."
+    ),
+    "order_meal": (
+        "Have a tavern send a meal to where you are: its price plus a fee by "
+        "distance. It arrives in what you carry; you eat it when hungry."
+    ),
+    "repay_debt": "Pay down what you owe the state for settling, from your pocket. It grows 2% a day.",
+    "claim_land": (
+        "Claim a site from OPEN LAND NEAR YOU: four plots of your own and a road "
+        "to them, at its listed cost. Found a business there next."
+    ),
+    "say_hi": "Greet a settler you have found, with a short line. Works without their contact.",
+    "share_info": (
+        "Share one thing about you with a settler you have found: standing (worth, "
+        "rank), holdings, locations, trade (what you sell and buy), family, or "
+        "contact (lets them message you and add you to group chats)."
+    ),
+    "ask_info": "Ask a settler you have found to share one of those things with you.",
+    "answer_request": "Answer a request in REQUESTS TO YOU: accept shares it.",
+    "make_group": "Start a group chat; members are comma-separated ids of people whose contact you have.",
+    "invite_to_group": "Add someone whose contact you have to your group chat.",
+    "post_group_chat": "Say something to a group chat you are in.",
+    "feed_family": "Feed a child of your house a Meal you carry: they grow up a day sooner (a month otherwise).",
+    "sell_to_bidder": (
+        "Sell your business's stock to a business bidding for it, at its bid -- "
+        "listed as BUSINESSES THAT WOULD BUY. The state's sites pay their fixed low "
+        "price at once; a citizen's pays now and fetches it with a courier."
+    ),
+    "hire_npc_employee": (
+        "Hire an NPC hand: always on shift, paid the NPC wage from business cash, "
+        "but slower than a person. Your own grown children work for nothing."
+    ),
+    "start_project": (
+        "Build a Storehouse or Better tools at your business. Paid now; then work "
+        "goes in every hour, more with people on shift there and the project's "
+        "material in the yard. One project at a time per business."
+    ),
+    "research": (
+        "Study one piece of know-how; it lands on its own after some hours and "
+        "makes you better at something for good. Your options are listed."
+    ),
+    "assign_family": (
+        "Put a grown member of your household to work at one of your businesses, "
+        "unpaid and always on shift -- or business_id \"\" to bring them home."
+    ),
+    "propose_marriage": (
+        "Propose a grown, unmarried member of your house to one of another "
+        "house's, with a dowry. If they accept, theirs joins your household, the "
+        "houses become allies, and the couple has children: the only way a "
+        "family grows."
+    ),
+    "accept_marriage": "Accept a marriage proposed to your house: your member joins theirs, the dowry and the alliance are yours.",
+    "decline_marriage": "Turn down a marriage proposed to your house.",
     "post_buy_order": (
         "Name the price you will pay for something your business uses, and how "
         "many -- a standing bid anyone holding it can fill with fill_buy_order. "
@@ -291,6 +350,19 @@ DESCRIPTIONS: dict[str, str] = {
 }
 
 
+# OUTPOSTS (2026-10-27): what changes when nobody starts in a town.
+DESCRIPTIONS_OUTPOSTS: dict[str, str] = {
+    "sell_to_bidder": (
+        "Sell your business's stock to a business bidding for it (BUSINESSES "
+        "THAT WOULD BUY). The state's convoy collects from your yard and pays on "
+        "collection; a citizen's pays now and sends a courier."
+    ),
+    "travel_to": (
+        "Travel to another place: a named place, or an outpost or claim by its "
+        "name. Takes real time -- you cannot act until you arrive."
+    ),
+}
+
 # Static value sets. Runtime IDs are excluded on purpose -- see the module note.
 def _enum_for(action: str, param: str) -> list[str] | None:
     # Escorts are hired into the Convoy tab's roles, not the wage roles a
@@ -312,6 +384,9 @@ def _enum_for(action: str, param: str) -> list[str] | None:
         # tokens on every tool that takes one, on every call, forever. The other
         # five vehicles stay: a Vehicle Dealer really does stock them.
         return [i for i in D.ALL_ITEMS if i != "On Foot"]
+    if param == "what" and action in ("share_info", "ask_info"):
+        from . import social as SO
+        return list(SO.KINDS)
     if param == "segment":
         # Every road by name: the valleys' own and the roads between cities.
         return [s.name for s in M.EVERY_SEGMENT]
@@ -447,19 +522,26 @@ DESCRIPTIONS_AFTER_WITHDRAWAL: dict[str, str] = {
 # the first no-state smoke. And `apply_for_job` is only ever the owner staffing
 # their own place, which its old description did not say: in that smoke it was
 # refused 23 times in 29, agents trying it on somebody else's tavern.
-NO_STATE_HIDDEN = frozenset({"hire_npc_employee"})
+# Only make sense when nobody starts in a town; kept off every other run's
+# prompt, which has no budget to spare for them.
+OUTPOSTS_ONLY: frozenset = frozenset({"claim_land", "order_meal", "repay_debt",
+                                      "say_hi", "share_info", "ask_info", "answer_request",
+                                      "make_group", "invite_to_group", "post_group_chat"})
+NO_STATE_HIDDEN: frozenset = frozenset()     # NPC hands came back, slower, 2026-10-18
 DESCRIPTIONS_NO_STATE: dict[str, str] = {
     "apply_for_job": (
         "Work at YOUR OWN business: puts you on its roster, at no wage -- an "
-        "owner is paid in profit. ONLY for a business you own. To work for "
-        "somebody else, answer their advert with apply_to_job, or take a job "
+        "owner is paid in profit. Also takes a job at a STATE site (its "
+        "Tavern, Farm, Mine or Refinery, where a town has them) at the fixed "
+        "wage. To work for somebody else, answer their advert with apply_to_job, or take a job "
         "they offered you with accept_job_offer. Omit the role to take the "
         "first production role. Then start_shift."
     ),
 }
 
 
-def tool_schemas(state_gone: bool = False, no_state: bool = False) -> list[dict[str, Any]]:
+def tool_schemas(state_gone: bool = False, no_state: bool = False,
+                 outposts: bool = False) -> list[dict[str, Any]]:
     """OpenAI-style tool definitions for every callable action.
 
     Part of the cached prefix, so this must not vary between calls or between
@@ -472,6 +554,8 @@ def tool_schemas(state_gone: bool = False, no_state: bool = False) -> list[dict[
     for name, fn in ACTIONS.items():
         if no_state and name in NO_STATE_HIDDEN:
             continue
+        if not outposts and name in OUTPOSTS_ONLY:
+            continue
         sig = inspect.signature(fn)
         properties: dict[str, Any] = {}
         required: list[str] = []
@@ -479,6 +563,10 @@ def tool_schemas(state_gone: bool = False, no_state: bool = False) -> list[dict[
             if param.name in ("world", "log", "agent"):
                 continue
             properties[param.name] = _param_schema(name, param)
+            if outposts and param.name == "destination":
+                # Outposts are made all game long; an enum fixed at the start
+                # would leave everyone unable to name their own home.
+                properties[param.name].pop("enum", None)
             if param.default is inspect.Parameter.empty:
                 required.append(param.name)
         # WHY, ON EVERY ACTION. Asked for in the briefing and nowhere else, the
@@ -494,7 +582,8 @@ def tool_schemas(state_gone: bool = False, no_state: bool = False) -> list[dict[
             "function": {
                 "name": name,
                 "description": (
-                    (DESCRIPTIONS_NO_STATE.get(name) if no_state else None)
+                    (DESCRIPTIONS_OUTPOSTS.get(name) if outposts else None)
+                    or (DESCRIPTIONS_NO_STATE.get(name) if no_state else None)
                     or (DESCRIPTIONS_AFTER_WITHDRAWAL.get(name) if state_gone else None)
                     or DESCRIPTIONS.get(name, f"Perform {name.replace('_', ' ')}.")
                 ),

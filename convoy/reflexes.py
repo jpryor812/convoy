@@ -160,6 +160,12 @@ def _note(world: "World", log: "EventLog", agent: "Agent", kind: str, did: str) 
 def _eat(world: "World", log: "EventLog", agent: "Agent") -> bool:
     if agent.sustenance_stage == "Normal":
         return False
+    # A meal you carry first: it was paid for (outposts, 2026-10-27).
+    if any(q > 0 for i, q in agent.inventory.items() if i in A.D.MEALS):
+        ok, msg = A.eat_meal(world, log, agent)
+        if ok:
+            _note(world, log, agent, "eat", msg)
+            return True
     for tavern in world.businesses_at(agent.location, "Tavern / Inn"):
         if tavern.closed or not A.is_staffed(world, tavern):
             continue
@@ -169,7 +175,36 @@ def _eat(world: "World", log: "EventLog", agent: "Agent") -> bool:
         if ok:
             _note(world, log, agent, "eat", msg)
             return True
+    if world.outposts:
+        return _send_for_a_meal(world, log, agent)
     return False
+
+
+def _send_for_a_meal(world: "World", log: "EventLog", agent: "Agent") -> bool:
+    """Hungry, away from a tavern, with nothing on the way: have the cheapest
+    tavern send one. Living at an outpost should not starve anybody who can
+    pay -- that is a decision about money, not about remembering to eat."""
+    if any(d.agent == agent.id and d.kind == "meal" and d.status == "on_way"
+           for d in world.dispatches.values()):
+        return False
+    best = None
+    for t in world.businesses.values():
+        if t.closed or t.type != "Tavern / Inn" or not A.is_staffed(world, t):
+            continue
+        if not t.is_government and not any(q > 0 for i, q in t.inventory.items() if i in A.D.MEALS):
+            continue
+        if not A.DS.business_known(world, agent, t):
+            continue
+        meal = A.E.best_meal_for_tier(0 if t.is_government else t.research.quality_tier, "duration")
+        cost = t.price_for(meal) + A._meal_fee(world, t, agent.location)
+        if cost <= agent.denari and (best is None or cost < best[0]):
+            best = (cost, t)
+    if best is None:
+        return False
+    ok, msg = A.order_meal(world, log, agent, best[1].id)
+    if ok:
+        _note(world, log, agent, "order meal", msg)
+    return ok
 
 
 def _courier(world: "World", log: "EventLog", agent: "Agent") -> bool:
@@ -306,12 +341,16 @@ def restock(world: "World", log: "EventLog", agent: "Agent", rate_of) -> list[st
         for item in recipe.inputs:
             best = None
             for s in world.businesses.values():
-                if (s.closed or s.is_government or s.owner == agent.id
-                        or s.inventory.get(item, 0) <= 0 or item not in s.retail_prices
+                if (s.closed or s.owner == agent.id
                         or world_map.city_of(s.location) not in world.cities):
                     continue
+                if s.is_government:          # the state's sites sell what they make, without limit
+                    if item not in (s.spec.outputs or ()):
+                        continue
+                elif s.inventory.get(item, 0) <= 0 or item not in s.retail_prices:
+                    continue
                 ok, _ = A._may_buy_from(b, s)
-                if not ok:
+                if not ok or not A.DS.business_known(world, agent, s):
                     continue
                 key = (s.price_for(item) * (1.0 if s.location == b.location else 1.0 + RESTOCK_COURIER_SHARE))
                 if best is None or key < best[0]:
@@ -323,7 +362,7 @@ def restock(world: "World", log: "EventLog", agent: "Agent", rate_of) -> list[st
                    for i, q in recipe.inputs.items())
         if cost > RESTOCK_MARGIN * value:
             continue
-        payroll = sum(e.wage for e in b.roster if e.agent_id != agent.id and not e.as_researcher)
+        payroll = sum(e.wage for e in b.roster if e.agent_id != agent.id and not e.is_researcher)
         budget = (max(0.0, b.cash) + agent.denari
                   - payroll * RESTOCK_RESERVE_HOURS - RESTOCK_FOOD_RESERVE) * 0.5
         for item, q in recipe.inputs.items():
@@ -333,7 +372,8 @@ def restock(world: "World", log: "EventLog", agent: "Agent", rate_of) -> list[st
                 continue
             unit = seller.price_for(item)
             carry = 0.0 if seller.location == b.location else RESTOCK_COURIER_SHARE
-            qty = min(need, seller.inventory.get(item, 0), int(budget // (unit * (1 + carry))))
+            have = 10**6 if seller.is_government else seller.inventory.get(item, 0)
+            qty = min(need, have, int(budget // (unit * (1 + carry))))
             if qty <= 0:
                 continue
             fee = round(max(1.0, unit * qty * carry), 2) if carry else 0.0

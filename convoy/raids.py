@@ -26,6 +26,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from . import banditry as B
+from . import data as D
 from . import world_map as M
 
 if TYPE_CHECKING:
@@ -70,9 +71,19 @@ def body_strength(agent: "Agent") -> float:
     return B.Escort(agent.name, "Bodyguard", agent.equipped_weapon, armor).strength
 
 
+def defense_factor(world: "World", segment: M.RoadSegment) -> float:
+    """What the guard posts and catapults at either end of a road leave of a
+    raid's strength (2026-10-18). 1.0 with none."""
+    f = 1.0
+    for q in world.plots.values():
+        if q.structure and q.location in (segment.a, segment.b):
+            f *= D.DEFENSES.get(q.structure, {}).get("strength", 1.0)
+    return max(D.DEFENSE_FLOOR, f)
+
+
 def raid_strength(world: "World", members: list[str], segment: M.RoadSegment) -> float:
     bodies = sum(body_strength(world.agents[m]) for m in members) or B.UNARMED_STRENGTH
-    return bodies * (1.0 + B.VANTAGE_WEIGHT * segment.vantage)
+    return bodies * (1.0 + B.VANTAGE_WEIGHT * segment.vantage) * defense_factor(world, segment)
 
 
 def p_spotted(segment: M.RoadSegment, party: B.Party) -> float:

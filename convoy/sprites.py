@@ -371,11 +371,12 @@ ACTION_FAMILY = {
         "buy_from_business", "sell_to_business", "order_from_business", "buy_meal",
         "buy_vehicle", "buy_property", "buy_insurance", "deposit", "withdraw", "pay",
         # Land is bought and sold like anything else; developing it is building.
-        "buy_land", "buy_listed_land", "list_land",
+        "buy_land", "buy_listed_land", "list_land", "repay_debt",
         "post_delivery_job",   # paying to move goods is commerce
 
         "set_retail_price", "offer_trade", "accept_trade", "decline_trade",
         "collect_business_inventory", "stock_business_inventory", "store_at_home",
+        "post_buy_order", "cancel_buy_order", "fill_buy_order", "sell_to_bidder",
     ),
     "travel": (
         "travel_to", "mount", "dismount", "accept_courier_job", "drop_courier_job",
@@ -384,7 +385,7 @@ ACTION_FAMILY = {
     ),
     "work": (
         "start_shift", "end_shift", "set_production", "equip_tools", "equip",
-        "allocate_research", "collect_from_safehouse", "stash_in_safehouse",
+        "allocate_research", "research", "assign_family", "collect_from_safehouse", "stash_in_safehouse",
         "loot_ground",
     ),
     "hire": (
@@ -397,14 +398,19 @@ ACTION_FAMILY = {
         "start_business", "upgrade_garage", "upgrade_storage",
         "upgrade_site_storage",
         "develop_plot",     # raw ground into floor space -- construction
+        "build_defense", "start_project",
+        "claim_land",       # outposts: new land, with its road
 
     ),
     "chat": (
         "post_world_chat", "post_guild_chat", "send_direct_message",
         "create_guild", "invite_to_guild", "accept_guild_invite", "leave_guild",
         "remove_guild_member",
+        "propose_marriage", "accept_marriage", "decline_marriage",
+        "say_hi", "share_info", "ask_info", "answer_request",
+        "make_group", "invite_to_group", "post_group_chat",
     ),
-    "food": ("eat_best_available",),
+    "food": ("eat_best_available", "feed_family", "order_meal"),
     "warning": ("wait",),
 }
 

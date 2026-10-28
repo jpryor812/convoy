@@ -185,7 +185,7 @@ def test_weapons_and_armour_are_equipped_from_the_pack() -> None:
     weak = R.body_strength(a)
     oke, msg = A.equip(world, log, a, "Iron Sword")
     ok("a weapon can be wielded", oke, msg)
-    check("the old one goes in the pack", a.inventory.get("Slingshot"), 1)
+    check("the old one goes in the pack", a.inventory.get("Bat"), 1)
     oke, msg = A.equip(world, log, a, "Bronze Helm")
     ok("armour can be worn", oke, msg)
     ok("and they fight better for it", R.body_strength(a) > weak,

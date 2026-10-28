@@ -836,13 +836,25 @@ def _events_for_boards(run: Path) -> list:
     return log.events
 
 
-def build_payload(run: Path | None = None) -> dict:
+def build_payload(run: Path | None = None, claims=None) -> dict:
     # THE CITIES COME FIRST, because the ground depends on them. A one-city run
     # must not lay out an empty second valley for the camera to have to pan
     # across, and a two-city run must not draw only half of itself.
     cities = cities_of(run)
     places = L.build(cities)
-    minx, miny, maxx, maxy = L.bounds(places)
+    minx, miny, maxx, maxy = L.bounds(places)        # before claims: the ground does not move
+    # CLAIMS on open land (2026-10-18): places of their own, with their road.
+    if claims is None and run is not None and (run / "checkpoint.json").exists():
+        try:
+            claims = list(CP.load(run / "checkpoint.json").claims.values())
+        except Exception:                               # noqa: BLE001
+            claims = []
+    claim_owner = {c.name: c.owner for c in claims or []}
+    for c in claims or []:
+        pts = [L.Point(px, py) for px, py in c.road]
+        places[c.name] = L.Place(name=c.name, kind="claim", center=L.Point(c.x, c.y),
+                                 junction=c.junction, elevation=0, protected=False, path=pts,
+                                 slots=[L.Slot(c.x, c.y, 0.0)])
 
     # ONE POLYLINE PER CITY, never joined. The valleys have no road between
     # them, and a single road drawn through both would be the page asserting a
@@ -860,6 +872,9 @@ def build_payload(run: Path | None = None) -> dict:
         "parcel_m": L.PARCEL_PITCH,
         "block_m": L.BLOCK_PITCH,
         "stride_m": L.BLOCK_STRIDE,
+        # The ranges around the settled land (2026-10-18): drawn, and the
+        # reason mines near them strike richer. See layout.mountains, land.py.
+        "mountains": L.mountains(cities),
         "river": {"axis": L.river_axis(), "half": L.RIVER_HALF_WIDTH,
                   # The water between the cities; empty for one valley.
                   "borders": [{"axis": x, "half": L.BORDER_RIVER_HALF_WIDTH}
@@ -872,6 +887,8 @@ def build_payload(run: Path | None = None) -> dict:
                 "x": p.center.x, "y": p.center.y,
                 "ground": ground_for(p.name),
                 "parcels": [{"x": q.x, "y": q.y} for q in p.parcels],
+                **({"path": [[q.x, q.y] for q in p.path], "owner": claim_owner.get(p.name, "")}
+                   if p.kind == "claim" else {}),
                 "props": [{"kind": q.kind, "x": q.x, "y": q.y,
                            "scale": q.scale} for q in p.props],
             }

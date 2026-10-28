@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from typing import Callable, Protocol
 
 from . import banditry as B
+from . import combat as CB
+from . import ground as GR
 from . import raids as R
 from . import data as D
 from . import economy as E
@@ -29,8 +31,13 @@ from . import world_map as M
 from .events import EventLog, Significance
 from . import digest as DG
 from . import reflexes as RX
+from . import actions as A
+from . import progress as PG
+from . import family as FAM
+from . import delivery as DL
 from . import land as LAND
-from .state import Activity, Agent, Business, World
+from . import discovery as DS
+from .state import Activity, Agent, Business, Transaction, World
 
 TICK_SECONDS = 60.0     # one simulated minute of continuous processes
 
@@ -161,6 +168,9 @@ class Engine:
             world.sim_time + self.config.checkpoint_every_hours * 3600.0
         )
         self._next_restock = world.sim_time + 3600.0
+        # OUTPOSTS: when the frontier is next looked over for people finding
+        # each other. See `convoy/discovery.py`.
+        self._next_discovery = world.sim_time
 
     # -- main loop ---------------------------------------------------------
 
@@ -313,6 +323,17 @@ class Engine:
         self._produce(hours)
         self._pay_wages(hours)
         self._research(hours)
+        # Projects, know-how and households: the countdowns. See progress, family.
+        PG.tick_projects(w, self.log, hours)
+        PG.tick_research(w, self.log, hours)
+        FAM.tick(w, self.log)
+        CB.regen(w, hours)
+        GR.tick(w, hours)
+        self._dispatches()
+        self._debt_interest(hours)
+        if w.outposts and w.sim_time >= self._next_discovery:
+            self._next_discovery = w.sim_time + DS.EVERY_S
+            DS.tick(w, self.log)
         self._property_tax()
         self._road_tax()
         self._expire_social()
@@ -323,6 +344,48 @@ class Engine:
         self._diaries()
 
     # -- continuous processes ---------------------------------------------
+
+    def _dispatches(self) -> None:
+        """Meals a tavern sent out arrive in what their buyer carries; the
+        state's convoy collects what it bought and pays for it. Outposts,
+        2026-10-27; see `actions.order_meal` and `actions.sell_to_bidder`."""
+        w = self.world
+        for d in list(w.dispatches.values()):
+            if d.status != "on_way" or d.arrives_at > w.sim_time:
+                continue
+            d.status = "done"
+            if d.kind == "meal":
+                a = w.agents.get(d.agent)
+                if a is not None and a.alive:
+                    a.add_item(d.item, d.qty)
+                    self.log.emit(w.sim_time, "meal_delivered", actor=d.agent, subject=d.business,
+                                  location=a.location, item=d.item)
+            elif d.kind == "state_pickup":
+                biz = w.businesses.get(d.business)
+                total = round(d.unit_price * d.qty, 2)
+                if biz is not None and not biz.closed:
+                    A._income(w, biz, total)
+                    w.government.treasury -= total
+                    buyer = next((b.id for b in w.businesses.values()
+                                  if b.is_government and not b.closed), "Government")
+                    A._record_trade(w, self.log, Transaction(w.sim_time, d.item, d.qty, d.unit_price,
+                                                             biz.id, buyer, city=M.city_of(biz.location)),
+                                    "sell", biz.location)
+                    self.log.emit(w.sim_time, "state_collected", actor=d.agent, subject=biz.id,
+                                  location=biz.location, item=d.item, qty=d.qty, paid=total,
+                                  significance=Significance.MEDIUM)
+        done = [k for k, d in w.dispatches.items()
+                if d.status == "done" and d.arrives_at < w.sim_time - 6 * 3600.0]
+        for k in done:
+            del w.dispatches[k]
+
+    def _debt_interest(self, hours: float) -> None:
+        """What people owe the state for settling grows each game day."""
+        from .claims import LOAN_RATE_PER_DAY
+        grow = (1.0 + LOAN_RATE_PER_DAY) ** (hours / 24.0)
+        for a in self.world.agents.values():
+            if a.debt > 0:
+                a.debt = round(a.debt * grow, 4)
 
     def _withdraw_the_state(self, city: str | None = None) -> None:
         """Delete every government business and spill its stores onto the ground.
@@ -444,6 +507,8 @@ class Engine:
         w = self.world
         if not self.config.banditry or not w.npc_bandits:
             return
+        if agent.activity.detail.get("by_water"):
+            return
         cargo_value, what = B.cargo_at_risk(w, agent)
         if cargo_value <= 0:
             return
@@ -488,6 +553,9 @@ class Engine:
         """
         w = self.world
         if not w.raids:
+            return
+        # Not on the water, and not a newcomer still finding their feet.
+        if agent.activity.detail.get("by_water") or agent.protected_until > w.sim_time:
             return
         cargo_value, what = B.cargo_at_risk(w, agent)
         if cargo_value <= 0:
@@ -746,9 +814,8 @@ class Engine:
         buyer = w.businesses.get(con.buyer_business)
         owed = refund * con.seller_share
         if seller and buyer and owed > 0 and not seller.is_government:
-            paid = min(owed, seller.cash)
-            seller.cash -= paid
-            buyer.cash += paid
+            paid = self._draw(seller, owed, partial=True)
+            A._income(w, buyer, paid)
             self.log.emit(
                 w.sim_time, "convoy_loss_covered", actor=con.seller_business,
                 subject=con.buyer_business, location=agent.location,
@@ -824,6 +891,29 @@ class Engine:
         agent.inventory.clear()
         agent.stolen.clear()
         agent.denari = 0.0
+
+        # A DYNASTY GOES ON (2026-10-18). With a grown member in the house, the
+        # heir takes over where the dead left off: what was carried is lost,
+        # everything owned stays in the family. See convoy/family.py.
+        heir = FAM.succession(w, agent)
+        if heir is not None:
+            self._settle_escorts(agent, self._convoy_destination(agent), from_estate=True)
+            agent.health = 100.0
+            agent.hours_since_last_meal = 0.0
+            agent.in_transit = None
+            agent.activity = Activity("idle", w.sim_time)
+            if agent.current_job:
+                biz = w.businesses.get(agent.current_job[0])
+                if biz:
+                    biz.roster = [e for e in biz.roster if e.agent_id != agent.id]
+                agent.current_job = None
+            self.log.emit(
+                w.sim_time, "succession", actor=agent.id, location=agent.location,
+                significance=Significance.HIGH, cause=cause, heir=heir.name,
+                house=agent.house, dropped_units=sum(dropped_items.values()),
+                dropped_denari=round(dropped_denari, 2),
+            )
+            return
 
         payout = 0.0
         if agent.insurance.get("Life", 0.0) > 0:
@@ -989,8 +1079,10 @@ class Engine:
         rate = 0.0
         for emp in biz.production_staff():
             if emp.is_npc:
-                # NPC hires work at Novice skill, always on shift.
-                rate += E.worker_output_rate(base_rate, headcount, 0.0, eff)
+                # NPC hires work at Novice skill, always on shift -- and slower
+                # than a person; family members of the house do not.
+                slow = 1.0 if emp.agent_id.startswith("family:") else D.NPC_WORK_RATE
+                rate += E.worker_output_rate(base_rate, headcount, 0.0, eff) * slow
                 continue
             agent = w.agents.get(emp.agent_id)
             if not (agent and agent.alive and agent.activity.kind == "work"
@@ -1014,8 +1106,15 @@ class Engine:
                 agent.skill_hours[emp.role] = (
                     agent.skill_hours.get(emp.role, 0.0) + credit_skill_hours
                 )
+        # The owner's calling: a Farmer's farms, a Miner's mines... See data.CALLINGS.
+        owner = self.world.agents.get(biz.owner)
+        if owner is not None and D.calling_speeds(owner.calling, biz.type):
+            rate *= 1.0 + D.CALLING_BONUS
+        # Know-how and finished projects (convoy/progress.py).
+        rate *= PG.production_bonus(self.world, biz, owner)
         # The ground: rich land makes one good faster. See `convoy/land.py`.
-        return rate * LAND.multiplier(biz, output)
+        # Worn ground and foul air slow it. See `convoy/ground.py`.
+        return rate * LAND.multiplier(biz, output) * GR.multiplier(w, biz)
 
     def production_headroom(self, biz: "Business") -> tuple[float, str]:
         """How many more units this business could make before something stops it.
@@ -1037,6 +1136,8 @@ class Engine:
             return 0.0, "nothing set to produce"
 
         caps: list[tuple[float, str]] = []
+        if GR.spent(biz):
+            caps.append((0.0, "the seam is worked out -- sink a Deeper shaft or dig somewhere else"))
         recipe = D.REFINING_RECIPES.get(output) or D.CRAFTING_RECIPES.get(output)
         if recipe and not biz.is_government:
             short = [i for i, q in recipe.inputs.items() if biz.inventory.get(i, 0) < q]
@@ -1102,7 +1203,8 @@ class Engine:
             staff = list(biz.production_staff())
             return base_rate / len(staff) if staff else 0.0
         if emp.is_npc:
-            return E.worker_output_rate(base_rate, headcount, 0.0, eff)
+            slow = 1.0 if emp.agent_id.startswith("family:") else D.NPC_WORK_RATE
+            return E.worker_output_rate(base_rate, headcount, 0.0, eff) * slow
         agent = w.agents.get(emp.agent_id)
         if not (agent and agent.alive and agent.activity.kind == "work"
                 and agent.activity.detail.get("business") == biz.id):
@@ -1195,6 +1297,7 @@ class Engine:
             biz.production_buffer -= units
             biz.production_blocked = False
             biz.add_item(output, units)
+            GR.worked(w, self.log, biz, output, units)
             # THE FIRST HARVEST SHOWS WHAT THE GROUND IS. See `convoy/land.py`.
             if biz.land_rolled and not biz.land_revealed:
                 biz.land_revealed = True
@@ -1281,12 +1384,12 @@ class Engine:
                     if not producing:
                         continue    # idle machine, no charge
                     gross = emp.wage * hours
-                    if not biz.is_government and biz.cash < gross:
+                    if gross <= 0:
+                        continue    # family works unpaid: nothing to draw, never "unpaid"
+                    if not biz.is_government and not self._draw(biz, gross):
                         self._release_unpaid(biz, emp)
                         missed = True
                         continue
-                    if not biz.is_government:
-                        biz.cash -= gross
                     _net, tax = E.apply_wage_tax(gross, gov.wage_tax)
                     gov.collect(tax)
                     continue
@@ -1298,11 +1401,10 @@ class Engine:
                     continue    # owner self-staffing draws no wage
                 gross = emp.wage * hours
                 if not biz.is_government:
-                    if biz.cash < gross:
+                    if not self._draw(biz, gross):
                         self._release_unpaid(biz, emp)
                         missed = True
                         continue
-                    biz.cash -= gross
                 net, tax = E.apply_wage_tax(gross, gov.wage_tax)
                 agent.denari += net
                 gov.collect(tax)
@@ -1315,6 +1417,22 @@ class Engine:
                     owed=round(payroll_before, 2),
                     grace_hours=D.BANKRUPTCY_GRACE_HOURS, reason="payroll unmet",
                 )
+
+    def _draw(self, biz: Business, amount: float, partial: bool = False) -> float:
+        """Take `amount` for a business: its own cash first, then its owner's
+        pocket (2026-10-18 -- an owner's money is theirs, not the business's).
+        All or nothing, returning it (or 0.0); `partial` takes what there is."""
+        owner = self.world.agents.get(biz.owner)
+        pocket = owner.denari if owner is not None and owner.alive else 0.0
+        have = max(0.0, biz.cash) + max(0.0, pocket)
+        if have + 1e-9 < amount and not partial:
+            return 0.0
+        take = min(amount, have)
+        from_biz = min(max(0.0, biz.cash), take)
+        biz.cash -= from_biz
+        if owner is not None and take > from_biz:
+            owner.denari -= take - from_biz
+        return take
 
     def _release_unpaid(self, biz: Business, emp) -> None:
         """An unpaid worker walks. This is the brake on a payroll death spiral:
@@ -1487,7 +1605,8 @@ class Engine:
                 continue
             if biz.insolvent_since is None:
                 continue
-            if biz.cash >= biz.insolvent_debt:
+            owner = w.agents.get(biz.owner)
+            if biz.cash + (owner.denari if owner is not None and owner.alive else 0.0) >= biz.insolvent_debt:
                 biz.insolvent_since = None
                 biz.insolvent_debt = 0.0
             elif w.sim_time - biz.insolvent_since >= D.BANKRUPTCY_GRACE_HOURS * 3600.0:
@@ -1628,6 +1747,9 @@ class Engine:
                     w.vehicles[agent.mounted_vehicle].location = dest
                 agent.activity = Activity("idle", w.sim_time)
                 self._settle_escorts(agent, dest)
+                if agent.delivery:                       # convoy/delivery.py
+                    DL.load(w, self.log, agent)
+                    DL.complete(w, self.log, agent)
                 self._ask(agent, "arrived")
                 continue
 

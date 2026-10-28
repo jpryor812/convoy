@@ -14,26 +14,27 @@ YOU
     Grain: 2
   capacity: 100
   vehicle: Donkey Cart
-  weapon: Slingshot
+  weapon: Bat
   your_vehicles:
     - id=V1, type=Donkey Cart, location=Blindfold Draw, cargo_capacity=100, mounted=True, condition=functional
   businesses:
     - id=B0001, name=Tester's Farm, type=Farm, location=Blindfold Draw, cash=120.0, workers=0, developed_plots=0, employee_places=0, employee_places_free=0, storage_capacity=150, storage_used=30, researchers=0, research_tier=0, unspent_rp=0.0, production=IDLE -- making nothing and earning nothing. Call set_production to start. This type can make: Dirty Water, Wheat, Hide. It also needs somebody working in it, and a price., land=Unknown until it first produces: the ground may favour one of its goods.
       stock: Grain=30
+      projects_you_can_start: Storehouse (40, ~12 work-hours): Holds half as much again: a full yard stops production, a taller one does not., Better tools (60, ~20 work-hours): Makes everything here 10% faster, for good -- and smokier and harder on the ground., Crop rotation (50, ~16 work-hours): The soil tires a third slower., Manure pits (40, ~12 work-hours): Gives back a quarter of the soil now, and a resting field recovers twice as fast., Hedgerows (35, ~10 work-hours): Shelters the crop: foul air does half the harm here.
   road_risk:
     carrying: 6 units of your own goods
     worth: 152.0
     guards_hired: 0
     chance_of_being_robbed:
-      Refinery Row: 19%
-      Town: 39%
+      Refinery Row: 18%
+      Town: 37%
     note: If they catch you they take between half the load and ALL of it, and there is no insurance. A faster vehicle and hired guards both cut this; walking is the worst of both. Per unit delivered, one guarded cart beats many small trips.
     hiring_a_guard:
       for_the_trip_to: Town
-      risk_now: 39%
-      risk_with_one_guard: 28%
+      risk_now: 37%
+      risk_with_one_guard: 27%
       guard_costs: 9.73
-      expected_cargo_saved: 12.44
+      expected_cargo_saved: 11.71
       verdict: a guard pays for itself on this load
       how: post_escort_job, or ask in chat who will ride with you
 
@@ -59,6 +60,16 @@ WHAT NOBODY IN YOUR CITY IS MAKING
 WHAT YOU HOLD THAT NOBODY USES
   - Grain (32 held) -- worth scrap until a business uses it or it sells
   - Iron (4 held) -- worth scrap until a business uses it or it sells
+
+KNOW-HOW (one study at a time; each makes you better at something for good)
+  studying: nothing -- research(tech) to start; it lands on its own
+  known: none yet
+  could_study_next:
+    - irrigation: Irrigation (6h) -- Your farms grow 10% faster.
+    - picks: Iron picks (6h) -- Your mines dig 10% faster.
+    - bellows: Bellows (6h) -- Your refineries refine 10% faster.
+    - hearth: Brick hearths (6h) -- Your taverns, smithies, stables and stores make 10% faster.
+    - saddles: Pack saddles (6h) -- You carry 10% more.
 
 CURRENT TAX RATES
   sales: 0.05

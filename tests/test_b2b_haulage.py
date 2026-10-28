@@ -73,7 +73,7 @@ def test_a_full_delivery_conserves_goods_and_money():
 
     grain_before = refinery.inventory["Grain"]
     tavern_cash = tavern.cash
-    refinery_cash = refinery.cash
+    refinery_cash = refinery.cash + refiner.denari    # income goes to the owner (2026-10-18)
     courier_denari = courier.denari
 
     okr, msg = A.order_from_business(
@@ -88,7 +88,7 @@ def test_a_full_delivery_conserves_goods_and_money():
        str(refinery.inventory.get("Grain")))
     ok("buyer paid for goods AND escrowed carriage", tavern.cash < tavern_cash - 50.0,
        f"{tavern.cash:.2f}")
-    ok("seller was paid", refinery.cash > refinery_cash, f"{refinery.cash:.2f}")
+    ok("seller was paid", refinery.cash + refiner.denari > refinery_cash, f"{refiner.denari:.2f}")
     ok("nothing delivered yet", tavern.inventory.get("Grain", 0) == 0)
 
     # A courier with only a satchel cannot PROMISE 20 units: the claim itself
@@ -152,11 +152,11 @@ def test_cancelling_returns_the_fee_and_the_goods():
     A.order_from_business(world, log, taverner, tavern.id, refinery.id,
                           "Grain", 10, courier_fee=25.0)
     con = next(iter(world.consignments.values()))
-    cash_after_order = tavern.cash
+    cash_after_order = tavern.cash + taverner.denari
 
     okc, msg = A.cancel_consignment(world, log, taverner, con.id)
     ok("cancelled", okc, msg)
-    ok("carriage fee refunded", abs(tavern.cash - cash_after_order - 25.0) < 1e-6,
+    ok("carriage fee refunded", abs(tavern.cash + taverner.denari - cash_after_order - 25.0) < 1e-6,
        f"{tavern.cash - cash_after_order:.2f}")
     ok("goods are back with the seller", refinery.inventory.get("Grain") == grain_before,
        str(refinery.inventory.get("Grain")))
@@ -216,13 +216,16 @@ def test_open_jobs_are_visible_to_everyone():
 
 
 def test_a_business_cannot_order_beyond_its_cash():
+    # Beyond its cash AND its owner's pocket: the pocket tops a business up
+    # since 2026-10-17 (`actions._pay_for_business`).
     world, log, refiner, refinery, taverner, tavern, courier = setup()
     tavern.cash = 10.0
+    taverner.denari = 5.0
     okr, msg = A.order_from_business(
         world, log, taverner, tavern.id, refinery.id, "Grain", 20, courier_fee=50.0
     )
     ok("under-funded order refused", not okr, msg)
-    ok("the refusal says what is needed", "needs" in msg, msg)
+    ok("the refusal says what it costs and what there is", "costs" in msg and "you have" in msg, msg)
 
 
 def test_a_courier_can_only_claim_one_job():
@@ -423,10 +426,10 @@ def test_delivering_to_the_state_pays_the_seller():
     courier.location = "Copper Gulch"
     A.collect_consignment(world, log, courier, job["id"])
     courier.location = gov.location
-    before_mine, before_courier = mine.cash, courier.denari
+    before_mine, before_courier = mine.cash + owner.denari, courier.denari
     A.deliver_consignment(world, log, courier, job["id"])
-    ok("the state paid the seller", mine.cash > before_mine,
-       f"{before_mine} -> {mine.cash}")
+    ok("the state paid the seller", mine.cash + owner.denari > before_mine,
+       f"{before_mine} -> {mine.cash + owner.denari}")
     ok("the courier was paid the fee",
        abs(courier.denari - before_courier - 40.0) < 1e-6,
        f"{courier.denari - before_courier}")
@@ -448,13 +451,13 @@ def test_you_cannot_post_a_delivery_to_someone_elses_business():
 
 def test_cancelling_returns_the_goods_and_the_fee():
     world, log, owner, _c, mine, gov = _full_mine()
-    before_stock, before_cash = mine.inventory["Copper Ore"], mine.cash
+    before_stock, before_cash = mine.inventory["Copper Ore"], mine.cash + owner.denari
     A.post_delivery_job(world, log, owner, mine.id, "Copper Ore", 100, gov.id, 40.0)
     cid = next(iter(world.consignments))
     good, msg = A.cancel_consignment(world, log, owner, cid)
     ok("cancelled", good, msg)
     ok("stock back", mine.inventory["Copper Ore"] == before_stock, str(mine.inventory))
-    ok("fee refunded", abs(mine.cash - before_cash) < 1e-6, f"{mine.cash}")
+    ok("fee refunded", abs(mine.cash + owner.denari - before_cash) < 1e-6, f"{mine.cash + owner.denari}")
 
 
 def test_the_load_is_sealed():

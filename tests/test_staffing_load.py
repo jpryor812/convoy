@@ -80,7 +80,7 @@ def check(label: str, actual, expected, tol: float) -> None:
 
 def test_live_output_matches_table():
     """Measured engine output vs the Businesses tab multiplier, across the curve."""
-    base = D.RESOURCES["Wheat"].base_rate_hr      # 72/hr for a single Novice worker
+    base = D.RESOURCES["Wheat"].base_rate_hr      # per hour for a single Novice worker
     print(f"{'n':>4} {'measured/hr':>12} {'expected/hr':>12} {'multiplier':>11} {'table':>8}")
     for n in (1, 2, 3, 4, 5, 10, 15, 19, 20, 25, 30):
         measured = measure_output(n)
@@ -135,9 +135,10 @@ def test_sustenance_penalty_applies_live():
         engine.tick(60.0)
 
     produced = biz.inventory.get("Wheat", 0) + biz.production_buffer
-    check("hungry worker produces 90%", produced, 72 * 0.90, tol=0.05)
-    print(f"  hungry worker: {produced:.2f}/hr vs 72.00 baseline "
-          f"({produced / 72:.1%})")
+    wheat = D.RESOURCES["Wheat"].base_rate_hr     # 36 since 2026-10-18
+    check("hungry worker produces 90%", produced, wheat * 0.90, tol=0.05)
+    print(f"  hungry worker: {produced:.2f}/hr vs {wheat:.2f} baseline "
+          f"({produced / wheat:.1%})")
 
 
 def test_researcher_pool_is_uncapped_at_stores():
@@ -241,10 +242,11 @@ def test_research_efficiency_changes_output():
         return biz.inventory.get("Wheat", 0) + biz.production_buffer
 
     base = farm_output(0)
-    check("no research == base rate", base, 72.0, tol=0.05)
+    wheat = D.RESOURCES["Wheat"].base_rate_hr
+    check("no research == base rate", base, wheat, tol=0.05)
     for tier, bonus in [(1, 0.05), (3, 0.15), (5, 0.25)]:
         out = farm_output(tier)
-        check(f"efficiency tier {tier} gives +{bonus:.0%}", out, 72.0 * (1 + bonus), tol=0.05)
+        check(f"efficiency tier {tier} gives +{bonus:.0%}", out, wheat * (1 + bonus), tol=0.05)
         print(f"  efficiency tier {tier}: {out:.2f}/hr vs {base:.2f} base "
               f"(+{(out / base - 1):.0%})")
 

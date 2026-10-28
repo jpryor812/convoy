@@ -31,6 +31,8 @@ from typing import Any
 from . import banditry as B
 from . import data as D
 from . import land as LAND
+from . import discovery as DS
+from . import social as SO
 from . import economy as E
 from . import world_map as M
 from .events import EventLog, Significance
@@ -106,7 +108,7 @@ def _money(x: float) -> str:
 
 
 def _static_map(city: str = M.HOME_CITY, rival: str | None = None,
-                npc_bandits: bool = True) -> str:
+                npc_bandits: bool = True, outposts: bool = False) -> str:
     """The valley THIS agent lives in, and nothing about anyone else's.
 
     A citizen of Aldermarch cannot walk to Cinderhold, cannot trade there and
@@ -176,6 +178,12 @@ def _static_map(city: str = M.HOME_CITY, rival: str | None = None,
     # usually the observation withholding something; this is the same failure
     # with the sign flipped.
     lines.append(
+        f"{len(M.spurs_in(city))} spur roads dead-end off the main road, "
+        f"{M.SPUR_SECONDS:.0f}s deep each: surveyed land near the trading post. "
+        f"Everyone else lives and works on claims of open land, each joined to "
+        f"the roads by its own dirt road; travel_to any outpost or claim by its "
+        f"name."
+        if outposts else
         f"{len(M.spurs_in(city))} spur roads dead-end off the main road, "
         f"{M.SPUR_SECONDS:.0f}s deep each. Mines, farms and homes live on spurs "
         f"and nowhere else. Travelling spur-to-spur means climbing back to the "
@@ -263,11 +271,21 @@ def _static_map(city: str = M.HOME_CITY, rival: str | None = None,
     # LAND, stated once, in the cached prefix. The rules below decide who can
     # hire and how big anything gets, and repeating them per-tool would cost the
     # same tokens on every call for every agent forever.
-    lines.append(
+    lines.append((
+        f"LAND. A business needs four plots of its own. claim_land takes four "
+        f"plots of open land (a site from OPEN LAND NEAR YOU) with a dirt road to "
+        f"them; then travel_to the claim and start_business there. The price is "
+        f"set by how near it is to a trading post and to land people have built "
+        f"on: dear close in, cheap far out. A claim is its claimant's -- nobody "
+        f"else builds there -- and land counts in your net worth at what you "
+        f"paid. Founding on a named spur charges the same nearness price. Sell "
+        f"plots with list_land; buy others' with buy_listed_land.\n"
+        if outposts else
         f"LAND. Plots are finite everywhere and can sell out; "
         f"{M.market_of(city)} is scarcest. "
         f"Unsold land is {D.LAND_BASE_PRICE:.0f}/plot (buy_land), else buy from a "
-        f"holder (buy_listed_land) or sell your own (list_land).\n"
+        f"holder (buy_listed_land) or sell your own (list_land).\n")
+        +
         f"A BUSINESS SEATS ONE EMPLOYEE PER DEVELOPED PLOT beyond its "
         f"{D.STRUCTURE_PLOTS}-plot building, which you work unpaid. Founding gives "
         f"{D.SITE_BASE_PLOTS} plots = 2 hires; for a third, buy_land then "
@@ -287,7 +305,7 @@ def _static_map(city: str = M.HOME_CITY, rival: str | None = None,
 
 
 def _static_economy(state_gone: bool = False, city: str = M.HOME_CITY,
-                    no_state: bool = False) -> str:
+                    no_state: bool = False, starter: bool = False) -> str:
     lines = ["", "PRICES", ""]
     if no_state:
         # NO FIXED PRICES TO LIST, so list what things are WORTH. Book value is
@@ -400,7 +418,16 @@ def _static_economy(state_gone: bool = False, city: str = M.HOME_CITY,
         # version of this paragraph promised that government businesses "always
         # buy what you bring and sell at the prices above" -- and went on saying
         # it for the whole run after they were demolished.
-        lines.append(
+        lines.append((
+            # STARTER SITES ARE NOT A GOVERNMENT, BUT THEY EXIST (2026-10-28).
+            # A no-state world reports the state as gone, and this used to tell
+            # agents beside a state tavern that there was none.
+            "BUSINESSES. No experience is needed for anything: any role, and "
+            "founding any business, is open at any hour. Apart from the state's "
+            "four sites at each market (above), every business in the valley is "
+            "owned by one of you, or does not exist yet. Businesses are not "
+            "listed here -- find them by going and looking, or by asking in chat."
+        ) if starter else (
             "BUSINESSES. No experience is needed for anything: any role, and "
             "founding any business, is open at any hour. THERE ARE NO "
             "GOVERNMENT BUSINESSES. Nothing will buy what you bring at a fixed "
@@ -410,7 +437,7 @@ def _static_economy(state_gone: bool = False, city: str = M.HOME_CITY,
             + "Every business in the valley is "
             "owned by one of you, or does not exist yet. Businesses are not "
             "listed here -- find them by going and looking, or by asking in chat."
-        )
+        ))
         lines.append(f"  {'type':<32}{'hires'}")
         for name, spec in sorted(D.BUSINESS_TYPES.items()):
             roles = ", ".join(spec.production_roles) if spec.production_roles else "nobody"
@@ -441,6 +468,10 @@ def _static_economy(state_gone: bool = False, city: str = M.HOME_CITY,
     # of a strategy, so the table belongs in front of them.
     lines.append("")
     lines.append(
+        "WAGES per hour. The state's four sites pay the 'typical' rate; a "
+        "citizen may pay anything at or above the floor, and a worker leaves "
+        "for whoever pays more."
+        if no_state and starter else
         "WAGES per hour. Only citizens employ. 'typical' is what the role is "
         "usually worth; an employer may pay anything at or above the floor, and "
         "a worker leaves for whoever pays more."
@@ -472,7 +503,8 @@ def _static_economy(state_gone: bool = False, city: str = M.HOME_CITY,
 
 
 def _static_rules(state_gone: bool = False, city: str = M.HOME_CITY,
-                  no_state: bool = False) -> str:
+                  no_state: bool = False, starter: bool = False,
+                  outposts: bool = False) -> str:
     lines = ["", "HOW THINGS WORK", ""]
     lines.append(
         f"SUSTENANCE. Food is sold at TAVERNS only -- you cannot cook. "
@@ -480,12 +512,15 @@ def _static_rules(state_gone: bool = False, city: str = M.HOME_CITY,
             "THERE IS NO STATE TAVERN. The only food in the valley is in a "
             "tavern somebody here owns and has stocked; if none of you keeps "
             "one supplied, everybody starves. "
-            if state_gone else
+            if state_gone and not starter else
             f"The state's Tavern "
             f"({M.government_sites_for(city)['Tavern / Inn']}) charges "
             f"{E.npc_sell_price('Meal'):.2f} for a Meal: Normal for "
             f"{D.MEALS['Meal'].window_hours:.0f}h. "
         )
+        + ("You live away from the taverns: order_meal has one brought to you "
+           "for its price and a fee by distance -- order before you are hungry. "
+           if outposts else "")
         + f"A player Tavern may charge as "
         f"little as {E.player_price_floor('Meal'):.2f} and can research Quality "
         f"for meals that last longer, heal, or speed your work. "
@@ -585,6 +620,8 @@ def _static_rules(state_gone: bool = False, city: str = M.HOME_CITY,
     )
     lines.append("")
     lines.append(
+        "TAXES. None: there is no government to collect them."
+        if no_state else
         f"TAXES. Four of them. Sales tax is paid by the buyer on top of the price. "
         f"Income tax is withheld from every wage payment. Property tax is billed every "
         f"{D.PROPERTY_TAX_PERIOD_HOURS:.0f}h on assessed property value. Road tax is "
@@ -612,6 +649,8 @@ def static_briefing(
     rival: str | None = None,
     no_state: bool = False,
     npc_bandits: bool = True,
+    starter: bool = False,
+    outposts: bool = False,
 ) -> str:
     """Everything that never changes, for the cached system prompt.
 
@@ -630,7 +669,20 @@ def static_briefing(
     -- a one-city world -- produces the briefing exactly as it read before there
     were cities, which is what keeps every earlier run comparable.
     """
-    if rival is None:
+    if outposts:
+        # NO TOWNS, SO NO CITY CONTEST (2026-10-28): every settler plays for
+        # their own house. The cities are only where the trading posts stand.
+        header = (
+            "You are a settler in Convoy, a Bronze Age frontier. Your goal is to "
+            "maximise your own Net Worth (denari + businesses + land at what you "
+            "paid + vehicles + inventory, less what you owe the state) by the end, "
+            "WITHOUT DYING. Starving kills you and wipes everything you own, so a "
+            "dead settler scores nothing however rich it was an hour earlier -- "
+            "staying alive is the first term. You compete and cooperate with other "
+            "real settlers. Nothing below ever changes; your current situation "
+            "arrives separately with each decision.\n\n"
+        )
+    elif rival is None:
         header = (
             "You are a person living in Convoy, a Bronze Age valley economy. Your goal "
             "is to maximise your own Net Worth (denari + businesses + vehicles + "
@@ -722,8 +774,10 @@ def static_briefing(
         # to try passing goods back and forth to inflate a valuation.
         "PROFIT MEANS ABOVE BOOK PRICE. Goodwill counts only what you sell ABOVE "
         "a good's listed base price. Selling AT book moves value from shelf to "
-        "purse and earns nothing; selling BELOW it -- the state's 0.4x offer is "
-        "below it -- loses you the difference, and passing goods back and forth "
+        "purse and earns nothing; selling BELOW it -- "
+        + ("the state's convoy pays half what a good sells for between people"
+           if outposts else "the state's 0.4x offer is below it")
+        + " -- loses you the difference, and passing goods back and forth "
         "with a neighbour at book earns neither of you a denari. What pays is "
         "buying low, ADDING something, and selling high."
     )
@@ -732,18 +786,68 @@ def static_briefing(
         # buy at hour zero, the briefing has to say what the valley must make
         # first, or nobody makes it. The food chain is spelled out because the
         # 2026-10-15 run starved for want of a tavern even with a state.
-        header += (
+        header += ((
+            # OUTPOSTS (2026-10-27): the state's four as trading posts, the
+            # convoy's price, and how a citizen gets started from an outpost.
+            "\n\nOUTPOSTS: THERE ARE NO TOWNS YET, NO GOVERNMENT AND NO TAX. "
+            "Everyone lives at an outpost of their own on open land -- YOUR "
+            "OUTPOST says where yours is. Each city's market is a STATE TRADING "
+            "POST with four sites, a Tavern, Farm, Mine and Refinery. They SELL at "
+            "a fixed HIGH price (about 1.5x book; its Tavern also sells weapons, "
+            "armour and tools), HIRE anyone at a fixed wage, and BUY ANY good at "
+            "HALF what it sold for between people over the last day "
+            "(sell_to_bidder: the state's convoy collects from your yard, free, "
+            "and pays when it collects). A citizen who makes what the state "
+            "sells and prices it under the state takes its customers.\n"
+            "HOW TO START. Your grown family works any business you own for "
+            "nothing (assign_family). A business needs four plots of its own: "
+            "claim_land a site from OPEN LAND NEAR YOU, travel_to it, then "
+            "start_business there -- farms do best near water, mines near the "
+            "mountains, and each site says which. Land near people and the "
+            "trading posts costs more; far out it is cheap. YOU CAN ONLY TRADE "
+            "WITH PEOPLE YOU HAVE FOUND (the state excepted): you find someone "
+            "by passing within sight of them or their land, so travel to meet "
+            "buyers and sellers. Then say_hi, share_info and ask_info: you know "
+            "only what people share, and messages need their contact. Public "
+            "chat is heard only nearby. Short of money, "
+            "take the state's wage at a trading post first. If you borrowed to "
+            "settle, YOUR OUTPOST says what you owe: it grows 2% a day and a "
+            "fifth of what your businesses earn pays it down (repay_debt pays "
+            "more). Settling near others is how towns will form.\n"
+        ) if outposts else (
+            "\n\nTHERE IS NO GOVERNMENT, AND NO TAX -- only FOUR STATE SITES "
+            "the town was started with: the state's Tavern (in the market "
+            "square), Farm, Mine and Refinery. They are a backstop: they SELL "
+            "at a fixed HIGH price (about 1.5x book; its Tavern also sells "
+            "weapons, armour and tools), BUY ANY good at a fixed LOW price "
+            "(0.4x book; sell_to_bidder), and HIRE anyone at a fixed wage -- so nobody "
+            "starves on day one and anyone can earn a wage. Everything else -- "
+            "every other shop, job, cart and weapon -- exists only because one "
+            "of you made it, and a citizen who makes what the state sells and "
+            "prices it under the state takes its customers.\n"
+        ) if starter else (
             "\n\nTHERE IS NO GOVERNMENT. Nothing buys or sells at a fixed "
             "price, nobody pays a wage but another citizen, and there is no tax. "
             "Every shop, job, meal, cart and weapon in the world exists only "
             "because one of you made it.\n"
+        )) + (
             f"YOU START FED FOR {D.START_FED_HOURS_NO_STATE:.0f} HOURS. After "
             "that you can eat only a Meal cooked at a Tavern. A Tavern cooks "
             "Meals from Grain and Purified Water; a Refinery makes those from "
-            "Wheat and Dirty Water; a Farm grows those. NOBODY MAKES ANY OF IT "
+            "Wheat and Dirty Water; a Farm grows those. "
+        ) + ((
+            "The state's Tavern feeds anyone who can pay its high price, so "
+            "the opportunity is to feed the town CHEAPER: a citizen chain of "
+            "farm, refinery and tavern that undercuts it takes every customer.\n"
+            + ("You live away from the taverns: order_meal has a meal brought "
+               "for its price and a fee by distance -- order before you are "
+               "hungry.\n" if outposts else "")
+        ) if starter else (
+            "NOBODY MAKES ANY OF IT "
             "YET: unless citizens found farms, a refinery and a tavern -- and "
             "staff them -- within the first day, people starve, and a citizen "
             "who starves is a hole in the city's score.\n"
+        )) + (
             "The same goes for everything else. A Stable breeds Camels from "
             "Purified Water, Grain and Tanned Leather (a Refinery tans Hide from "
             "a Farm). A Weaponsmith forges Slings and Spears from Lumber and "
@@ -762,6 +866,7 @@ def static_briefing(
                           "Vehicle Dealer / Stable", "Weaponsmith / Armory")
                 if n in D.BUSINESS_TYPES
             )
+            + (", plus the land it stands on" if outposts else "")
             + ". A link that costs more than one person has needs two or more "
             "to POOL their cash with `pay`. Your neighbours are deciding at the "
             "same time as you: one Tavern feeds a city, and a city with four "
@@ -781,9 +886,9 @@ def static_briefing(
         )
     return "\n".join([
         header, "",
-        _static_map(city, rival, npc_bandits),
-        _static_economy(state_gone, city, no_state),
-        _static_rules(state_gone, city, no_state),
+        _static_map(city, rival, npc_bandits, outposts),
+        _static_economy(state_gone, city, no_state, starter),
+        _static_rules(state_gone, city, no_state, starter, outposts),
     ])
 
 
@@ -802,6 +907,8 @@ def briefing_for(world: World, agent: Agent) -> str:
         rival=([c for c in world.cities if c != city] or None) if world.is_contest() else None,
         no_state=world.no_state,
         npc_bandits=world.npc_bandits,
+        starter=world.starter_sites,
+        outposts=world.outposts,
     )
 
 
@@ -1109,71 +1216,88 @@ def affordances(world: World, agent: Agent) -> list[str]:
     # and headcount is a property of land -- so an owner who cannot see the
     # ground market cannot grow, and would read a hiring refusal as the world
     # being arbitrary. PHASE4 §2, in advance, for a system built today.
-    free = M.plots_free(world, agent.location)
-    mine_here = [
-        p for p in world.plots.values()
-        if p.owner == agent.id and p.location == agent.location
-    ]
-    spare = [p for p in mine_here if not p.developed and p.business is None
-             and not p.is_building(world.sim_time)]
-    if free:
-        out.append(
-            f"LAND HERE: {free} of {M.plots_at(agent.location)} plots unsold at "
-            f"{D.LAND_BASE_PRICE:.0f} each -- buy_land(plots=N). Raw land seats "
-            f"nobody until develop_plot builds on it."
-        )
+    if world.outposts and M.is_claim(agent.location):
+        # A claim is somebody's land, bought with it: there is no unsold land
+        # here to buy, and its four plots are one building's worth.
+        held = world.claims.get(agent.location)
+        free_mine = [p for p in world.plots.values()
+                     if p.owner == agent.id and p.location == agent.location
+                     and not p.business and not p.home]
+        if held is not None and held.owner != agent.id:
+            who = world.agents.get(held.owner)
+            out.append(f"LAND HERE: {agent.location} is {who.name if who else 'somebody'}'s claim.")
+        elif agent.home == agent.location:
+            out.append("LAND HERE: your home fills this claim. To found a business, "
+                       "claim_land a site from OPEN LAND NEAR YOU and found it there.")
+        elif len(free_mine) >= M.SITE_BASE_PLOTS:
+            out.append(f"LAND HERE: your claim, {len(free_mine)} plots free -- found any "
+                       f"business here with start_business (the land is already yours).")
     else:
-        out.append(
-            f"LAND HERE: every one of {M.plots_at(agent.location)} plots is owned. "
-            f"To build here you must buy from a holder -- check land for sale."
-        )
-    if spare:
-        out.append(
-            f"You hold {len(spare)} undeveloped plot(s) here. develop_plot(business) "
-            f"turns one into a place for one more employee."
-        )
-
-    if M.is_spur(agent.location):
-        out.append(
-            f"This is spur land: found a mine or farm ({M.SITE_BASE_PLOTS} plots, "
-            f"included in the startup cost) or buy a home ({M.HOME_BASE_PLOTS} "
-            f"plots) here."
-        )
-    else:
-        # Saying only what CANNOT be built here reads as "you cannot build here",
-        # and agents behaved accordingly: in the 2026-08-15 smoke, three agents
-        # sat on 225-285 denari -- enough to found four of the five types that
-        # belong on this ground -- and never tried. Name what IS possible, and
-        # what it costs, since affording it is the whole question.
-        affordable = sorted(
-            (spec.startup_cost, name)
-            for name, spec in D.BUSINESS_TYPES.items()
-            if name not in M.PLOT_CONSUMING_BUSINESSES
-            and spec.startup_cost <= agent.denari
-        )
-        if affordable and free >= D.STORE_BASE_PLOTS:
+        free = M.plots_free(world, agent.location)
+        mine_here = [
+            p for p in world.plots.values()
+            if p.owner == agent.id and p.location == agent.location
+        ]
+        spare = [p for p in mine_here if not p.developed and p.business is None
+                 and not p.is_building(world.sim_time)]
+        if free:
             out.append(
-                "Main road: mines and farms need spur land, but you could found "
-                + ", ".join(f"a {n} ({c:.0f})" for c, n in affordable[:5])
-                + " right here."
-            )
-        elif affordable:
-            out.append(
-                f"Main road: you can afford to found here but there are only "
-                f"{free} unsold plots and a business needs "
-                f"{D.STORE_BASE_PLOTS}. Buy land from a holder, or found elsewhere."
+                f"LAND HERE: {free} of {M.plots_at(agent.location)} plots unsold at "
+                f"{D.LAND_BASE_PRICE:.0f} each -- buy_land(plots=N). Raw land seats "
+                f"nobody until develop_plot builds on it."
             )
         else:
-            cheapest = min(
+            out.append(
+                f"LAND HERE: every one of {M.plots_at(agent.location)} plots is owned. "
+                f"To build here you must buy from a holder -- check land for sale."
+            )
+        if spare:
+            out.append(
+                f"You hold {len(spare)} undeveloped plot(s) here. develop_plot(business) "
+                f"turns one into a place for one more employee."
+            )
+
+        if M.is_spur(agent.location):
+            out.append(
+                f"This is spur land: found a mine or farm ({M.SITE_BASE_PLOTS} plots, "
+                f"included in the startup cost) or buy a home ({M.HOME_BASE_PLOTS} "
+                f"plots) here."
+            )
+        else:
+            # Saying only what CANNOT be built here reads as "you cannot build here",
+            # and agents behaved accordingly: in the 2026-08-15 smoke, three agents
+            # sat on 225-285 denari -- enough to found four of the five types that
+            # belong on this ground -- and never tried. Name what IS possible, and
+            # what it costs, since affording it is the whole question.
+            affordable = sorted(
                 (spec.startup_cost, name)
                 for name, spec in D.BUSINESS_TYPES.items()
                 if name not in M.PLOT_CONSUMING_BUSINESSES
+                and spec.startup_cost <= agent.denari
             )
-            out.append(
-                f"Main road: mines and farms need spur land. The cheapest business "
-                f"you could found here is a {cheapest[1]} at {cheapest[0]:.0f} "
-                f"and you have {agent.denari:.0f}."
-            )
+            if affordable and free >= D.STORE_BASE_PLOTS:
+                out.append(
+                    "Main road: mines and farms need spur land, but you could found "
+                    + ", ".join(f"a {n} ({c:.0f})" for c, n in affordable[:5])
+                    + " right here."
+                )
+            elif affordable:
+                out.append(
+                    f"Main road: you can afford to found here but there are only "
+                    f"{free} unsold plots and a business needs "
+                    f"{D.STORE_BASE_PLOTS}. Buy land from a holder, or found elsewhere."
+                )
+            else:
+                cheapest = min(
+                    (spec.startup_cost, name)
+                    for name, spec in D.BUSINESS_TYPES.items()
+                    if name not in M.PLOT_CONSUMING_BUSINESSES
+                )
+                out.append(
+                    f"Main road: mines and farms need spur land. The cheapest business "
+                    f"you could found here is a {cheapest[1]} at {cheapest[0]:.0f} "
+                    f"and you have {agent.denari:.0f}."
+                )
 
     if not M.is_protected(agent.location):
         out.append("Unprotected ground: you can be attacked and robbed here.")
@@ -1398,9 +1522,12 @@ def _owned_business_view(world: World, bid: str) -> dict[str, Any]:
                 from . import actions as A   # circular at import time, as in `observe`
                 best = None
                 for s in world.businesses.values():
-                    if (s.closed or s.is_government or s.owner == b.owner
-                            or s.inventory.get(item, 0) <= 0 or item not in s.retail_prices
-                            or M.city_of(s.location) not in world.cities):
+                    if s.closed or s.owner == b.owner or M.city_of(s.location) not in world.cities:
+                        continue
+                    if s.is_government:
+                        if item not in (s.spec.outputs or ()):
+                            continue
+                    elif s.inventory.get(item, 0) <= 0 or item not in s.retail_prices:
                         continue
                     if not A._may_buy_from(b, s)[0]:
                         continue
@@ -1410,6 +1537,9 @@ def _owned_business_view(world: World, bid: str) -> dict[str, Any]:
                     return f" -- nobody has it on sale; post_buy_order to ask for it"
                 where = ("same place, handed over at once" if best.location == b.location
                          else best.location)
+                if best.is_government:
+                    return (f" -- the state's {best.type} sells it at {best.price_for(item):.2f} "
+                            f"({best.id}, {where}); order_from_business")
                 return (f" -- ON SALE: {best.inventory.get(item, 0)} at "
                         f"{best.price_for(item):.2f} from {best.name} ({best.id}, {where}); "
                         f"order_from_business")
@@ -1432,6 +1562,24 @@ def _owned_business_view(world: World, bid: str) -> dict[str, Any]:
     ground = LAND.describe(b)
     if ground:
         view["land"] = ground
+    from . import ground as GR
+    wear = GR.describe(world, b)
+    if wear:
+        view["ground_and_air"] = wear
+    # PROJECTS (2026-10-18): what is being built here, or what could be.
+    from . import progress as PG
+    owner = world.agents.get(b.owner)
+    if b.project:
+        eta = PG.eta_hours(world, b, owner)
+        mat = PG.PROJECTS[b.project["kind"]]["material"]
+        view["project"] = (f"building {b.project['kind']}: {b.project['done'] / b.project['total']:.0%}, "
+                           f"ready in about {eta:.1f}h -- sooner with more people on shift here "
+                           f"and {mat} in the yard")
+    elif not b.is_government:
+        opts = [f"{k} ({PG.project_cost(b, k):.0f}, ~{PG.project_work(b, k):.0f} work-hours): {v['does']}"
+                for k, v in PG.PROJECTS.items() if k in PG.available(b) and b.improvements.get(k, 0) < v["max"]]
+        if opts:
+            view["projects_you_can_start"] = opts
     mine = [
         p for p in world.job_postings.values()
         if p.business_id == bid and p.is_live(world.sim_time)
@@ -1501,7 +1649,7 @@ def _contest_view(world: World, agent: Agent) -> dict[str, Any] | None:
     on any of it, since there is no road, and a page of unusable detail about
     the enemy is per-call tokens spent on a decision that cannot be made.
     """
-    if not world.is_contest():
+    if not world.is_contest() or world.outposts:
         return None
 
     city = world.city_of(agent)
@@ -1699,7 +1847,22 @@ def observe(
     # that went on describing the state for another thirty-five hours. This says
     # it at the top of every observation for the rest of the run.
     gone_at = world.state_gone_at(world.city_of(agent))
-    if world.no_state:
+    if world.outposts:
+        obs_state_gone = (
+            "NO TOWNS YET AND NO GOVERNMENT: each market is a state trading "
+            "post whose Tavern, Farm, Mine and Refinery sell high, hire at a "
+            "fixed wage and buy at half the price between people. Everything "
+            "else is another citizen's -- if a thing is going to exist, one of "
+            "you makes it."
+        )
+    elif world.no_state and world.starter_sites:
+        obs_state_gone = (
+            "NO GOVERNMENT BUT FOUR STATE SITES: its Tavern, Farm, Mine and "
+            "Refinery sell high, buy low and hire at a fixed wage. Everything "
+            "else is another citizen's -- if a thing is going to exist, one of "
+            "you makes it."
+        )
+    elif world.no_state:
         obs_state_gone = (
             "THERE IS NO GOVERNMENT. Every shop, job, meal and buyer is another "
             "citizen's -- if a thing is going to exist, one of you makes it."
@@ -1731,6 +1894,8 @@ def observe(
         ),
         "weapon": agent.equipped_weapon,
     }
+    if agent.calling:
+        you["calling"] = f"{agent.calling}: {D.CALLINGS.get(agent.calling, '')} For life."
     # Vehicles an agent OWNS, with their ids. Without this the id exists only
     # inside the engine: `mount` needs one, the schema tells the model never to
     # invent an id, and nothing in the observation ever supplied one. Every
@@ -1861,7 +2026,8 @@ def observe(
             {
                 "id": p.id, "at": p.location,
                 "state": (
-                    "building" if p.is_building(world.sim_time)
+                    "your home" if p.home
+                    else "building" if p.is_building(world.sim_time)
                     else "developed" if p.developed else "raw"
                 ),
                 "attached_to": p.business,
@@ -1869,6 +2035,87 @@ def observe(
             }
             for p in sorted(my_land, key=lambda x: x.id)[:12]
         ]
+
+    # OUTPOSTS (2026-10-27): where you live, what you owe, how you eat, and the
+    # land you could claim next. Per agent, so here and not in the briefing.
+    if world.outposts:
+        from . import claims as CL
+        outpost: dict[str, Any] = {"home": agent.home or "not settled"}
+        if agent.debt > 0:
+            outpost["you_owe_the_state"] = (
+                f"{agent.debt:.2f} -- grows {CL.LOAN_RATE_PER_DAY:.0%} a day; a fifth of what your "
+                f"businesses earn pays it down; repay_debt pays more")
+        coming = [d for d in world.dispatches.values()
+                  if d.agent == agent.id and d.status == "on_way"]
+        for d in coming:
+            mins = max(1, round((d.arrives_at - world.sim_time) / 60))
+            what = (f"{d.item} on its way to you" if d.kind == "meal"
+                    else f"the state's convoy coming for {d.qty} {d.item} ({d.unit_price * d.qty:.2f})")
+            outpost.setdefault("on_the_way", []).append(f"{what}, in {mins} min")
+        meals = sum(q for i, q in agent.inventory.items() if i in D.MEALS)
+        if meals:
+            outpost["meals_you_carry"] = meals
+        food = []
+        for t in world.businesses.values():
+            if t.closed or t.type != "Tavern / Inn" or M.city_of(t.location) not in world.cities:
+                continue
+            if t.location == agent.location:
+                food.append({"tavern": t.id, "at": t.location, "note": "here: buy_meal"})
+                continue
+            meal = E.best_meal_for_tier(0 if t.is_government else t.research.quality_tier, "duration")
+            price = t.price_for(meal)
+            fee = A._meal_fee(world, t, agent.location)
+            mins = round(A._dispatch_hours(world, t.location, agent.location, A.MEAL_PREP_H) * 60)
+            food.append({"tavern": t.id, "at": t.location, "meal": meal,
+                         "brought_to_you": round(price + fee, 2), "minutes": mins})
+        food.sort(key=lambda r: r.get("brought_to_you", 0))
+        if food:
+            outpost["food (order_meal(tavern) to have it brought)"] = food[:4]
+        # WHO YOU HAVE FOUND (2026-10-28): you can only trade with them, and
+        # you know only what each has shared with you.
+        found = [world.agents[k] for k in agent.known if k in world.agents and world.agents[k].alive]
+        rows = []
+        for o in found[:10]:
+            v = SO.view_of(world, agent, o)
+            bits = []
+            if "standing" in v:
+                bits.append(f"worth {v['standing']['worth']:.0f}, rank {v['standing']['rank']}")
+            if "holdings" in v and v["holdings"]["businesses"]:
+                bits.append("owns " + ", ".join(f"{n} {t}" for t, n in v["holdings"]["businesses"].items()))
+            if "locations" in v:
+                bits.append("at " + ", ".join(f"{p['what']} {p['place']}" for p in v["locations"][:3]))
+            if "trade" in v:
+                sells = ", ".join(f"{r['item']} {r['price']:.2f}" for r in v["trade"]["selling"][:3])
+                buys = ", ".join(f"{r['item']} {r['price']:.2f}" for r in v["trade"]["buying"][:3])
+                bits.append(f"sells {sells or 'nothing'}; buys {buys or 'nothing'}")
+            if "family" in v:
+                bits.append("family " + ", ".join(f"{m['name']} ({m['role']}{', grown' if m['grown'] else ''})"
+                                                  for m in v["family"][:4]))
+            bits.append("contact: yes" if v["contact"] else "no contact")
+            told = v["they_have_from_you"]
+            rows.append(f"{o.id} {o.name} ({o.house}): " + "; ".join(bits)
+                        + (f" | you shared: {', '.join(told)}" if told else " | you shared nothing"))
+        outpost["people_you_have_found"] = rows or ["nobody yet -- you can only trade with people you have found"]
+        asks = [r for r in world.share_requests.values() if r.target == agent.id and r.status == "open"]
+        if asks:
+            outpost["requests_to_you (answer_request)"] = [
+                f"{r.id}: {world.agents[r.sender].name} ({r.sender}) asks for your {r.kind}"
+                for r in asks[:6] if r.sender in world.agents]
+        groups = [g for g in world.groups.values() if agent.id in g.members]
+        if groups:
+            outpost["your_groups (post_group_chat)"] = [
+                f"{g.id} {g.name}: {len(g.members)} members" for g in groups[:6]]
+        smoke = DS.glimpses(world, agent)
+        if smoke:
+            outpost["smoke_on_the_horizon (settlers you have not found)"] = [
+                f"{g['distance_m']:.0f} m {g['toward']}, near {g['nearest_place']}" for g in smoke]
+        outpost["to_find_more"] = (
+            f"travel the roads, the spurs and to other trading posts: anyone you pass "
+            f"within {DS.SIGHT_M:.0f} m, or whose land you pass, you find, and they find you")
+        obs["your_outpost"] = outpost
+        sites = CL.sites_near(world, agent)
+        if sites:
+            obs["open_land_near_you"] = sites
 
     # Land other agents have put up for sale. Without this, `buy_listed_land`
     # is an action whose only argument is unobtainable.
@@ -1912,10 +2159,71 @@ def observe(
             for b in world.businesses.values()
             if not b.closed and b.spec.outputs and b.id not in agent.owned_businesses
             and any(D.is_intermediate(i) for i in b.spec.outputs)
+            and DS.business_known(world, agent, b)          # outposts: people you have found
             # Any city of this world: roads join them now, and a supplier in
             # the next city is real trade -- a longer, more exposed haul.
             and M.city_of(b.location) in world.cities
         ]
+
+    # THE HOUSEHOLD AND KNOW-HOW (2026-10-18). See family.py, progress.py.
+    from . import family as FAM
+    from . import progress as PG
+    if agent.house:
+        now = world.sim_time
+        def _line(m):
+            if not m.adult:
+                return (f"{m.id} {m.name}: {m.role or 'child'}, of age in "
+                        f"{max(0.0, (m.grown_at - now) / 86400):.1f} days ({m.calling}); "
+                        f"feed_family with a Meal to bring it a day sooner")
+            bits = [f"{m.id} {m.name}: grown, {m.calling}"]
+            bits.append(f"works at {m.works_at}" if m.works_at else "idle at home (assign_family to put them to work)")
+            if m.spouse == FAM.HEAD:
+                bits.append("your partner")
+            elif m.spouse:
+                sp = FAM.member(agent, m.spouse)
+                bits.append(f"married to {sp.name if sp else '?'}")
+            elif m.adult:
+                bits.append("unmarried")
+            return ", ".join(bits)
+        obs["your_house"] = {
+            "house": f"{agent.house}, {len(agent.family)} of {FAM.cap(agent)} in the household",
+            "members": [_line(m) for m in agent.family] or ["nobody: the house is just you"],
+            "allies": [f"{world.agents[a].house} ({a})" for a in agent.allies if a in world.agents] or "none yet",
+            "how it grows": ("children are born only to a married couple; marry a grown member to "
+                             "another house's with propose_marriage -- theirs joins you, the houses "
+                             "become allies. A grown member is also your heir if you die."),
+        }
+        offers = [o for o in world.marriage_offers.values() if o.target == agent.id and o.status == "open"]
+        if offers:
+            obs["marriage_proposals_to_you"] = [
+                f"{o.id}: {world.agents[o.proposer].house} ({o.proposer}) asks for your "
+                f"{(FAM.member(agent, o.their_member) or type('x', (), {'name': '?'})).name} "
+                f"to marry their {(FAM.member(world.agents[o.proposer], o.member) or type('x', (), {'name': '?'})).name}, "
+                f"dowry {o.dowry:.0f} -- accept_marriage or decline_marriage"
+                for o in offers if o.proposer in world.agents]
+        if any(m.adult and not m.spouse for m in agent.family):
+            city = world.city_of(agent)
+            matches = []
+            for other in (list(world.agents.values()) if world.outposts else world.agents_in(city)):
+                if other.id == agent.id or not other.alive or not other.house:
+                    continue
+                if world.outposts and not SO.sees(world, agent, other, "family"):
+                    continue
+                free = [m for m in other.family if m.adult and not m.spouse]
+                if free:
+                    matches.append(f"{other.house} ({other.id}): " + ", ".join(
+                        f"{m.id} {m.name} ({m.calling})" for m in free[:2]))
+            if matches:
+                obs["houses_you_could_marry_into"] = matches[:6]
+    study = agent.researching
+    can = [f"{k}: {t['name']} ({t['hours']}h) -- {t['does']}" for k, t in PG.TECHS.items()
+           if PG.can_study(agent, k)[0]]
+    obs["know_how"] = {
+        "studying": (f"{PG.TECHS[study['tech']]['name']}, learned in {PG.research_eta(agent):.1f}h"
+                     if study else "nothing -- research(tech) to start; it lands on its own"),
+        "known": [PG.TECHS[t]["name"] for t in agent.tech] or "none yet",
+        "could_study_next": can[:6],
+    }
 
     # BUY ORDERS (2026-10-17): somebody has named a price for a thing. Shown to
     # the owners who could fill one -- a business of theirs holds it or makes
@@ -1931,6 +2239,8 @@ def observe(
             if not holders:
                 continue
             buyer = world.businesses.get(o.business)
+            if buyer is None or not DS.business_known(world, agent, buyer):
+                continue
             fillable.append({
                 "order": o.id, "wants": f"{o.qty} {o.item} at {o.price:.2f} each",
                 "for": f"{buyer.name if buyer else o.business} at {buyer.location if buyer else '?'}",
@@ -2022,6 +2332,22 @@ def observe(
         maker_type = next(
             (t for t, spec in D.BUSINESS_TYPES.items() if item in spec.outputs), None)
         if maker_type is None:
+            continue
+        state_only = world.starter_sites and makers and all(b.is_government for b in makers)
+        makers = [b for b in makers if not b.is_government] or (
+            [] if world.starter_sites else makers)
+        if state_only:
+            # The state's sites sell at their fixed price whether or not they
+            # make anything, and nobody can switch them on: say who supplies it.
+            cost = D.BUSINESS_TYPES[maker_type].startup_cost
+            where = ("on land you claim_land" if world.outposts
+                     else "on free ground")
+            gaps.append(
+                f"ONLY THE STATE SELLS {item}, at its high fixed price. A "
+                f"citizen's {maker_type} ({cost:.0f}, {where}) that undercuts it "
+                f"takes its customers."
+                + (" You can afford it." if agent.denari >= cost else "")
+            )
             continue
         if makers:
             idle = makers[0]
@@ -2326,15 +2652,21 @@ def render(obs: dict[str, Any]) -> str:
         ("the_contest", "THE CONTEST (your city against theirs -- this is the score)"),
         ("whats_working", "WHAT'S WORKING ACROSS THE WORLD (a summary everyone gets)"),
         ("you", "YOU"),
+        ("your_outpost", "YOUR OUTPOST (where you live, what you owe, how you eat)"),
         ("here", "WHERE YOU ARE"),
         ("on_the_ground_here", "ON THE GROUND HERE, UNCLAIMED (loot_ground takes it)"),
         ("player_prices_here", "PLAYER PRICES HERE"),
         ("market_prices", "WHAT GOODS HAVE ACTUALLY BEEN SELLING FOR"),
         ("your_land", "LAND YOU OWN"),
         ("land_for_sale", "LAND FOR SALE (other agents' asking prices)"),
+        ("open_land_near_you", "OPEN LAND NEAR YOU (claim_land(site_id); near people costs more)"),
         ("you_can", "WHAT YOU CAN DO FROM HERE"),
         ("nobody_makes", "WHAT NOBODY IN YOUR CITY IS MAKING"),
         ("nobody_uses", "WHAT YOU HOLD THAT NOBODY USES"),
+        ("your_house", "YOUR HOUSE (your family: your first workers, and your heirs)"),
+        ("marriage_proposals_to_you", "MARRIAGE PROPOSALS TO YOUR HOUSE"),
+        ("houses_you_could_marry_into", "HOUSES WITH SOMEONE TO MARRY (propose_marriage)"),
+        ("know_how", "KNOW-HOW (one study at a time; each makes you better at something for good)"),
         ("your_raid", "YOUR RAID (you are lying in wait)"),
         ("raids_to_join", "RAIDS YOUR NEIGHBOURS ARE LYING IN WAIT ON (join_raid)"),
         ("on_the_roads", "LOADS ON THE ROADS RIGHT NOW"),

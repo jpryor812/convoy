@@ -116,8 +116,9 @@ def test_tools_speed_up_extraction_only():
 
     farm_base = output("Farm", "Wheat", False)
     farm_tools = output("Farm", "Wheat", True)
-    check("farm base rate", round(farm_base, 2), 72.0)
-    check("tools give +25% on a farm", round(farm_tools, 2), round(72.0 * 1.25, 2))
+    wheat = D.RESOURCES["Wheat"].base_rate_hr     # 36 since 2026-10-18
+    check("farm base rate", round(farm_base, 2), wheat)
+    check("tools give +25% on a farm", round(farm_tools, 2), round(wheat * 1.25, 2))
 
     # A Refinery is not an extraction business -- tools must do nothing there.
     ref_base = output("Refinery", "Charcoal", False)

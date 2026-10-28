@@ -342,9 +342,11 @@ def test_payload_stays_within_budget():
     # rival is passed -- so this guard keeps measuring the thing it has always
     # measured. The contest briefing runs ~400 tokens longer and is cached
     # per city, twice per run.
+    # +100 on 2026-10-18: the River Barge's and the Donkey's rows in the
+    # vehicle and recipe tables.
     ok(
-        "briefing under 5.4k tokens",
-        len(brief) // 4 < 5400,
+        "briefing under 5.5k tokens",
+        len(brief) // 4 < 5500,
         f"~{len(brief) // 4} tokens",
     )
     ok(

@@ -6,6 +6,7 @@ against it. Everything is plain dataclasses so checkpointing is straightforward.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -162,6 +163,14 @@ class Plot:
     developing_for: str | None = None         # business the build is for
     # Asking price if the owner has put it on the market, else None.
     for_sale_at: float | None = None
+    # A citizen's home stands on it (2026-10-18): not for sale, not a business.
+    home: bool = False
+    # A defense standing on it: "Guard post" | "Catapult" (2026-10-18).
+    structure: str = ""
+    # What its owner paid for it (2026-10-28): land counts in net worth at
+    # its purchase price. Land handed over with a business, or made before
+    # this, paid nothing and counts nothing.
+    paid: float = 0.0
 
     def is_building(self, now: float) -> bool:
         return self.developing_until is not None and now < self.developing_until
@@ -232,7 +241,7 @@ class Agent:
     # Hot goods. Kept OUT of `inventory` so every sell/trade path excludes them
     # automatically -- they must be laundered in a safehouse first.
     stolen: dict[str, int] = field(default_factory=dict)
-    equipped_weapon: str = "Slingshot"
+    equipped_weapon: str = "Bat"
     equipped_tools: bool = False   # Upgraded Tools: +extraction speed while equipped
     equipped_armor: dict[str, str | None] = field(
         default_factory=lambda: {"Head": None, "Chest": None, "Legs": None}
@@ -245,6 +254,41 @@ class Agent:
     skill_hours: dict[str, float] = field(
         default_factory=lambda: {r: 0.0 for r in D.WAGE_ROLES}
     )
+    # A lifetime bonus, one of D.CALLINGS ("" for none). See data.CALLINGS.
+    calling: str = ""
+    # KNOW-HOW (2026-10-18): techs learned, and the one being studied
+    # {"tech": id, "done": research-hours}. See convoy/progress.py.
+    tech: list[str] = field(default_factory=list)
+    researching: dict[str, Any] | None = None
+    # THE HOUSEHOLD: family members (scripted, not citizens), the house's name
+    # (the dynasty), and the houses married into it. See convoy/family.py.
+    family: list["FamilyMember"] = field(default_factory=list)
+    house: str = ""
+    sex: str = ""                    # "m" | "f"; the head of the house's own
+    allies: list[str] = field(default_factory=list)
+    # Raiders cannot touch a newcomer until this time (sim seconds).
+    protected_until: float = 0.0
+    # OUTPOSTS (2026-10-27): the claim your home stands on, and whether you
+    # have chosen it yet. Everyone before outposts is settled, homeless or in
+    # a market square. See `claims.settle`.
+    home: str = ""
+    settled: bool = True
+    # Owed to the state: borrowed to settle somewhere dear. Grows daily and is
+    # paid down from what your businesses earn. See `claims.settle`.
+    debt: float = 0.0
+    # The settlers this one has found (agent ids). With outposts you can only
+    # trade with people you have met. See `convoy/discovery.py`.
+    known: list[str] = field(default_factory=list)
+    # MEETING PEOPLE (2026-10-28): what this agent has chosen to share WITH
+    # each other settler (their id -> kinds, see `convoy/social.py`), and the
+    # player's own pins on the full map ({x, y, label}).
+    shared: dict[str, list[str]] = field(default_factory=dict)
+    pins: list[dict[str, Any]] = field(default_factory=list)
+    # A delivery run under way (convoy/delivery.py), or None.
+    delivery: dict[str, Any] | None = None
+    # Missions (convoy/missions.py): those finished, and the one under way.
+    missions_done: list[str] = field(default_factory=list)
+    mission: dict[str, Any] | None = None
     # A consignment this agent is hauling for a business, and its size. Goods
     # under carriage never enter `inventory`, so they cannot be sold en route.
     hauling: str | None = None
@@ -294,8 +338,15 @@ class Agent:
 
     def carry_capacity(self, world: "World") -> int:
         if self.mounted_vehicle:
-            return D.VEHICLES[world.vehicles[self.mounted_vehicle].type].cargo_capacity
-        return D.ON_FOOT_CAPACITY
+            base = D.VEHICLES[world.vehicles[self.mounted_vehicle].type].cargo_capacity
+        else:
+            base = D.ON_FOOT_CAPACITY
+        mult = 1.0
+        if self.calling == "Hauler":
+            mult *= 1.0 + D.CALLING_BONUS
+        if "saddles" in self.tech:                  # Pack saddles know-how
+            mult *= 1.10
+        return math.ceil(base * mult) if mult > 1.0 else base
 
     def carried_units(self) -> int:
         """Everything on your person, hot goods included -- loot takes up room.
@@ -448,7 +499,11 @@ class Agent:
             prop_value,
             # What it would sell for, here -- the same rule as a business's stock.
             E.realizable_value(world, self.inventory, world.city_of(self)),
-        )
+        ) + self.land_value(world) - self.debt   # land at cost; owed for settling
+
+    def land_value(self, world: "World") -> float:
+        """The land this agent holds, at what was paid for it."""
+        return sum(p.paid for p in world.plots.values() if p.owner == self.id)
 
     def add_item(self, item: str, qty: int = 1) -> None:
         self.inventory[item] = self.inventory.get(item, 0) + qty
@@ -533,6 +588,15 @@ class Business:
     land_bonus_item: str = ""
     land_bonus_pct: float = 0.0
     land_revealed: bool = False
+    # PROJECTS (2026-10-18): the one being built {"kind", "done", "total"},
+    # and what finished projects added, by kind. See convoy/progress.py.
+    project: dict[str, Any] | None = None
+    improvements: dict[str, int] = field(default_factory=dict)
+    # THE GROUND WEARS AND THE AIR FOULS (2026-10-18). `richness` is a mine's
+    # seam left or a farm's soil, 1.0 fresh; `smoke` is what this business is
+    # putting into the air. See convoy/ground.py.
+    richness: float = 1.0
+    smoke: float = 0.0
     plots: int = 0                    # spur land taken; 0 for main-road businesses
     outstanding_insured_value: float = 0.0
     last_convoy_post: float = -1e9
@@ -899,6 +963,102 @@ class Consignment:
 
 
 @dataclass
+class FamilyMember:
+    """Someone in a citizen's household: not a citizen, never a model call.
+
+    The household is a citizen's first workforce (designer decision,
+    2026-10-18): a member can work any business of the household's, unpaid,
+    always on shift. Children grow up on a timer. New children come only from
+    a MARRIAGE, which joins two households -- so a family grows through
+    diplomacy, not by itself."""
+    id: str
+    name: str
+    adult: bool
+    born_at: float
+    grown_at: float = 0.0            # when a child comes of age (sim seconds)
+    calling: str = ""
+    works_at: str = ""               # a business id of the household's, or ""
+    spouse: str = ""                 # the member they married, in this household
+    from_house: str = ""             # the house they married in from
+    next_child_at: float = 0.0       # for a married couple; set on the elder
+    sex: str = ""                    # "m" | "f"
+    role: str = ""                   # partner | son | daughter | in-law
+
+
+@dataclass
+class Claim:
+    """A place made where there was none (designer request, 2026-10-18): four
+    plots on open land anywhere on the map, joined to the road network by a
+    dirt road its claimant paid for. It behaves as a spur off its nearest
+    junction -- see `world_map.register_claims`."""
+    name: str
+    city: str                        # the town of its nearest junction
+    junction: str
+    x: float                         # metres, layout coordinates (the block's centre)
+    y: float
+    road: list[list[float]]          # the dirt road, [[x, y], ...], from the network to here
+    road_m: float
+    seconds: float                   # one way to the junction at Medium
+    owner: str                       # who paid for it
+    created_at: float = 0.0
+
+
+@dataclass
+class Dispatch:
+    """Something on its way that nobody walks (2026-10-27): a meal a tavern
+    sends out to someone's outpost, or the state's convoy coming to collect
+    goods it has bought from a yard. Paid or delivered at `arrives_at`."""
+    id: str
+    kind: str                        # "meal" | "state_pickup"
+    agent: str                       # who ordered it
+    business: str                    # the tavern that sends, or the yard sold from
+    item: str
+    qty: int
+    unit_price: float
+    fee: float
+    destination: str                 # where it goes (a meal) or is collected from
+    created_at: float
+    arrives_at: float
+    status: str = "on_way"           # on_way | done
+
+
+@dataclass
+class ShareRequest:
+    """One settler asking another to share something (2026-10-28): their
+    standing, holdings, locations, trade, family or contact. See social.py."""
+    id: str
+    sender: str
+    target: str
+    kind: str
+    created_at: float
+    status: str = "open"             # open | accepted | declined
+
+
+@dataclass
+class ChatGroup:
+    """A group chat (2026-10-28): its owner invites people who have shared
+    their contact. Separate from clans, which are political."""
+    id: str
+    name: str
+    owner: str
+    members: list[str] = field(default_factory=list)
+
+
+@dataclass
+class MarriageOffer:
+    """A proposal: your member marries theirs, who joins your household, and
+    you pay the dowry. Accepted, the two houses are allies."""
+    id: str
+    proposer: str                    # agent
+    member: str                      # the proposer's member
+    target: str                      # agent asked
+    their_member: str
+    dowry: float
+    created_at: float
+    status: str = "open"             # open | accepted | declined
+
+
+@dataclass
 class BuyOrder:
     """A standing bid: "I will pay `price` each for `qty` of `item`, at my business."
 
@@ -1062,6 +1222,8 @@ class Guild:
     leader: str
     members: list[str] = field(default_factory=list)
     invited: list[str] = field(default_factory=list)   # invite-only: must be asked
+    # A secret clan: nobody outside it sees who belongs (2026-10-18).
+    secret: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1121,6 +1283,11 @@ class ChatMessage:
     text: str
     guild_id: str | None = None      # channel == "guild"
     recipient: str | None = None     # channel == "direct"
+    # OUTPOSTS (2026-10-28): public chat is heard only by those near the
+    # speaker when it was said (None: everyone, as before); group chat by the
+    # group's members.
+    heard_by: list[str] | None = None
+    group_id: str | None = None      # channel == "group"
     # The speaker's city, copied from `Agent.city` RAW rather than normalised
     # through `World.city_of`. "World" chat is a city's marketplace, not a
     # broadcast across the map: there is no road between the valleys and
@@ -1137,7 +1304,9 @@ class ChatMessage:
         # hiring, recruiting and convoys cross city lines, so talk must too.
         # The speaker's city is shown on the line, so a reader knows who's who.
         if self.channel == "world":
-            return True
+            return self.heard_by is None or agent.id == self.sender or agent.id in self.heard_by
+        if self.channel == "group":
+            return agent.id == self.sender or agent.id in (self.heard_by or [])
         if self.channel == "direct":
             return agent.id in (self.sender, self.recipient)
         if self.channel == "guild":
@@ -1148,7 +1317,9 @@ class ChatMessage:
         h = int(self.sim_time // 3600)
         m = int((self.sim_time % 3600) // 60)
         if self.channel == "world":
-            tag = "[world]"
+            tag = "[world]" if self.heard_by is None else "[nearby]"
+        elif self.channel == "group":
+            tag = f"[group {self.group_id}]"
         elif self.channel == "guild":
             tag = f"[guild {self.guild_id}]"
         else:
@@ -1301,6 +1472,18 @@ class World:
     escort_postings: dict[str, "EscortPosting"] = field(default_factory=dict)
     raids: dict[str, "Raid"] = field(default_factory=dict)
     buy_orders: dict[str, "BuyOrder"] = field(default_factory=dict)
+    marriage_offers: dict[str, "MarriageOffer"] = field(default_factory=dict)
+    claims: dict[str, "Claim"] = field(default_factory=dict)
+    dispatches: dict[str, "Dispatch"] = field(default_factory=dict)
+    share_requests: dict[str, "ShareRequest"] = field(default_factory=dict)
+    # Where anyone off the road network really stands (the player, walking
+    # the 3D world), in map metres: id -> [x, y]. See discovery.position.
+    positions: dict[str, list[float]] = field(default_factory=dict)
+    groups: dict[str, "ChatGroup"] = field(default_factory=dict)
+    # OUTPOSTS (2026-10-27): nobody starts in a town. Everyone settles on open
+    # land; the state's sites in each market are the anchors that feed, hire
+    # and buy, and selling to the state calls its convoy. See GAME_MODES.md.
+    outposts: bool = False
     # Faceless dice-roll bandits on every road (`engine._resolve_banditry`).
     # Off for runs since 2026-10-16: robbery is done by people (`Raid`).
     npc_bandits: bool = True
@@ -1330,6 +1513,12 @@ class World:
     # wages are paid by anyone but a citizen, and no tax is collected. Every
     # reader of "is the state gone?" answers yes from hour zero.
     no_state: bool = False
+    # STARTER SITES (designer decision, 2026-10-18): a no-state world that
+    # still opens with the state's Tavern, Farm, Mine and Refinery in each
+    # city -- a fixed-price backstop that sells, buys and hires from hour zero,
+    # so a town has somewhere to eat and work while citizens build. No tax, no
+    # other branches.
+    starter_sites: bool = False
     next_property_tax_at: float = D.PROPERTY_TAX_PERIOD_HOURS * 3600.0
     next_road_tax_at: float = D.ROAD_TAX_PERIOD_HOURS * 3600.0
     _seq: int = 0

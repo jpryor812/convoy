@@ -70,11 +70,13 @@ def test_schemas_are_stable():
 
 
 def test_every_action_is_exposed_and_described():
-    tools = S.tool_schemas()
+    tools = S.tool_schemas(outposts=True)
     names = {t["function"]["name"] for t in tools}
 
     check("one tool per action", len(tools), len(S.ACTIONS))
     ok("names match the action table", names == set(S.ACTIONS))
+    plain = {t["function"]["name"] for t in S.tool_schemas()}
+    ok("outpost-only tools are hidden elsewhere", plain == set(S.ACTIONS) - S.OUTPOSTS_ONLY)
 
     for tool in tools:
         fn = tool["function"]
@@ -362,7 +364,27 @@ def test_prefix_cost_is_within_budget():
     # enum. Measured on the real configuration: 16,326 tokens, nearly all of it
     # cached at $0.01/Mtok -- about a cent over a whole run. The lever left is
     # still the `item` enum repeated across tools (most of the 10.7k in tools).
-    ok("cached prefix under 17k tokens", prefix_tok < 17000, f"~{prefix_tok} tokens")
+    # +1.5k on 2026-10-18 for projects, know-how, the household, feeding,
+    # selling to bidders and NPC hands coming back.
+    # +100 more the same day for build_defense.
+    ok("cached prefix under 18.6k tokens", prefix_tok < 18600, f"~{prefix_tok} tokens")
+    # OUTPOSTS (2026-10-27): claim_land, order_meal, repay_debt and the
+    # outposts paragraph, offered only in an outposts world (and the place
+    # enum on travel_to dropped there, since outposts are made all game).
+    # Measured 18,939 on the real configuration (no state, starter sites).
+    # 19,000 -> 19,300 on 2026-10-28: HOW TO START (claim, travel, found; the
+    # state's wage; the debt) and outposts wording for land, food, taxes and
+    # the state's four sites, asked for so agents know what the new rules let
+    # them do. Measured as a game builds it: a no-state world reads as gone.
+    out_tok = (len(O.static_briefing(outposts=True, no_state=True, starter=True,
+                                     state_gone=True)) // 4
+               + len(json.dumps(S.tool_schemas(no_state=True, outposts=True,
+                                               state_gone=True))) // 4)
+    # 19,300 -> 20,200 on 2026-10-28 for MEETING PEOPLE: say_hi, share_info,
+    # ask_info, answer_request, make_group, invite_to_group, post_group_chat
+    # and a briefing sentence -- asked for as one of the first mechanics.
+    # Measured 19,900; outposts worlds only.
+    ok("outposts prefix under 20.2k tokens", out_tok < 20200, f"~{out_tok} tokens")
     ok("prefix is large enough to cache", prefix_tok > 1024, f"~{prefix_tok} tokens")
 
 

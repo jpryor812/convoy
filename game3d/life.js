@@ -40,8 +40,9 @@ export function createLife(ctx){
   /* ---------------------------------------------------------- owners' colours */
   const hue = id => { let h = 0; for (const c of String(id)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
   function ownerColour(id){
-    if (id === G.you) return new THREE.Color("#f2c94c");
-    return new THREE.Color().setHSL(hue(id) / 360, 0.62, 0.52);
+    // Muted, like dyed cloth (2026-10-19): yours brass, others earthy.
+    if (id === G.you) return new THREE.Color("#b8913f");
+    return new THREE.Color().setHSL(hue(id) / 360, 0.34, 0.42);
   }
   const cssColour = id => `#${ownerColour(id).getHexString()}`;
 
@@ -94,7 +95,7 @@ export function createLife(ctx){
     // A banner in the owner's colour, at the corner.
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 8, 6), M.wood);
     pole.position.set(-BUILDING_W * 0.48, 4, BUILDING_W * 0.42);
-    const flag = new THREE.Mesh(new THREE.PlaneGeometry(3, 1.8), new THREE.MeshBasicMaterial({color: ownerColour(v.b.owner), side: THREE.DoubleSide}));
+    const flag = new THREE.Mesh(new THREE.PlaneGeometry(3, 1.8), new THREE.MeshLambertMaterial({color: ownerColour(v.b.owner), side: THREE.DoubleSide}));
     flag.geometry.translate(1.5, 0, 0);
     flag.position.set(-BUILDING_W * 0.48, 7, BUILDING_W * 0.42);
     st.flag = flag;
@@ -291,6 +292,8 @@ export function createLife(ctx){
     for (const [id, st] of state) if (!S.buildings.has(id)) state.delete(id);
     for (const v of S.buildings.values()){
       const st = stateFor(v);
+      // Someone you have not found (outposts): nothing of theirs shows.
+      if (!v.root.visible){ st.timer.visible = st.bubble.visible = false; continue; }
       const mine = v.b.owner === G.you;
       const d = Math.hypot(fp.x - v.pos.x, fp.z - v.pos.z);
       const inView = d < (strat ? Math.max(160, vd * 2.2) : 140);

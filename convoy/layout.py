@@ -590,7 +590,12 @@ def border_rivers(cities: list[str] | None = None) -> list[float]:
     cities = cities or [M.HOME_CITY]
     if len(cities) < 2:
         return []
-    places = build(cities)
+    # Cached: claims ask this for every spot they test (2026-10-27), and it
+    # was rebuilding the whole map each time.
+    key = tuple(cities)
+    if key in _BORDER_CACHE:
+        return list(_BORDER_CACHE[key])
+    places = places_cached(list(cities))
 
     def reach(city: str) -> tuple[float, float]:
         xs = [q.x for p in places.values() if M.city_of(p.name) == city
@@ -600,7 +605,11 @@ def border_rivers(cities: list[str] | None = None) -> list[float]:
     axes = []
     for a, b in zip(cities, cities[1:]):
         axes.append((reach(a)[1] + reach(b)[0]) / 2.0)
+    _BORDER_CACHE[key] = list(axes)
     return axes
+
+
+_BORDER_CACHE: dict[tuple[str, ...], list[float]] = {}
 
 
 def in_river(y: float, margin: float = 0.0) -> bool:
@@ -998,3 +1007,61 @@ def bounds(places: dict[str, Place]) -> tuple[float, float, float, float]:
             xs.append(q.x); ys.append(q.y)
     pad = 90.0
     return min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad
+
+
+# ---------------------------------------------------------------------------
+# MOUNTAINS (designer request, 2026-10-18)
+# ---------------------------------------------------------------------------
+#
+# Ranges along the outside of the settled land: down both long edges of the
+# valleys and across their ends. Drawn by the 3D page, and read by
+# `convoy/land.py`: ground near mountains is likelier to hold a rich seam, as
+# ground near water is likelier to farm well.
+
+MOUNTAIN_GAP = 240.0            # metres between peaks along a range
+# How far outside the named places a range stands. 210 until 2026-10-28,
+# when the land was made bigger so first outposts start far apart: the
+# frontier between the trading posts and the mountains is open land.
+MOUNTAIN_OFFSET = 1300.0
+
+
+def mountains(cities: list[str] | None = None) -> list[dict[str, float]]:
+    """Peaks as {x, y, r}, the same every time for the same cities."""
+    key = tuple(cities or [M.HOME_CITY])
+    if key in _MOUNTAIN_CACHE:
+        return _MOUNTAIN_CACHE[key]
+    places = build(list(key))
+    minx, miny, maxx, maxy = bounds(places)
+    peaks: list[dict[str, float]] = []
+    def peak(x: float, y: float, tag: str) -> None:
+        r = _rng("mountain", tag)
+        peaks.append({"x": x + r.uniform(-40.0, 40.0), "y": y + r.uniform(-40.0, 40.0),
+                      "r": r.uniform(85.0, 175.0), "h": r.uniform(120.0, 280.0)})
+    y = miny - MOUNTAIN_OFFSET
+    i = 0
+    while y <= maxy + MOUNTAIN_OFFSET:
+        peak(minx - MOUNTAIN_OFFSET, y, f"w{i}")
+        peak(maxx + MOUNTAIN_OFFSET, y, f"e{i}")
+        y += MOUNTAIN_GAP
+        i += 1
+    x = minx
+    i = 0
+    while x <= maxx:
+        peak(x, miny - MOUNTAIN_OFFSET, f"s{i}")
+        peak(x, maxy + MOUNTAIN_OFFSET, f"n{i}")
+        x += MOUNTAIN_GAP
+        i += 1
+    _MOUNTAIN_CACHE[key] = peaks
+    return peaks
+
+
+_MOUNTAIN_CACHE: dict[tuple, list[dict[str, float]]] = {}
+_PLACE_CACHE: dict[tuple, dict[str, "Place"]] = {}
+
+
+def places_cached(cities: list[str]) -> dict[str, "Place"]:
+    key = tuple(cities)
+    if key not in _PLACE_CACHE:
+        _PLACE_CACHE[key] = build(list(key))
+    return _PLACE_CACHE[key]
+

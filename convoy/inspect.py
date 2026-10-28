@@ -102,6 +102,17 @@ def business_card(world: World, biz: Business) -> dict[str, Any]:
         if p.business_id == biz.id and p.is_live(world.sim_time)
     ]
 
+    # THE STATE'S SITES are always open, sell what they make without limit at
+    # the state's price, and hire anyone at its fixed wage (2026-10-18).
+    state_jobs = []
+    if biz.is_government:
+        from . import economy as _E
+        from .world_setup import state_offers
+        stock = [{"item": i, "qty": None, "unlimited": True,
+                  "price": round(biz.price_for(i), 2)} for i in state_offers(biz)]
+        state_jobs = [{"role": r, "wage": round(_E.government_wage(r), 2)}
+                      for r in (biz.spec.production_roles or ())]
+
     land = None
     if biz.land_rolled and biz.land_revealed:
         land = {"item": biz.land_bonus_item, "pct": biz.land_bonus_pct}
@@ -125,6 +136,7 @@ def business_card(world: World, biz: Business) -> dict[str, Any]:
         "stock": stock,
         "staff": _staff(world, biz),
         "jobs": jobs,
+        "state_jobs": state_jobs,
     }
 
 

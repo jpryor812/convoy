@@ -68,6 +68,19 @@
         "runs/games-test"
       ],
       "port": 8801
+    },
+    {
+      "name": "play-offline",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "play.py",
+        "--port",
+        "8802",
+        "--games-dir",
+        "runs/games-test",
+        "--offline"
+      ],
+      "port": 8802
     }
   ]
 }

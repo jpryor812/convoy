@@ -17,6 +17,9 @@ from . import state as _state
 from .state import (
     Raid,
     BuyOrder,
+    Claim,
+    FamilyMember,
+    MarriageOffer,
     Activity,
     Agent,
     Bounty,
@@ -24,6 +27,9 @@ from .state import (
     ChatMessage,
     Consignment,
     Convoy,
+    Dispatch,
+    ShareRequest,
+    ChatGroup,
     ConvoyMember,
     Employment,
     EscortPosting,
@@ -48,7 +54,7 @@ from .state import (
 _CLASSES = {
     c.__name__: c
     for c in (
-        Activity, Agent, Bounty, BuyOrder, Business, ChatMessage, Consignment, Convoy,
+        Activity, Agent, Bounty, BuyOrder, Business, Claim, FamilyMember, MarriageOffer, ChatMessage, Consignment, Convoy, Dispatch, ShareRequest, ChatGroup,
         ConvoyMember, Employment, EscortPosting, Government, Guild, JobPosting,
         Market, Plot, Property, Raid,
         Proposal, Reasoning, Recommendation, ResearchState, Snapshot, StolenStack,

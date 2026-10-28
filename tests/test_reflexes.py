@@ -228,12 +228,15 @@ def test_a_stalled_business_buys_what_it_lacks() -> None:
     A.set_retail_price(world, log, seller, ref.id, "Grain", 5.0)
     text = str(O.observe(world, log, owner, "reevaluation"))
     ok("the stalled line names who sells the missing input", "ON SALE" in text and ref.id in text, text[:300])
-    before = ref.cash
+    before = seller.denari                    # income goes to the owner (2026-10-18)
     did = RX.restock(world, log, owner, lambda b: 2.0)
     held = tav.inventory.get("Grain", 0) + sum(c.qty for c in world.consignments.values() if c.buyer_business == tav.id)
     ok("a fair price: the owner buys it, without being asked", did and held > 0, str(did))
-    ok("and the seller is paid", ref.cash > before)
+    ok("and the seller is paid", seller.denari > before)
     ok("it does not buy again what is already coming", RX.restock(world, log, owner, lambda b: 2.0) == [])
+    from convoy.state import Employment
+    tav.roster.append(Employment(other.id, "Store Clerk", 12.0))
+    ok("a business with staff on wages does not crash it", isinstance(RX.restock(world, log, owner, lambda b: 2.0), list))
 
 
 def main() -> int:

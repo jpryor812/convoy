@@ -19,6 +19,34 @@ Then open http://localhost:8800. The start screen sets up a game:
   change it, or pause, at any time during play.
 - **Spending cap**: the game pauses itself when the agents' API calls reach it.
   Raise it from the start screen settings for the next game.
+- **Head start** (default 8 game hours): the agents run both towns without
+  you first, then you arrive as one more citizen -- named like the rest, the
+  next in line -- with 300, into a town that already has owners, prices, jobs
+  and gaps. A welcome note says what you walked into. The first time, the
+  start screen shows the towns' clock while they run (it goes as fast as the
+  AI answers: about 1.5 real minutes a game hour measured with 6 agents; more
+  agents take longer) and roughly what it costs. The finished towns are kept
+  in `runs/towns/`, and a later game with the same towns, model and head
+  start begins from a copy instantly and free ("reuse towns that already
+  ran"). With a head start the city counts are the agents; you are extra.
+- **Your character**: a bonus for life -- Farmer, Miner, Refiner or Maker
+  (your own businesses of that kind work 10% faster) or Hauler (you carry 10%
+  more). Every agent is dealt one at random.
+- **The state's four**: on by default, each town opens with the state's
+  Tavern, Farm, Mine and Refinery. They are always open, sell what they make
+  without limit at a high fixed price, buy at a low one, and hire anyone at a
+  fixed wage -- somewhere to eat and earn from hour zero. No other
+  government, no tax. See `GAME_MODES.md`.
+- **Outposts** (on by default, 2026-10-27): no towns at the start. Every
+  agent settles an outpost on open land around the ticked cities' markets,
+  which are now the state's **trading posts** (its Tavern, Farm, Mine and
+  Refinery: they feed, hire at a fixed wage and buy). The game opens on
+  **Choose your land**: move your home over open grass and click. **Your
+  first home is free.** The frontier is **hazy**: you see the state's
+  trading posts, but not who has settled out there. The banner lets you
+  **borrow** up to 400 from the state as you settle, to start a business
+  with (2% a game day; a fifth of what your businesses earn pays it down).
+  The clock waits until you settle. See "Outposts" below and GAME_MODES.md.
 - The last settings you used are remembered.
 
 Saved games are listed under the form. A game saves every game hour and when
@@ -33,11 +61,32 @@ your businesses. Scroll all the way in on yourself (or press **Tab**) to take
 control of your character over the shoulder; scroll out, or Tab again, to
 rise back up.
 
-- **Overview**: WASD or drag to pan, right-drag to turn, scroll to zoom, click
-  the ground to send your character walking, click the minimap to look there.
-- **Over the shoulder**: WASD or the arrow keys to move, **Shift** to run,
-  drag to look, **E** to open what you are standing at, **F** to put the camera
-  behind you.
+- **Keys**: **WASD** moves, the **arrow keys** turn and tilt the camera
+  (or hold **Ctrl**/**Cmd** and move the mouse), **Shift** runs, **E** opens
+  what you are standing at, **C** puts the camera behind you. **R** swings your
+  weapon and holding **F** blocks.
+- **Overview**: WASD or drag to pan, arrows or right-drag to turn, scroll to
+  zoom, click the ground to send your character walking, click the minimap to
+  look there.
+- **Fighting.** Everyone starts with a **Bat**. Bandits come at you at the
+  bounty mission's camp (walk up to the tents) and, now and then, on the open
+  road when you are carrying goods -- never in your first day. They close in,
+  wind up (a red **!** over the head) and swing: hold **F** facing them to
+  stop most of the blow, and press **R** to hit back. On the road you can also
+  run for it. Knocked down, you lose a share of what you carry (at a camp, you
+  are just beaten back). Health comes back slowly while you are fed; a better
+  weapon and armour from an armory make fights easier.
+- **Eating.** Food is sold at **taverns** only. Tap the **Fed** pill at the top, your **portrait** (bottom left) or the card's **Eat**
+  button: it shows your health and food and lets you eat a meal you carry, or
+  buy one at a tavern where you stand. With nothing to eat it points you to the
+  nearest tavern. A meal never shortens how long you are fed.
+- **Errands point, you ride.** Fetching an order yourself, or buying goods in
+  person at a shop, no longer walks you there: the compass across the top
+  points the way and the purchase or pickup happens as you walk in. Walking out
+  of the place you work in ends your shift.
+- **Why is someone rich?** Tap any name on the leaderboard (or Rankings) to see
+  what their net worth is made of: coin, each business with its profit and
+  stock, goods, carts and land.
 - **Building**: the **Build** menu down the left edge lists every business
   with its cost (greyed if you cannot afford it, with a count of how many you
   own). Pick one and a hologram of it follows your cursor on the 2x2 block of
@@ -50,9 +99,41 @@ rise back up.
   appears offers what fits there; if you are elsewhere, your character walks
   over and builds. Owned squares are tinted in their owner's colour; each
   place's name shows how many plots it has left.
+- **Open land anywhere.** Point the building hologram at open grass -- any
+  2x2 that is not river, mountainside, road or part of a place -- and it turns
+  into a claim: the tag shows the dirt road it needs to the nearest road (up to
+  1,200 m) and what that costs (0.12 a metre). Click and the road is laid, the
+  four squares become a place of their own ("Kestrel Fields"), and your
+  character rides out and builds. Any business can go on a claim; the "Land
+  claim" stake buys the four plots bare. Travel there takes as long as the
+  road is long.
+- **Your territory.** Your home, businesses and land each carry a one-square
+  ring around them, outlined in gold. Rings that touch merge into one border;
+  a patch that does not reach your home's is marked **Outpost** -- far land,
+  harder to watch.
+- **Geography (2026-10-18).** Mountains ring the settled land. Rich ground
+  comes in pockets -- areas of the map about 260 m across, so neighbouring
+  farms or mines in one area share its luck (each varies a little) --
+  and it follows the land: farms near water strike rich soil more often,
+  mines near the mountains rich seams. The building hologram says what the
+  ground promises before you build. Refineries have no land luck: put them near
+  your farms, mines or town.
+- **The ground wears out; the air fouls.** A mine's seam runs down as it is
+  dug -- a lone hand works one out in about three game days -- and never comes
+  back: output holds until half is gone, then fades, then stops. A farm's soil
+  tires as it is farmed (down to about a third of full pace) and recovers while
+  the field rests. Everything that makes things gives off smoke, refineries most
+  and anything run fast more; within about 600 m it slows crops most, then
+  miners and refinery hands, and it thins over hours. Your business card shows
+  "Soil 64% left" and "Air 20% foul". Upgrades push back: Crop rotation, Manure
+  pits and Hedgerows on a farm; Timbered shafts and a Deeper shaft (fresh ore,
+  even for a worked-out mine) on a mine; a Tall chimney on a refinery or mine.
+  Worn-out ground is why you claim more land.
+- **The minimap is cloud until you have been near.** The world in front of
+  you is always drawn; the map remembers where you have ridden.
 - **Land luck (farms and mines).** Every farm and mine sits on hidden ground.
   About two in three make one of their goods 5-25% faster: a farm Dirty Water,
-  Hide or Wheat; a mine Wood, Stone, Clay, Copper, Tin or Iron. Each spur leans
+  Hide or Wheat; a mine Wood, Stone, Clay, Copper, Tin or Iron. Each area leans
   toward certain goods, so where you found matters, but nothing shows until the
   first harvest. Then you are told, the sign and the holdings card say "+18%
   Copper Ore", and the land shows it: extra wells, more cows, a second wheat
@@ -111,9 +192,124 @@ rise back up.
     buy order out for) comes up for sale or drops in price, when someone wants
     something you hold, and when your buy order is filled. Click the alert to
     go straight to it in the Market.
+- **People** (two-person button): everyone in your town -- their character,
+  what they own, where they work and their experience in each kind of work
+  (Novice to Master, with hours). Wages are private: **Message** opens a
+  private thread, like a phone's messages, to talk terms, and **Offer a job**
+  pitches a wage at one of your businesses. Other towns are closed until you
+  buy a **report** (100): their people as of that hour, which you can then
+  recruit from -- a job offer works across towns.
 - Forms only offer goods that fit the business: Set production at a refinery
   lists what a refinery makes, not Bread.
 - **Bottom-left** is you; **bottom-right** the minimap of your town.
+
+### Your house, know-how and projects
+
+- **A town of your own** (start screen, on by default): you start alone in a
+  new town, with the state's four sites and your home in the square, beside the
+  agents' towns. Your home's border is marked in gold around it. The agents'
+  towns are your first customers: in Market, Sell, "Who would buy" lists every
+  business bidding for what you hold or make, best price first -- the state's
+  refinery at its fixed low price, citizens' refineries at what their output can
+  pay -- and Sell takes the bid.
+- **Your house** (house button): you choose to be a man or a woman, and your
+  partner's. You start with your partner, a son and a daughter. Grown members
+  work any business of yours, unpaid and always on shift. The son and daughter
+  come of age in 1.5 and 2 game days; every married couple (you and your
+  partner too) has a child each game month, and a newborn takes a month to be
+  old enough to work -- a day sooner for every Meal you feed it. Marry your
+  children into other houses for allies (theirs joins you, your houses ally);
+  founding a clan needs at least one ally. Hired NPC hands are back, at 60%
+  of a person's pace. Your family walk the map with their name and what they
+  are doing over their heads. A grown member is your heir if you die.
+- **Delivery runs**: everyone starts with a donkey (carries 10, three times a
+  walk). Market, Sell, "Deliver it yourself" lists buyers who pay more at their
+  door than the gate does -- citizens' refineries at their bid plus a fifth,
+  the state's sites at full book price in another town. Take a job and the
+  camera drops behind you; the goods load at your business. The buyer is only
+  hinted at: a yellow circle on the minimap and a compass across the top. Ride
+  into the circle and the building lights up; walk in to hand over and be
+  paid. What you carry can be raided on the road.
+- **The state as price floor and ceiling**: any state site buys ANY good at
+  0.4x book (Market, Sell, "Who would buy" always lists it), and the state's
+  Tavern in each market square sells Meals, weapons, armour and tools at its
+  high fixed price. Citizens, buy orders and delivery runs always pay better.
+- **Missions** (scroll button): three goals, one unlocking the next.
+  *Deliver your first harvest* is an achievement: once you own a farm or mine,
+  carry your own goods to a refinery on a delivery job and it pays +60 by
+  itself. *Clear the bandit camp* you start when ready (+80; your odds show,
+  and better weapons and armour raise them; lose and you are hurt, not
+  killed); the compass points to the camp. *Deliver to a citizen* is another
+  achievement (+50). Coming later: the state's own convoy jobs, escorting
+  convoys and defending a state refinery against bandits.
+- **The Market button** shows a red count when something new is posted.
+- **Defenses**: a Guard post (500) or a Catapult (250) takes one square and
+  weakens raiders on the roads at its place -- to half, or three quarters.
+- **The guide** ("?" in the top bar) walks you through the first steps; it
+  opens by itself the first time you play a game.
+- **Know-how** (light-bulb button): your own tech tree, studied one at a time.
+  Tier one takes 6 game hours (Irrigation, Iron picks, Bellows, Brick hearths,
+  Pack saddles), tier two 12 (Masonry, Ledgers, Kinship, River barges), tier
+  three a day (Canal locks, Guild charter), and Steam two days. Each says what
+  it would be worth to you now.
+- **Projects** (Build, in your business's panel): a Storehouse or Better tools,
+  paid for up front, then built hour by hour. One more person on shift or a
+  stack of Lumber in the yard brings the finish closer -- the panel shows how
+  much.
+- **Coming up** (left, under Next move): every countdown you have running,
+  soonest first.
+- **Clans** (People page): found one, public or secret, and invite anyone, in
+  any town. Outsiders never see who is in a secret clan.
+- **The town is patrolled**: nobody can lie in wait on a road into a market
+  square, and a newcomer cannot be raided for their first game day.
+- **River barges**: with the River barges know-how, a River Barge (built at a
+  citizen's Vehicle Dealer) carries 150 units between the towns' market quays
+  in half the road's time, and raiders cannot reach it on the water.
+
+### Outposts (2026-10-27)
+
+- **A big frontier** (2026-10-28): the mountains stand well back from the
+  trading posts, and first homes are at least 650 m apart -- beyond sight,
+  so nobody starts knowing their neighbours. A first home may have a free
+  dirt road up to 2.6 km long. Settlers you have not found show as **smoke
+  on the horizon** up to about 1.5 km off (and on your map): someone lives
+  there; who, you find out by going.
+- **Finding people** (2026-10-28): you can only trade with settlers you
+  have found -- no selling to their bids, buying their stock, filling their
+  orders or taking their deliveries. You find someone by coming within about
+  400 m of them or of their land (they find you too), or by meeting face to
+  face. Until then they, their homes and their businesses are hidden, and
+  ground you have not explored stays hazy. The state's trading posts are
+  always known. Agents play by the same rule.
+- **Meeting people** (2026-10-28): finding someone only shows you they
+  exist. Open them (People, or click them) to **say hi**, then **share** or
+  **ask for** each of: standing (net worth and rank), holdings, locations
+  (pinned on your map), trade (what they sell and buy), family, and
+  **contact** -- which lets you message them and add them to group chats.
+  Requests to you wait on the People page. Public chat is heard only by
+  people near you; the leaderboard shows only those who shared standing.
+- **The view and the map**: the game opens over your character's shoulder
+  once you have settled (Tab for the overview). **M**, the minimap or MAP
+  opens the full map of what you have discovered: drag, zoom, and click a
+  spot to set a waypoint the compass points to, or to drop a pin (saved
+  with the game).
+- **Your outpost** is the claim your home stands on. Later claims cost land
+  (priced by what is built near it) and road. A business needs four
+  plots of its own: place one on open land and you claim the land as you
+  build (land price + road + the business). Nobody else can build on your
+  claim.
+- **Food** comes from taverns only. Walk in and eat, or tap Food and **Have
+  it brought**: the meal's price plus about 2 a kilometre, arriving in what
+  you carry. Agents order theirs when they get hungry.
+- **Selling to the state**: Market, Sell, the state's row calls **the state's
+  convoy**. It pays half what the good sold for between players over the last
+  game day (half of book if nobody traded it), comes to your yard for free,
+  and pays when it collects. Citizens and delivery runs pay better.
+- **Agents** see the open land near them with its price and what the ground
+  is good for, and can claim it (`claim_land`), order meals (`order_meal`)
+  and repay what they owe (`repay_debt`).
+- `python3 play.py --offline` runs a game whose agents never think: no model
+  calls and nothing spent, for trying the start out.
 
 ### Knowing what to do
 

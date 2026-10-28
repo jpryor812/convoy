@@ -140,6 +140,18 @@ class StandardRules:
         ok, _ = A.eat_self_prep(world, log, agent)
         if ok:
             return True
+        if world.outposts:
+            # At an outpost: eat what was brought, else have one brought.
+            ok, _ = A.eat_meal(world, log, agent)
+            if ok:
+                return True
+            if not world.businesses_at(agent.location, "Tavern / Inn"):
+                from . import reflexes as RX
+                if any(d.agent == agent.id and d.kind == "meal" and d.status == "on_way"
+                       for d in world.dispatches.values()):
+                    return False
+                if RX._send_for_a_meal(world, log, agent):
+                    return True
         tavern = _nearest(world, agent, "Tavern / Inn")
         if tavern is None:
             return False

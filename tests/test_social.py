@@ -40,6 +40,7 @@ def test_channel_isolation():
     w, log, (a, b, c) = world_with(3)
     A.post_world_chat(w, log, a, "everyone can see this")
     A.send_direct_message(w, log, a, b.id, "just between us")
+    a.allies.append(b.id)      # a clan needs an ally by marriage (2026-10-18)
     A.create_guild(w, log, a, "Guild")
     A.invite_to_guild(w, log, a, b.id)
     A.accept_guild_invite(w, log, b, a.guild)
@@ -63,6 +64,9 @@ def test_channel_isolation():
 
 def test_guilds_are_invite_only():
     w, log, (a, b, c) = world_with(3)
+    ok_none, why = A.create_guild(w, log, c, "No Allies")
+    a.allies.append(c.id)      # a clan needs an ally by marriage (2026-10-18); c is asked in
+    check("no ally, no clan", ok_none, False)
     A.create_guild(w, log, a, "Closed Shop")
     gid = a.guild
 
@@ -70,6 +74,7 @@ def test_guilds_are_invite_only():
     check("cannot join uninvited", ok, False)
     check("uninvited agent has no guild", b.guild, None)
 
+    check("the founder's ally is asked in", c.id in w.guilds[gid].invited, True)
     ok, _ = A.invite_to_guild(w, log, c, b.id)
     check("non-leader cannot invite", ok, False)
 
