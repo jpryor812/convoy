@@ -111,7 +111,7 @@ export function createUI(ctx){
   function renderUnit(){
     const st = S.ST, o = S.OBS; if (!st) return;
     $("u-name").textContent = short(st.you.name).toUpperCase();
-    $("u-sub").textContent = `${st.city_name} · ${st.location}`;
+    $("u-sub").textContent = st.you && st.you.outposts ? st.location : `${st.city_name} · ${st.location}`;
     $("u-doing").textContent = st.activity.replace(/ · .*/, "");
     const left = Math.max(0, st.fed_hours_left), hungry = st.hunger !== "Normal";
     $("u-food").textContent = hungry ? st.hunger : `${left.toFixed(1)}h left`;
@@ -379,7 +379,7 @@ export function createUI(ctx){
      leaderboard and see what their net worth is made of. */
   function assetsPanel(a){
     const total = Math.max(1, a.worth);
-    let out = `<div class="howto">${esc(a.house || "")}${a.house ? " \u00b7 " : ""}${esc(a.calling || "")} in ${esc(a.city_name)}${a.job ? ` \u00b7 works at a ${esc(a.job.split(" /")[0])}` : ""}. Net worth <b>${money(a.worth)}</b>.</div>`;
+    let out = `<div class="howto">${esc(a.house || "")}${a.house ? " \u00b7 " : ""}${esc(a.calling || "")}${S.ST && S.ST.you.outposts ? "" : ` in ${esc(a.city_name)}`}${a.job ? ` \u00b7 works at a ${esc(a.job.split(" /")[0])}` : ""}. Net worth <b>${money(a.worth)}</b>.</div>`;
     out += `<div class="worthbar">` + a.lines.filter(l => l[1] > 0).map((l, i) => `<span class="wb${i}" style="width:${l[1] / total * 100}%" title="${esc(l[0])}: ${money(l[1])}"></span>`).join("") + `</div>`;
     out += a.lines.map((l, i) => `<div class="row"><div class="grow"><i class="wbdot wb${i}"></i>${esc(l[0])}</div><b>${money(l[1])}</b></div>`).join("");
     out += `<h3>Businesses (${a.businesses.length})</h3>`;
@@ -1087,18 +1087,20 @@ export function createUI(ctx){
   function peoplePanel(P){
     const myBiz = (S.OBS.you.businesses || []);
     const tabs = [{key: P.your_city, name: "My town"}].concat(P.cities.map(c => ({key: c.key, name: c.name})));
-    let out = `<div class="seg">${tabs.map(t => `<button class="seg-b${(P.city === t.key) ? " on" : ""}" data-city="${esc(t.key)}">${esc(t.name)}</button>`).join("")}</div>`;
+    // OUTPOSTS: no towns, so everyone on one page and no reports to buy.
+    let out = P.outposts ? "" : `<div class="seg">${tabs.map(t => `<button class="seg-b${(P.city === t.key) ? " on" : ""}" data-city="${esc(t.key)}">${esc(t.name)}</button>`).join("")}</div>`;
     if (P.locked){
       return out + `<div class="howto"><b>${esc(P.name)}</b> has ${P.population} citizens. You know nothing else about them. A report tells you who lives there, what they own, where they work and what they are good at -- as of the hour you buy it.</div>`
         + `<div class="acts"><button class="btn go" id="buy-report"${P.cash < P.report_cost ? " disabled" : ""}>Buy a report on ${esc(P.name)} \u00b7 ${money(P.report_cost)}</button></div>`;
     }
     out += `<div class="howto">${P.live ? "" : `Report from hour ${P.hour} \u2014 <a href="#" id="buy-report">buy a fresh one (${money(P.report_cost)})</a>. `}`
-      + `<b>${P.population}</b> citizens. `
-      + (P.state_sites.length ? `State sites: ${P.state_sites.map(t => esc(t.split(" /")[0])).join(", ")}. ` : "")
+      + `<b>${P.population}</b> ${P.outposts ? "settlers on the frontier" : "citizens"}. `
+      + (P.outposts && P.state_sites.length ? `The state's ${Math.round(P.state_sites.length / 4)} trading posts each have a Tavern, Farm, Mine and Refinery. `
+        : P.state_sites.length ? `State sites: ${P.state_sites.map(t => esc(t.split(" /")[0])).join(", ")}. ` : "")
       + (P.buildings.length ? `Citizens own: ${P.buildings.map(b => `${b.count} ${esc(b.type.split(" /")[0])}`).join(", ")}.` : "Citizens own no businesses yet.")
       + `<br><span class="dim">Wages are private: to hire someone good, offer a job and talk it over.</span></div>`;
     // CLANS (2026-10-18): across towns; a secret one is seen only from inside.
-    out += `<h3>Clans</h3>` + (P.clans.length ? P.clans.map(c => `<div class="row"><div class="grow"><b>${esc(c.name)}</b>${c.secret ? ` <span class="chip">secret</span>` : ""}${c.mine ? ` <span class="good">yours</span>` : ""} <span class="dim">${c.members} members \u00b7 ${esc(c.towns.join(", "))}</span>${c.names.length && c.mine ? `<br><span class="dim">${c.names.map(n => esc(short(n))).join(", ")}</span>` : ""}</div><b>${money(c.worth)}</b></div>`).join("") : `<div class="empty">No clans yet.</div>`)
+    out += `<h3>Clans</h3>` + (P.clans.length ? P.clans.map(c => `<div class="row"><div class="grow"><b>${esc(c.name)}</b>${c.secret ? ` <span class="chip">secret</span>` : ""}${c.mine ? ` <span class="good">yours</span>` : ""} <span class="dim">${c.members} members${P.outposts ? "" : ` \u00b7 ${esc(c.towns.join(", "))}`}</span>${c.names.length && c.mine ? `<br><span class="dim">${c.names.map(n => esc(short(n))).join(", ")}</span>` : ""}</div><b>${money(c.worth)}</b></div>`).join("") : `<div class="empty">No clans yet.</div>`)
       + (P.my_clan ? `<div class="acts">${B("Leave your clan", "leave_guild", {})}</div>`
         : `<div class="tip">A clan needs two allied houses: marry one of your family into another house first.</div><div class="hire-row"><input id="clan-name" placeholder="Name a clan" maxlength="40"><label><input type="checkbox" id="clan-secret"> secret</label><button class="btn go" id="clan-make">Found it</button></div><div class="tip">A clan spans towns. A secret one is invisible to outsiders: you can belong to one while living in another town, and trade for it quietly.</div>`);
     out += `<div class="hire-row"><input id="ppl-find" placeholder="Find a name, a skill (Miner) or a character (Hauler)" value="${esc(pplFilter)}" style="flex:1"></div>`;

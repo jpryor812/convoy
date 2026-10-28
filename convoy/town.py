@@ -60,6 +60,14 @@ def find_template(settings, towns_dir: Path = TOWNS_DIR) -> Path | None:
 
 def _rosters(settings) -> dict[str, list[tuple[str, str]]]:
     tail = settings.model.split("/")[-1]
+    if getattr(settings, "outposts", False):
+        # No towns, so nobody is named for one: settlers, numbered across the
+        # whole frontier. The city is only which trading post they start near.
+        out, k = {}, 0
+        for city, n in settings.cities.items():
+            out[city] = [(f"Settler-{tail}-{k + i + 1:02d}", settings.model) for i in range(int(n))]
+            k += int(n)
+        return out
     return {city: [(f"{M.CITIES[city].name}-{tail}-{i + 1:02d}", settings.model)
                    for i in range(int(n))]
             for city, n in settings.cities.items()}
@@ -207,9 +215,13 @@ def settle(world, log: EventLog, settings) -> str:
         if world.starter_sites:
             build_government(world, log, city, only=STARTER_SITE_TYPES)
     tail = settings.model.split("/")[-1]
-    # Named as the next of the town, so you read as someone who came later.
-    n = len(world.agents_in(city)) + 1
-    you = Agent(id=world.new_id("A"), name=f"{M.CITIES[city].name}-{tail}-{n:02d}",
+    # Named as the next of the town, so you read as someone who came later --
+    # or, with no towns, as the next settler.
+    if world.outposts:
+        name = f"Settler-{tail}-{len(world.agents) + 1:02d}"
+    else:
+        name = f"{M.CITIES[city].name}-{tail}-{len(world.agents_in(city)) + 1:02d}"
+    you = Agent(id=world.new_id("A"), name=name,
                 model=settings.model, city=city, location=M.market_of(city))
     you.calling = settings.calling
     world.agents[you.id] = you

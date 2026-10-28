@@ -2420,7 +2420,7 @@ function drawMinimap(){
   mg.beginPath(); mg.moveTo(0, -9); mg.lineTo(6, 7); mg.lineTo(0, 3); mg.lineTo(-6, 7); mg.closePath(); mg.fill(); mg.stroke();
   mg.restore();
   const here = placeAt(S.player.root.position);
-  $("mm-cap").textContent = here ? `${here.name} · ${here.cityName}` : `Near ${nearestPlace(S.player.root.position).name}`;
+  $("mm-cap").textContent = here ? (outposts() ? here.name : `${here.name} · ${here.cityName}`) : `Near ${nearestPlace(S.player.root.position).name}`;
 }
 mm.addEventListener("click", e => {
   if (!mmBox) return;

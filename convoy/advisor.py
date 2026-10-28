@@ -194,7 +194,7 @@ def ledger(world: "World", log: "EventLog", me: "Agent", history: History) -> di
     books = [business_books(world, log, world.businesses[b]) for b in me.owned_businesses
              if b in world.businesses and not world.businesses[b].closed]
     city = world.city_of(me)
-    standings = world.city_standings() if world.is_contest() else []
+    standings = world.city_standings() if world.is_contest() and not world.outposts else []
     city_total = next((r["total_net_worth"] for r in standings if r["city"] == city), sum(worth.values()))
     hour_ago, day_ago = history.back(1), history.back(24)
     def delta(row, idx):
@@ -242,7 +242,7 @@ def leaderboard(world: "World", me: "Agent", history: History, top: int = 5) -> 
     mine = row(me.id)
     above = next((k for k in reversed(order[:order.index(me.id)])), None)
     below = order[order.index(me.id) + 1] if order.index(me.id) + 1 < len(order) else None
-    standings = world.city_standings() if world.is_contest() else []
+    standings = world.city_standings() if world.is_contest() and not world.outposts else []
     return {
         "top": rows, "you": mine, "population": len(order),
         "chasing": None if above is None else {"name": world.agents[above].name, "gap": round(worth[above] - worth[me.id], 1)},

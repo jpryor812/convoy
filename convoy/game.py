@@ -1218,13 +1218,14 @@ class Game:
 
     REPORT_COST = 100.0
 
-    def _town(self, city: str) -> dict[str, Any]:
-        """Everyone in a city: what they own, where they work (not the wage --
-        that is theirs to tell), their calling and their experience. Call with
-        the world lock held."""
+    def _town(self, city: str | None) -> dict[str, Any]:
+        """Everyone in a city -- or, with no towns (outposts, None), everyone
+        -- what they own, where they work (not the wage -- that is theirs to
+        tell), their calling and their experience. Call with the world lock held."""
         w, me = self.world, self.you
+        here = (lambda place: True) if city is None else (lambda place: M.city_of(place) == city)
         people = []
-        for a in w.agents_in(city):
+        for a in (list(w.agents.values()) if city is None else w.agents_in(city)):
             if not a.alive:
                 continue
             job = None
@@ -1248,10 +1249,11 @@ class Game:
             })
         people.sort(key=lambda p: -p["worth"])
         counts = Counter(b.type for b in w.businesses.values()
-                         if not b.closed and M.city_of(b.location) == city and not b.is_government)
+                         if not b.closed and here(b.location) and not b.is_government)
         state = sorted(b.type for b in w.businesses.values()
-                       if not b.closed and b.is_government and M.city_of(b.location) == city)
-        return {"city": city, "name": M.CITIES[city].name, "hour": round(w.sim_hour, 1),
+                       if not b.closed and b.is_government and here(b.location))
+        return {"city": city or "", "name": M.CITIES[city].name if city else "the frontier",
+                "hour": round(w.sim_hour, 1),
                 "population": len(people), "people": people,
                 "buildings": [{"type": t, "count": n} for t, n in counts.most_common()],
                 "state_sites": state}
@@ -1280,6 +1282,9 @@ class Game:
             base = {"cities": others, "your_city": mine, "report_cost": self.REPORT_COST,
                     "cash": round(self.you.denari, 2), "clans": clans,
                     "my_clan": self.you.guild or ""}
+            if w.outposts:
+                # No towns: everyone, live, and no reports to buy.
+                return {**base, "cities": [], **self._town(None), "live": True, "outposts": True}
             if city == mine:
                 return {**base, **self._town(city), "live": True}
             snap = self.intel.get(city)
@@ -1905,7 +1910,7 @@ class Game:
             "fed_hours_left": round(fed_left, 2),
             "city": city,
             "city_name": M.CITIES[city].name if city in M.CITIES else city,
-            "cities": [{"key": r["city"], "name": r["name"],
+            "cities": [] if w.outposts else [{"key": r["city"], "name": r["name"],
                         "total": round(r["total_net_worth"], 1)} for r in standings],
             "game": self.run_dir.name,
             "hour": round(w.sim_hour, 3),
