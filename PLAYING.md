@@ -41,12 +41,12 @@ Then open http://localhost:8800. The start screen sets up a game:
   agent settles an outpost on open land around the ticked cities' markets,
   which are now the state's **trading posts** (its Tavern, Farm, Mine and
   Refinery: they feed, hire at a fixed wage and buy). The game opens on
-  **Choose your land**: move your home over open grass and click. Land is
-  priced by what is built near it -- dear by a trading post or other people,
-  cheap far out -- plus its dirt road; the banner lets you **borrow** up to
-  400 from the state as you settle (2% a game day; a fifth of what your
-  businesses earn pays it down). The clock waits until you settle. See
-  "Outposts" below and GAME_MODES.md.
+  **Choose your land**: move your home over open grass and click. **Your
+  first home is free.** The frontier is **hazy**: you see the state's
+  trading posts, but not who has settled out there. The banner lets you
+  **borrow** up to 400 from the state as you settle, to start a business
+  with (2% a game day; a fifth of what your businesses earn pays it down).
+  The clock waits until you settle. See "Outposts" below and GAME_MODES.md.
 - The last settings you used are remembered.
 
 Saved games are listed under the form. A game saves every game hour and when
@@ -268,7 +268,15 @@ rise back up.
 
 ### Outposts (2026-10-27)
 
-- **Your outpost** is the claim your home stands on. A business needs four
+- **Finding people** (2026-10-28): you can only trade with settlers you
+  have found -- no selling to their bids, buying their stock, filling their
+  orders or taking their deliveries. You find someone by coming within about
+  400 m of them or of their land (they find you too), or by meeting face to
+  face. Until then they, their homes and their businesses are hidden, and
+  ground you have not explored stays hazy. The state's trading posts are
+  always known. Agents play by the same rule.
+- **Your outpost** is the claim your home stands on. Later claims cost land
+  (priced by what is built near it) and road. A business needs four
   plots of its own: place one on open land and you claim the land as you
   build (land price + road + the business). Nobody else can build on your
   claim.

@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from . import actions as A
+from . import discovery as DS
 from . import data as D
 from . import economy as E
 from . import world_map as M
@@ -69,6 +70,8 @@ def offers(world: "World", agent: "Agent") -> list[dict[str, Any]]:
                              key=lambda b: (not _uses(b, item), b.type != "Tavern / Inn"))
         for biz in [b for b in world.businesses.values() if not b.is_government] + state_sites:
             if biz.closed or biz.owner == agent.id or M.city_of(biz.location) not in world.cities:
+                continue
+            if not DS.business_known(world, agent, biz):     # outposts: only people you have found
                 continue
             if biz.is_government:
                 if M.city_of(biz.location) in state_towns:

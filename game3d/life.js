@@ -292,6 +292,8 @@ export function createLife(ctx){
     for (const [id, st] of state) if (!S.buildings.has(id)) state.delete(id);
     for (const v of S.buildings.values()){
       const st = stateFor(v);
+      // Someone you have not found (outposts): nothing of theirs shows.
+      if (!v.root.visible){ st.timer.visible = st.bubble.visible = false; continue; }
       const mine = v.b.owner === G.you;
       const d = Math.hypot(fp.x - v.pos.x, fp.z - v.pos.z);
       const inView = d < (strat ? Math.max(160, vd * 2.2) : 140);

@@ -185,7 +185,7 @@ def _name(world: "World", agent: "Agent", purpose: str) -> str:
 
 
 def claim(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
-          purpose: str = "") -> tuple[bool, str, Claim | None]:
+          purpose: str = "", free: bool = False) -> tuple[bool, str, Claim | None]:
     """Make a claim at (x, y): lay and pay for its road; its four plots are
     then for sale like any others. Returns (ok, message, claim)."""
     why = check(world, x, y)
@@ -194,6 +194,8 @@ def claim(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
     d, rx, ry = nearest_road(world, x, y)
     road = round(d * ROAD_COST_PER_M, 2)
     land = round(land_price(world, x, y) * M.CLAIM_PLOTS, 2)
+    if free:
+        road = land = 0.0
     cost = round(road + land, 2)
     if agent.denari < cost:
         what = f"the road here costs {road:.0f} ({d:.0f} m)" if not land else \
@@ -234,20 +236,18 @@ def claim(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
 def settle(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
            borrow: float = 0.0) -> tuple[bool, str, Claim | None]:
     """Found your outpost: claim the land, put your home on all four plots and
-    move in. `borrow` is lent by the state, up to MAX_SETTLE_LOAN, and only
-    here -- it is how somebody starts somewhere dear."""
+    move in. THE FIRST HOME IS FREE (designer decision, 2026-10-28): paying
+    for it left nothing to build a farm with, and a start spent waiting on
+    wages is a dull one. `borrow` is lent by the state, up to MAX_SETTLE_LOAN,
+    and only here -- money for a first business."""
     if agent.home:
         return False, f"you have settled already, at {agent.home}", None
     borrow = max(0.0, min(MAX_SETTLE_LOAN, round(float(borrow or 0.0), 2)))
-    q = quote(world, x, y)
-    if q["why_not"]:
-        return False, q["why_not"], None
-    if agent.denari + borrow < q["total"]:
-        return False, (f"this land and its road cost {q['total']:.0f}; you have "
-                       f"{agent.denari:.0f}" + ("" if borrow >= MAX_SETTLE_LOAN else
-                       f" -- borrow up to {MAX_SETTLE_LOAN:.0f} from the state to settle")), None
+    why = check(world, x, y)
+    if why:
+        return False, why, None
     agent.denari += borrow
-    ok, msg, c = claim(world, log, agent, x, y, "home")
+    ok, msg, c = claim(world, log, agent, x, y, "home", free=True)
     if not ok or c is None:
         agent.denari -= borrow
         return False, msg, None
@@ -265,10 +265,9 @@ def settle(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
     agent.city = c.city
     agent.settled = True
     log.emit(world.sim_time, "settled", actor=agent.id, location=c.name,
-             significance=Significance.MEDIUM, x=c.x, y=c.y, cost=q["total"],
-             borrowed=borrow, city=c.city)
-    owe = f" You owe the state {agent.debt:.0f}." if agent.debt else ""
-    return True, f"You settled at {c.name}, {q['total']:.0f} for the land and its road.{owe}", c
+             significance=Significance.MEDIUM, x=c.x, y=c.y, borrowed=borrow, city=c.city)
+    owe = f" You borrowed {borrow:.0f} from the state." if borrow else ""
+    return True, f"You settled at {c.name}. Your first home and its road are free.{owe}", c
 
 
 def sample_sites(world: "World", cx: float, cy: float, rng, n: int = 40,
@@ -289,19 +288,14 @@ def sample_sites(world: "World", cx: float, cy: float, rng, n: int = 40,
 
 def auto_settle(world: "World", log: "EventLog", agent: "Agent", city: str, rng) -> bool:
     """Settle an agent near its roster city's anchor. Each picks how far out
-    it wants to be -- most a good way out where land is cheap, some close in,
-    borrowing to afford it -- and takes the nearest open land at that distance."""
+    it wants to be and takes the nearest open land at that distance. The
+    first home is free, so nobody borrows to settle."""
     ax, ay = anchors(world).get(city, next(iter(anchors(world).values())))
     want = rng.choice([200.0, 350.0, 500.0, 650.0, 800.0, 950.0])
     for attempt in range(4):
         sites = sample_sites(world, ax, ay, rng, n=30, near=max(130.0, want - 150), far=want + 150)
         for x, y in sites:
-            cost = quote(world, x, y)["total"]
-            keep = 80.0                     # enough to eat and start
-            borrow = max(0.0, cost + keep - agent.denari)
-            if borrow > MAX_SETTLE_LOAN:
-                continue
-            ok, _, _ = settle(world, log, agent, x, y, borrow=borrow)
+            ok, _, _ = settle(world, log, agent, x, y)
             if ok:
                 return True
         want += 200.0

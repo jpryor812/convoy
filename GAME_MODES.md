@@ -123,7 +123,12 @@ land, and towns form where people choose to gather.
   a son and a daughter -- a donkey, a bat and 300, on a claim of your own
   joined to the roads by a dirt road.
 - **Choosing where.** You pick your plot on the map yourself (no random
-  placement for now). Land is priced
+  placement for now). **The first home is free** (2026-10-28), and the map is
+  **hazy**: you see the trading posts but not who has settled where, so where
+  you land among people is partly chance. **You can only trade with people
+  you have found**, by coming within sight (about 400 m) of them or their
+  land -- so the early game is exploring for neighbours and buyers. Agents
+  play by the same rule. Later land is priced
   by how much is built near it: cheap far out, dear beside other people. To
   start somewhere dear you can take on **debt** from the state.
 - **Settling near friends.** Players who know each other can settle side by

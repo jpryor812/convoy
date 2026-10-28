@@ -36,6 +36,7 @@ from . import progress as PG
 from . import family as FAM
 from . import delivery as DL
 from . import land as LAND
+from . import discovery as DS
 from .state import Activity, Agent, Business, Transaction, World
 
 TICK_SECONDS = 60.0     # one simulated minute of continuous processes
@@ -167,6 +168,11 @@ class Engine:
             world.sim_time + self.config.checkpoint_every_hours * 3600.0
         )
         self._next_restock = world.sim_time + 3600.0
+        # OUTPOSTS: when the frontier is next looked over for people finding
+        # each other, and where anyone not on the road network really is (the
+        # player, walking the 3D world). See `convoy/discovery.py`.
+        self._next_discovery = world.sim_time
+        self.positions: dict[str, tuple[float, float]] = {}
 
     # -- main loop ---------------------------------------------------------
 
@@ -327,6 +333,9 @@ class Engine:
         GR.tick(w, hours)
         self._dispatches()
         self._debt_interest(hours)
+        if w.outposts and w.sim_time >= self._next_discovery:
+            self._next_discovery = w.sim_time + DS.EVERY_S
+            DS.tick(w, self.log, self.positions)
         self._property_tax()
         self._road_tax()
         self._expire_social()

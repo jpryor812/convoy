@@ -56,6 +56,7 @@ from . import actions as A
 from . import advisor as ADV
 from . import land as LAND
 from . import claims as CL
+from . import discovery as DS
 from .state import Activity, Agent, World
 from .world_setup import new_world
 
@@ -323,9 +324,10 @@ class Game:
             self._push("milestone", (
                 f"There are no towns yet. {n} people have settled outposts around the state's "
                 f"{len(w.cities)} trading posts ({', '.join(M.market_of(c) for c in w.cities)}), "
-                f"which feed, hire and buy. Choose your land: near people costs more, far out is "
-                f"cheap, and the state lends up to {CL.MAX_SETTLE_LOAN:.0f} to settle somewhere dear. "
-                f"You have {you.denari:.0f}. The clock starts when you settle."))
+                f"which feed, hire and buy. Your first home is free, but the frontier is hazy: you "
+                f"cannot see who is out there until you find them, and you can only trade with "
+                f"people you have found. The state lends up to {CL.MAX_SETTLE_LOAN:.0f} as you settle, "
+                f"to start a business with. You have {you.denari:.0f}. The clock starts when you settle."))
             return
         mine = [b for b in w.businesses.values()
                 if not b.closed and not b.is_government and M.city_of(b.location) == city]
@@ -710,6 +712,8 @@ class Game:
             for b in w.businesses.values():
                 if b.closed or (b.is_government and M.city_of(b.location) != city):
                     continue
+                if not DS.business_known(w, me, b):      # outposts: only people you have found
+                    continue
                 # The state's sites (your own town's) sell what they make,
                 # without limit, at the state's fixed price.
                 stock = ({i: 999 for i in state_offers(b)} if b.is_government
@@ -764,7 +768,7 @@ class Game:
                 if o.buyer == me.id:
                     if o.status == "open" or w.sim_time - o.created_at < 24 * 3600:
                         my_orders.append(row)
-                elif o.status == "open":
+                elif o.status == "open" and buyer and DS.business_known(w, me, buyer):
                     row["fill_from"] = [{"id": b.id, "type": b.type, "have": b.inventory.get(o.item, 0)}
                                         for b in mine if b.inventory.get(o.item, 0) > 0]
                     wanted.append(row)
@@ -785,7 +789,7 @@ class Game:
             for item in sorted(wants):
                 rows = []
                 for b in w.businesses.values():
-                    if b.owner == me.id or b.closed:
+                    if b.owner == me.id or b.closed or not DS.business_known(w, me, b):
                         continue
                     # The state pays the same everywhere: show only your town's site.
                     if b.is_government and M.city_of(b.location) != city:
@@ -1144,6 +1148,17 @@ class Game:
 
     # -- claims on open land (2026-10-18) -------------------------------------
 
+    def seen_at(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Where the player is standing in the 3D world, in map metres, so
+        the people they walk past find them (outposts; see discovery.py)."""
+        try:
+            x, y = float(body.get("x")), float(body.get("y"))
+        except (TypeError, ValueError):
+            return {"ok": False}
+        with self.engine.world_lock:
+            self.engine.positions[self.human_id] = (x, y)
+        return {"ok": True}
+
     def settle(self, body: dict[str, Any]) -> dict[str, Any]:
         """Found your outpost at (x, y), borrowing `borrow` from the state."""
         with self.engine.world_lock:
@@ -1154,15 +1169,17 @@ class Game:
                 return {"ok": False, "message": "where?"}
             if body.get("quote"):
                 q = CL.quote(self.world, x, y)
-                need = max(0.0, q["total"] - self.you.denari)
+                if not self.you.home:
+                    # The first home and its road are free (2026-10-28).
+                    q.update(total=0.0, land_cost=0.0, road_cost=0.0, free=True)
                 return {"ok": True, **q, "ground": CL.ground_hint(self.world, x, y),
-                        "cash": round(self.you.denari, 2),
-                        "borrow_needed": round(need, 2), "max_loan": CL.MAX_SETTLE_LOAN}
+                        "cash": round(self.you.denari, 2), "max_loan": CL.MAX_SETTLE_LOAN}
             ok, msg, c = CL.settle(self.world, self.log, self.you, x, y, borrow)
         self._push("milestone" if ok else "alert", msg)
         self._map_dirty = True
         return {"ok": ok, "message": msg, "place": c.name if c else None,
-                "claim": ({"name": c.name, "x": c.x, "y": c.y, "road": c.road, "city": c.city} if c else None)}
+                "claim": ({"name": c.name, "x": c.x, "y": c.y, "road": c.road, "city": c.city,
+                           "owner": c.owner} if c else None)}
 
     def wild_claim(self, body: dict[str, Any]) -> dict[str, Any]:
         from . import claims as CL
@@ -1177,7 +1194,8 @@ class Game:
         self._push("did" if ok else "alert", msg)
         self._map_dirty = True
         return {"ok": ok, "message": msg, "place": c.name if c else None,
-                "claim": ({"name": c.name, "x": c.x, "y": c.y, "road": c.road, "city": c.city} if c else None)}
+                "claim": ({"name": c.name, "x": c.x, "y": c.y, "road": c.road, "city": c.city,
+                           "owner": c.owner} if c else None)}
 
     def _haul_on_arrival(self) -> tuple[str, str | None]:
         """Walking in with a haul to do does it: load at the origin, hand over
@@ -1451,6 +1469,15 @@ class Game:
             return "you", f"Autopilot: {d.get('did', d.get('reflex'))}"
         if e.actor == me and e.type in _OWN_ACTION_ECHOES:
             return None
+        # Outposts: someone found (2026-10-28) -- the only way to trade with them.
+        if e.type == "met" and me in (e.actor, e.subject):
+            other = self.world.agents.get(e.subject if e.actor == me else e.actor)
+            if other is not None:
+                owns = sorted({self.world.businesses[b].type.split(" /")[0] for b in other.owned_businesses
+                               if b in self.world.businesses})
+                return "milestone", (f"You found {other.name} of {other.house}"
+                                     + (f", who owns a {', a '.join(owns)}" if owns else "")
+                                     + ". You can trade with them now.")
         # Outposts: things brought to you, and what you settled (2026-10-27).
         if e.actor == me and e.type == "meal_delivered":
             return "wake", f"Your {d.get('item', 'meal')} has arrived; eat it from your card when you are hungry."
@@ -1922,7 +1949,7 @@ class Game:
             "thinking": self.thinking(),
             "you": {"id": you.id, "name": you.name, "city": w.city_of(you),
                     "settled": you.settled, "home": you.home, "debt": round(you.debt, 2),
-                    "outposts": w.outposts,
+                    "outposts": w.outposts, "known": list(you.known) + list(you.allies),
                     "denari": round(you.denari, 2),
                     "net_worth": round(you.net_worth(w), 2), "alive": you.alive},
             "leaders": [

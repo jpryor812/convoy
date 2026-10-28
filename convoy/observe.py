@@ -31,6 +31,7 @@ from typing import Any
 from . import banditry as B
 from . import data as D
 from . import land as LAND
+from . import discovery as DS
 from . import economy as E
 from . import world_map as M
 from .events import EventLog, Significance
@@ -802,7 +803,10 @@ def static_briefing(
             "claim_land a site from OPEN LAND NEAR YOU, travel_to it, then "
             "start_business there -- farms do best near water, mines near the "
             "mountains, and each site says which. Land near people and the "
-            "trading posts costs more; far out it is cheap. Short of money, "
+            "trading posts costs more; far out it is cheap. YOU CAN ONLY TRADE "
+            "WITH PEOPLE YOU HAVE FOUND (the state excepted): you find someone "
+            "by passing within sight of them or their land, so travel to meet "
+            "buyers and sellers. Short of money, "
             "take the state's wage at a trading post first. If you borrowed to "
             "settle, YOUR OUTPOST says what you owe: it grows 2% a day and a "
             "fifth of what your businesses earn pays it down (repay_debt pays "
@@ -2064,6 +2068,18 @@ def observe(
         food.sort(key=lambda r: r.get("brought_to_you", 0))
         if food:
             outpost["food (order_meal(tavern) to have it brought)"] = food[:4]
+        # WHO YOU HAVE FOUND (2026-10-28): you can only trade with them.
+        found = [world.agents[k] for k in agent.known if k in world.agents and world.agents[k].alive]
+        outpost["people_you_have_found"] = (
+            [f"{o.name} ({o.house}): home {o.home or '?'}"
+             + (", owns " + ", ".join(sorted({world.businesses[b].type.split(' /')[0]
+                                               for b in o.owned_businesses if b in world.businesses}))
+                if o.owned_businesses else "")
+             for o in found[:10]]
+            or ["nobody yet -- you can only trade with people you have found"])
+        outpost["to_find_more"] = (
+            f"travel the roads, the spurs and to other trading posts: anyone you pass "
+            f"within {DS.SIGHT_M:.0f} m, or whose land you pass, you find, and they find you")
         obs["your_outpost"] = outpost
         sites = CL.sites_near(world, agent)
         if sites:
@@ -2111,6 +2127,7 @@ def observe(
             for b in world.businesses.values()
             if not b.closed and b.spec.outputs and b.id not in agent.owned_businesses
             and any(D.is_intermediate(i) for i in b.spec.outputs)
+            and DS.business_known(world, agent, b)          # outposts: people you have found
             # Any city of this world: roads join them now, and a supplier in
             # the next city is real trade -- a longer, more exposed haul.
             and M.city_of(b.location) in world.cities
@@ -2188,6 +2205,8 @@ def observe(
             if not holders:
                 continue
             buyer = world.businesses.get(o.business)
+            if buyer is None or not DS.business_known(world, agent, buyer):
+                continue
             fillable.append({
                 "order": o.id, "wants": f"{o.qty} {o.item} at {o.price:.2f} each",
                 "for": f"{buyer.name if buyer else o.business} at {buyer.location if buyer else '?'}",

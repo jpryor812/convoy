@@ -19,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from convoy import actions as A
 from convoy import claims as CL
+from convoy import delivery as DLV
+from convoy import discovery as DS
 from convoy import economy as E
 from convoy import observe as O
 from convoy import reflexes as RX
@@ -109,41 +111,47 @@ def test_everyone_settles_spread_over_the_anchors() -> None:
        all(b.is_government for b in world.businesses.values()))
 
 
-def test_settling_somewhere_dear_borrows_from_the_state() -> None:
+def test_the_first_home_is_free_and_a_loan_is_optional() -> None:
     world, log = _world()
-    a = next(iter(world.agents.values()))
-    a.home = ""
+    a, b = list(world.agents.values())[:2]
+    for p in (a, b):
+        p.home = ""
     a.denari = 20.0
     x, y = _open_spot(world, random.Random(3), 130, 200)
-    q = CL.quote(world, x, y)
-    okb, msg, _ = CL.settle(world, log, a, x, y)
-    ok("without a loan it is refused", not okb and "borrow" in msg, msg)
-    need = q["total"] - a.denari
-    okb, msg, _ = CL.settle(world, log, a, x, y, borrow=need + 1)
-    ok("with one it is allowed", okb, msg)
-    ok("and the debt is recorded", abs(a.debt - round(need + 1, 2)) < 0.01, str(a.debt))
+    okb, msg, c = CL.settle(world, log, a, x, y)
+    ok("settling costs nothing, even beside a trading post", okb and a.denari == 20.0, msg)
+    ok("and its land counts for nothing", sum(p.paid for p in world.plots.values() if p.location == c.name) == 0)
     okb, _, _ = CL.settle(world, log, a, x + 300, y)
     ok("you settle once", not okb)
+    cash = b.denari
+    x, y = _open_spot(world, random.Random(4), 600, 900)
+    okb, msg, _ = CL.settle(world, log, b, x, y, borrow=150.0)
+    ok("a loan taken as you settle is money to start with", okb and abs(b.denari - cash - 150.0) < 0.01, msg)
+    ok("and is owed", abs(b.debt - 150.0) < 0.01, str(b.debt))
 
 
 def test_land_counts_at_cost_and_debt_against_you() -> None:
     world, log = _world()
     a = next(iter(world.agents.values()))
-    a.home = ""
-    for v in a.owned_vehicles:
-        world.vehicles[v].location = "Town"
+    a.denari = 2000.0
     x, y = _open_spot(world, random.Random(6), 130, 200)
-    before = a.net_worth(world) - a.land_value(world)
+    before = a.net_worth(world)
     q = CL.quote(world, x, y)
-    okb, msg, _ = CL.settle(world, log, a, x, y, borrow=100.0)
-    ok("settled", okb, msg)
-    ok("the land is worth what it cost", abs(a.land_value(world) - sum(
-        p.paid for p in world.plots.values() if p.owner == a.id)) < 0.01)
-    new_land = sum(p.paid for p in world.plots.values() if p.location == a.home)
+    okc, msg, c = CL.claim(world, log, a, x, y, "Farm")
+    ok("claimed", okc, msg)
+    new_land = sum(p.paid for p in world.plots.values() if p.location == c.name)
     ok("the new claim is valued at its price", abs(new_land - q["total"]) < 0.05, f"{new_land} vs {q['total']}")
-    after = a.net_worth(world) - (a.land_value(world) - new_land)
-    ok("buying land and borrowing leaves worth where it was", abs(after - before) < 0.05, f"{before} -> {after}")
-    ok("the donkey moves in too", all(world.vehicles[v].location == a.home for v in a.owned_vehicles))
+    ok("buying land leaves worth where it was", abs(a.net_worth(world) - before) < 0.05,
+       f"{before} -> {a.net_worth(world)}")
+    a.debt = 100.0
+    ok("debt counts against you", abs(a.net_worth(world) - (before - 100.0)) < 0.05)
+    b = list(world.agents.values())[1]
+    b.home = ""
+    for v in b.owned_vehicles:
+        world.vehicles[v].location = "Town"
+    x, y = _open_spot(world, random.Random(7), 600, 900)
+    CL.settle(world, log, b, x, y)
+    ok("the donkey moves in too", all(world.vehicles[v].location == b.home for v in b.owned_vehicles))
 
 
 def test_debt_grows_and_is_paid_from_earnings() -> None:
@@ -266,6 +274,81 @@ def test_a_hungry_agent_away_from_a_tavern_sends_for_one() -> None:
     ok("it orders", RX._eat(world, log, a))
     ok("one meal on the way", sum(1 for d in world.dispatches.values() if d.agent == a.id) == 1)
     ok("and not a second", not RX._eat(world, log, a))
+
+
+def _pair_apart(world):
+    """Two settlers who have not found each other, far apart."""
+    people = [a for a in world.agents.values() if a.home]
+    for a in people:
+        for b in people:
+            if a is b:
+                continue
+            pa, pb = CL.place_xy(world, a.home), CL.place_xy(world, b.home)
+            if math.hypot(pa[0] - pb[0], pa[1] - pb[1]) > 3 * DS.SIGHT_M and b.id not in a.known:
+                return a, b
+    raise AssertionError("no two settlers far apart")
+
+
+def test_neighbours_find_each_other_and_strangers_do_not() -> None:
+    world, log = _world()
+    DS.tick(world, log)
+    for a in world.agents.values():
+        pa = CL.place_xy(world, a.home)
+        for b in world.agents.values():
+            if a is b:
+                continue
+            pb = CL.place_xy(world, b.home)
+            d = math.hypot(pa[0] - pb[0], pa[1] - pb[1])
+            if d <= DS.SIGHT_M:
+                ok("neighbours within sight have met", b.id in a.known and a.id in b.known, f"{d:.0f} m")
+            elif d > DS.SIGHT_M * 1.5 and not a.owned_businesses and not b.owned_businesses:
+                ok("strangers far apart have not", b.id not in a.known, f"{d:.0f} m")
+
+
+def test_you_can_only_trade_with_people_you_have_found() -> None:
+    world, log = _world()
+    DS.tick(world, log)
+    a, b = _pair_apart(world)
+    a.denari = b.denari = 3000.0
+    for p, r in ((a, 11), (b, 12)):
+        x, y = CL.sample_sites(world, *CL.place_xy(world, p.home), random.Random(r), n=1, near=90, far=300)[0]
+        _, _, c = CL.claim(world, log, p, x, y, "Farm")
+        p.location = c.name
+    A.start_business(world, log, a, "Farm")
+    A.start_business(world, log, b, "Refinery")
+    farm = world.businesses[a.owned_businesses[-1]]
+    ref = world.businesses[b.owned_businesses[-1]]
+    A.set_production(world, log, b, ref.id, "Grain")
+    farm.add_item("Wheat", 20)
+    okb, msg = A.sell_to_bidder(world, log, a, farm.id, ref.id, "Wheat", 5)
+    ok("a stranger's bid cannot be taken", not okb and "not found" in msg, msg)
+    state = next(x for x in world.businesses.values() if x.is_government and x.type == "Refinery")
+    okb, msg = A.sell_to_bidder(world, log, a, farm.id, state.id, "Wheat", 5)
+    ok("the state always can be", okb, msg)
+    okb, msg = A.order_from_business(world, log, b, ref.id, farm.id, "Wheat", 5, 1.0)
+    ok("nor can a stranger's stock be ordered", not okb and "not found" in msg, msg)
+    ok("nor their deliveries offered", all(o["buyer"] != ref.id for o in DLV.offers(world, a)))
+    # A rides past b's refinery.
+    DS.tick(world, log, {a.id: CL.place_xy(world, ref.location)})
+    ok("riding past their land finds them", b.id in a.known and a.id in b.known)
+    okb, msg = A.sell_to_bidder(world, log, a, farm.id, ref.id, "Wheat", 5)
+    ok("and then you can trade", okb, msg)
+
+
+def test_face_to_face_is_finding() -> None:
+    world, log = _world()
+    DS.tick(world, log)
+    a, b = _pair_apart(world)
+    a.location = b.location = "Town"
+    A._meet_here(world, log, a, b.id)
+    ok("standing beside someone, you have met", b.id in a.known and a.id in b.known)
+
+
+def test_worlds_without_outposts_know_everyone() -> None:
+    world, log = _world()
+    world.outposts = False
+    a, b = list(world.agents.values())[:2]
+    ok("everyone is known", DS.knows(world, a, b.id))
 
 
 def main() -> int:

@@ -13,7 +13,7 @@
    people, trees and the cursor all stand on it. reground() re-levels an area
    after the map changes (a new claim and its track). */
 
-export function createTerrain({THREE, w, d, roadSegs, places, rivers, mountains, windUniform, tex}){
+export function createTerrain({THREE, w, d, roadSegs, places, rivers, mountains, windUniform, tex, haze}){
   const STEP = 4;                                   // scene units between vertices
   const SNOWLINE = Math.max(40, Math.max(0, ...mountains.map(m => m.h || 0)) * 0.6);
   const nx = Math.ceil(w / STEP) + 1, nz = Math.ceil(d / STEP) + 1;
@@ -172,7 +172,28 @@ export function createTerrain({THREE, w, d, roadSegs, places, rivers, mountains,
   const grain = new THREE.CanvasTexture(c);
   grain.wrapS = grain.wrapT = THREE.RepeatWrapping; grain.repeat.set(w / 10, d / 10);
   grain.colorSpace = THREE.SRGBColorSpace; grain.anisotropy = 8;
-  const mesh = new THREE.Mesh(geo, tex ? splatMaterial() : new THREE.MeshLambertMaterial({vertexColors: true, map: grain}));
+  const mesh = new THREE.Mesh(geo, withHaze(tex ? splatMaterial() : new THREE.MeshLambertMaterial({vertexColors: true, map: grain})));
+
+  /* HAZE (2026-10-28): with outposts, ground you have not explored is veiled.
+     `haze.tHaze` is a texture over the whole ground (alpha = how hazy) and
+     `haze.uHazeBox` its corner and size in scene units. */
+  function withHaze(mat){
+    if (!haze) return mat;
+    const before = mat.onBeforeCompile;
+    mat.onBeforeCompile = (sh, r) => {
+      if (before) before.call(mat, sh, r);
+      Object.assign(sh.uniforms, haze);
+      sh.vertexShader = sh.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying vec2 vHazeXZ;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvHazeXZ = (modelMatrix * vec4(transformed, 1.0)).xz;");
+      sh.fragmentShader = sh.fragmentShader
+        .replace("#include <common>", "#include <common>\nuniform sampler2D tHaze; uniform vec4 uHazeBox; uniform float uHazeOn; varying vec2 vHazeXZ;")
+        .replace("#include <dithering_fragment>", `#include <dithering_fragment>
+          float hz = uHazeOn * texture2D(tHaze, (vHazeXZ - uHazeBox.xy) / uHazeBox.zw).a;
+          gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.87, 0.84, 0.78), hz * 0.62);`);
+    };
+    return mat;
+  }
   mesh.receiveShadow = true; mesh.name = "ground";
 
   /* PHOTOGRAPHED GROUND (2026-10-19, Poly Haven, CC0): prairie grass, mossy

@@ -337,6 +337,11 @@ def make_handler(host: Host):
                 out = g.wild_claim(body if isinstance(body, dict) else {})
                 host._map = None                      # the map must show it at once
                 return self._send(out)
+            if path == "/api/pos":
+                g = host.game
+                if g is None:
+                    return self._send({"error": "no game running"}, 409)
+                return self._send(g.seen_at(body if isinstance(body, dict) else {}))
             if path == "/api/settle":
                 g = host.game
                 if g is None:

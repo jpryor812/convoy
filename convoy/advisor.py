@@ -342,7 +342,7 @@ def advice(world: "World", log: "EventLog", me: "Agent", history: History) -> li
     # 0. OUTPOSTS (2026-10-27): before anything, somewhere to live.
     if world.outposts and not me.home:
         return [_move("Choose your land and settle",
-                      "Near the trading posts and other people costs more; far out is cheap. "
+                      "Your first home is free. Who lives out there is hidden until you find them. "
                       "The clock starts when you settle.", "Choose land", "place", type="Your home")]
 
     # 1. FOOD. Nothing else matters if you starve.
@@ -648,7 +648,7 @@ def goals(world: "World", log: "EventLog", me: "Agent") -> list[dict[str, Any]]:
         fed = ate or any(e.type == "meal_ordered" and e.actor == me.id for e in log.events)
         return [
             {"goal": "Choose your land and settle", "done": bool(me.home),
-             "how": "Move your home over open grass and click. Near people costs more; far out is cheap."},
+             "how": "Move your home over open grass and click. Your first home is free."},
             {"goal": "Get fed", "done": fed,
              "how": "Food comes from taverns: walk to a trading post's tavern, or tap Food and have a meal brought."},
             {"goal": "Found a farm or a mine", "done": extraction,
@@ -657,8 +657,10 @@ def goals(world: "World", log: "EventLog", me: "Agent") -> list[dict[str, Any]]:
              "how": "Your house (house button): set your partner to work at it -- unpaid, always on shift."},
             {"goal": "Set it producing", "done": founded and producing,
              "how": "Open the business and choose what it makes; rich ground shows at the first harvest."},
+            {"goal": "Find a neighbour", "done": bool(me.known),
+             "how": "Ride out along the roads and spurs: anyone whose land you pass within sight, you find."},
             {"goal": "Sell your first goods", "done": sold,
-             "how": "Market, Sell: a citizen's refinery pays best; the state's convoy comes to you and collects."},
+             "how": "Market, Sell: the state's convoy always collects; people you have found may pay more."},
             {"goal": "Start learning something", "done": studied,
              "how": "Know-how (light bulb): your first study lands in six hours."},
         ]

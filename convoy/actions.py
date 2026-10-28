@@ -22,6 +22,7 @@ from .events import EventLog, Significance
 from . import banditry as B
 from . import raids as R
 from . import land as LAND
+from . import discovery as DS
 from .state import (
     Raid,
     BuyOrder,
@@ -648,6 +649,7 @@ def buy_from_business(
         return False, "no such business"
     if biz.location != agent.location:
         return False, "not at this business"
+    _meet_here(world, log, agent, biz.owner)
     if qty <= 0:
         return False, "bad quantity"
     if not is_staffed(world, biz):
@@ -698,6 +700,7 @@ def sell_to_business(
         return False, "no such business"
     if biz.location != agent.location:
         return False, "not at this business"
+    _meet_here(world, log, agent, biz.owner)
     if agent.inventory.get(item, 0) < qty:
         return False, f"no {item} to sell"
     # The chain rule has to hold on BOTH doors. Blocking order_from_business
@@ -1904,6 +1907,14 @@ STATE_CONVOY_PREP_H = 0.5      # the state's convoy loading up to come out
 MAX_MEALS_ON_WAY = 2
 
 
+def _meet_here(world: World, log: EventLog, agent: Agent, other: str | None) -> None:
+    """Face to face is finding someone (outposts): standing at their door or
+    beside them, you have met."""
+    o = world.agents.get(other or "")
+    if o is not None and not DS.knows(world, agent, o.id):
+        DS.meet(world, log, agent, o, agent.location)
+
+
 def _clock(hours: float) -> str:
     m = max(1, round(hours * 60))
     return f"{m} min" if m < 60 else f"{m // 60}h {m % 60:02d}m"
@@ -1936,6 +1947,8 @@ def order_meal(world: World, log: EventLog, agent: Agent, business_id: str,
         return False, "no such tavern"
     if tavern.location == agent.location:
         return buy_meal(world, log, agent, tavern.id, meal=meal)
+    if not DS.business_known(world, agent, tavern):
+        return False, DS.not_found(world, tavern.owner)
     if not is_staffed(world, tavern):
         return False, f"{tavern.name} is unattended -- nobody is cooking"
     on_way = sum(1 for d in world.dispatches.values()
@@ -2289,6 +2302,7 @@ def offer_trade(
         return False, "cannot trade with yourself"
     if target.location != agent.location:
         return False, f"{target.name} is not at {agent.location}"
+    _meet_here(world, log, agent, target.id)
     if not items or any(q <= 0 for q in items.values()):
         return False, "nothing offered"
     if price < 0:
@@ -2638,6 +2652,8 @@ def order_from_business(
         return False, "no such seller"
     if seller.id == buyer.id:
         return False, "a business cannot buy from itself"
+    if not DS.business_known(world, agent, seller):
+        return False, DS.not_found(world, seller.owner)
     # BUYING FROM ANOTHER CITY IS TRADE NOW, carried by road like any other
     # load -- the longest and most exposed haul on the map. Only a city this
     # world does not contain is out of reach.
@@ -2776,6 +2792,8 @@ def fill_buy_order(
         return False, "the business that posted it has closed"
     if buyer.owner == agent.id:
         return False, "that is your own buy order"
+    if not DS.business_known(world, agent, buyer):
+        return False, DS.not_found(world, buyer.owner)
     if (world_map.city_of(seller.location) not in world.cities
             or world_map.city_of(buyer.location) not in world.cities):
         return False, f"there is no road from {seller.location} to {buyer.location}"
@@ -3732,6 +3750,8 @@ def sell_to_bidder(
     buyer = world.businesses.get(buyer_business_id)
     if not buyer or buyer.closed or buyer.id == seller.id or buyer.owner == agent.id:
         return False, "no such buyer"
+    if not DS.business_known(world, agent, buyer):
+        return False, DS.not_found(world, buyer.owner)
     if world_map.city_of(buyer.location) not in world.cities:
         return False, "there is no road to that buyer"
     have = seller.inventory.get(item, 0)

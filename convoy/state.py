@@ -276,6 +276,9 @@ class Agent:
     # Owed to the state: borrowed to settle somewhere dear. Grows daily and is
     # paid down from what your businesses earn. See `claims.settle`.
     debt: float = 0.0
+    # The settlers this one has found (agent ids). With outposts you can only
+    # trade with people you have met. See `convoy/discovery.py`.
+    known: list[str] = field(default_factory=list)
     # A delivery run under way (convoy/delivery.py), or None.
     delivery: dict[str, Any] | None = None
     # Missions (convoy/missions.py): those finished, and the one under way.

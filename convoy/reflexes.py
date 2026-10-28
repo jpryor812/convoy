@@ -193,6 +193,8 @@ def _send_for_a_meal(world: "World", log: "EventLog", agent: "Agent") -> bool:
             continue
         if not t.is_government and not any(q > 0 for i, q in t.inventory.items() if i in A.D.MEALS):
             continue
+        if not A.DS.business_known(world, agent, t):
+            continue
         meal = A.E.best_meal_for_tier(0 if t.is_government else t.research.quality_tier, "duration")
         cost = t.price_for(meal) + A._meal_fee(world, t, agent.location)
         if cost <= agent.denari and (best is None or cost < best[0]):
@@ -348,7 +350,7 @@ def restock(world: "World", log: "EventLog", agent: "Agent", rate_of) -> list[st
                 elif s.inventory.get(item, 0) <= 0 or item not in s.retail_prices:
                     continue
                 ok, _ = A._may_buy_from(b, s)
-                if not ok:
+                if not ok or not A.DS.business_known(world, agent, s):
                     continue
                 key = (s.price_for(item) * (1.0 if s.location == b.location else 1.0 + RESTOCK_COURIER_SHARE))
                 if best is None or key < best[0]:

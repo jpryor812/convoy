@@ -849,6 +849,7 @@ def build_payload(run: Path | None = None, claims=None) -> dict:
             claims = list(CP.load(run / "checkpoint.json").claims.values())
         except Exception:                               # noqa: BLE001
             claims = []
+    claim_owner = {c.name: c.owner for c in claims or []}
     for c in claims or []:
         pts = [L.Point(px, py) for px, py in c.road]
         places[c.name] = L.Place(name=c.name, kind="claim", center=L.Point(c.x, c.y),
@@ -886,7 +887,8 @@ def build_payload(run: Path | None = None, claims=None) -> dict:
                 "x": p.center.x, "y": p.center.y,
                 "ground": ground_for(p.name),
                 "parcels": [{"x": q.x, "y": q.y} for q in p.parcels],
-                **({"path": [[q.x, q.y] for q in p.path]} if p.kind == "claim" else {}),
+                **({"path": [[q.x, q.y] for q in p.path], "owner": claim_owner.get(p.name, "")}
+                   if p.kind == "claim" else {}),
                 "props": [{"kind": q.kind, "x": q.x, "y": q.y,
                            "scale": q.scale} for q in p.props],
             }

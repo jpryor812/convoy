@@ -402,7 +402,7 @@ function buildWorld(D, totals){
   // overview, not across open country.
   TERRAIN = createTerrain({THREE, w, d, roadSegs, places: S.places,
     rivers: {x: [{at: riverX, half: riverHalf}], z: borderZ.map(([at, half]) => ({at, half}))},
-    mountains: S.mountains, windUniform: WIND, tex: LAND});
+    mountains: S.mountains, windUniform: WIND, tex: LAND, haze: hazeSetup(w, d)});
   scene.add(TERRAIN.mesh);
   S.ground = TERRAIN.mesh;
   if (!FLORA) scene.add(TERRAIN.tufts(26000));
@@ -435,7 +435,7 @@ function addClaimPlace(p, withRoad){
     S.cells.set(k, {key: k, gx: gx + i, gz: gz + j, x: (gx + i + 0.5) * CELL, z: (gz + j + 0.5) * CELL, place: p.name});
   }
   const city = ((S.DATA && S.DATA.cities) || []).find(k => k.places.includes(p.name));
-  S.places[p.name] = {name: p.name, kind: "claim", c, r: CELL * 1.7, city: city ? city.key : "", cityName: city ? city.name : "", cells: keys};
+  S.places[p.name] = {name: p.name, kind: "claim", c, r: CELL * 1.7, city: city ? city.key : "", cityName: city ? city.name : "", cells: keys, owner: p.owner || ""};
   const el = document.createElement("div"); el.className = "lbl-place claim"; el.textContent = p.name;
   const lbl = new CSS2DObject(el); lbl.position.set(c.x, 12, c.z); scene.add(lbl);
   S.places[p.name].label = lbl;
@@ -837,7 +837,7 @@ function assignPlots(){
 }
 function syncLand(){
   assignPlots();
-  const key = [...S.cellOwner].map(([k, o]) => `${k}:${o.owner}`).join("|") + "#" + [...S.selected].join(",");
+  const key = [...S.cellOwner].map(([k, o]) => `${k}:${o.owner}`).join("|") + "#" + [...S.selected].join(",") + "#" + KNOWN.size;
   if (key === landKey) return;
   landKey = key;
   if (outlines){ scene.remove(outlines, tints, picks); }
@@ -853,7 +853,7 @@ function syncLand(){
   freeCells.forEach((c, i) => { m.makeTranslation(c.x, 0.09, c.z); outlines.setMatrixAt(i, m); });
   outlines.count = freeCells.length;
   // Owned squares in the owner's colour.
-  const owned = all.filter(c => S.cellOwner.has(c.key));
+  const owned = all.filter(c => S.cellOwner.has(c.key) && found(S.cellOwner.get(c.key).owner));
   const sq = new THREE.PlaneGeometry(CELL - 0.35, CELL - 0.35); sq.rotateX(-Math.PI / 2);
   tints = new THREE.InstancedMesh(sq, new THREE.MeshBasicMaterial({transparent: true, opacity: 0.2, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -1}), Math.max(1, owned.length));
@@ -988,7 +988,7 @@ async function wildFound(type, cx, cz, landOnly){
   const r = await api.post("/api/wildclaim", {x: w.x, y: w.y, purpose: landOnly ? "" : type});
   UI.toast(r.message, r.ok ? "" : "bad");
   if (!r.ok) return;
-  addClaimPlace({name: r.claim.name, x: r.claim.x, y: r.claim.y, path: r.claim.road}, true);
+  addClaimPlace({name: r.claim.name, x: r.claim.x, y: r.claim.y, path: r.claim.road, owner: r.claim.owner}, true);
   const cells = S.places[r.place].cells;
   if (landOnly) buyOn(r.place, cells); else foundOn(r.place, cells, type);
 }
@@ -1051,6 +1051,7 @@ function syncHomes(){
       const place = S.places[S.cells.get(keys[0]).place];
       root.rotation.y = place ? Math.atan2(place.c.x - pos.x, place.c.z - pos.z) : 0;
       scene.add(root);
+      shown(root, found(owner));
       v = {root, pos}; S.homeObjs.set(owner, v);
       colliders.push({id: "home:" + owner, x: pos.x, z: pos.z, r: 5.5});
     }
@@ -1096,10 +1097,12 @@ function syncDefenses(){
     const c = S.cells.get(k); if (!c) continue;
     const root = makeDefense(o.structure);
     root.position.set(c.x, 0, c.z);
+    root.userData.owner = o.owner;
     const el = document.createElement("div");
     el.className = "lbl-biz def" + (o.owner === G.you ? " mine" : "");
     el.innerHTML = `<b>${o.structure === "Guard post" ? "\u{1F6E1}\uFE0F" : "\u{1FAA8}"} ${o.structure}</b>`;
     const lbl = new CSS2DObject(el); lbl.position.set(0, 11, 0); root.add(lbl);
+    shown(root, found(o.owner));
     scene.add(root);
     S.defenses.set(o.plot, root);
   }
@@ -1129,6 +1132,7 @@ function syncBuildings(){
     // Face the middle of its place: the doors open onto the square.
     const ang = place ? Math.atan2(place.c.x - pos.x, place.c.z - pos.z) : 0;
     root.position.copy(pos); root.rotation.y = ang;
+    root.visible = found(b.owner);
     scene.add(root);
     S.buildings.set(b.id, {root, b, pos, ang, born: performance.now(), pop: popNext === b.id || S.ready});
     if (popNext === b.id) popNext = null;
@@ -1558,7 +1562,7 @@ function updateAgents(dt){
     }
     v.root.position.y = groundAt(v.root.position.x, v.root.position.z);
     const reach = camMode === "strategy" ? Math.max(260, sDist * 2.2) : 260;
-    const near = v.root.position.distanceToSquared(focusPoint()) < reach * reach;
+    const near = v.root.position.distanceToSquared(focusPoint()) < reach * reach && found(v.id);
     v.root.visible = near;
     if (!near) continue;
     setAnim(v, speed > 0.3 ? (speed > 6 ? "run" : "walk") : t.working && v.acts.work ? "work" : "idle",
@@ -1576,7 +1580,7 @@ function updateLabels(){
     const d = Math.hypot(cp.x - p.c.x, cp.z - p.c.z);
     // Near names only: a dozen far-off names stacked on the horizon sat on
     // top of whatever building was in front of you.
-    p.label.visible = d < 170 * zoomK && (camMode === "strategy" || d > 8);
+    p.label.visible = d < 170 * zoomK && (camMode === "strategy" || d > 8) && (p.kind !== "claim" || found(p.owner));
     p.label.element.style.opacity = d < 40 ? 0.6 : 1;
   }
   const marks = (S.ADV && S.ADV.markers) || {};
@@ -1584,7 +1588,7 @@ function updateLabels(){
     const d = cp.distanceTo(v.pos), mk = marks[v.b.id];
     const lbl = v.root.userData.label;
     // A building with something for you shows from further off.
-    lbl.visible = d < 120 * zoomK || (mk && ((mk.icons && mk.icons.length) || mk.health) && d < 280 * zoomK);
+    lbl.visible = found(v.b.owner) && (d < 120 * zoomK || (mk && ((mk.icons && mk.icons.length) || mk.health) && d < 280 * zoomK));
     const html = signHTML(v.b, mk);
     if (lbl.element.innerHTML !== html) lbl.element.innerHTML = html;
   }
@@ -1672,6 +1676,26 @@ function holo(type){
 const HOME_SPEC = {name: "Your home", cost: 0, home: true};
 const QUOTES = new Map();
 function outposts(){ return !!(S.ST && S.ST.you && S.ST.you.outposts); }
+/* FINDING PEOPLE (2026-10-28): with outposts you see a settler -- their
+   figure, home, claims and businesses -- only once you have found them. The
+   state's trading posts and your own are always there. */
+let KNOWN = new Set();
+function found(owner){
+  return !outposts() || !owner || owner === G.you || owner === "Government" || KNOWN.has(owner);
+}
+function shown(root, on){
+  root.visible = on;
+  root.traverse(o => { if (o.isCSS2DObject) o.visible = on; });
+}
+function checkKnown(){
+  const k = (S.ST && S.ST.you && S.ST.you.known) || [];
+  if (k.length === KNOWN.size && k.every(x => KNOWN.has(x))) return;
+  KNOWN = new Set(k);
+  landKey = "";                                    // repaint the plots
+  for (const [owner, v] of S.homeObjs) shown(v.root, found(owner));
+  for (const v of S.buildings.values()) v.root.visible = found(v.b.owner);
+  for (const root of S.defenses.values()) shown(root, found(root.userData.owner));
+}
 function landQuote(cx, cz){
   const key = `${Math.round(cx / CELL)},${Math.round(cz / CELL)}`;
   if (QUOTES.has(key)) return QUOTES.get(key);
@@ -1689,7 +1713,7 @@ async function settleAt(cx, cz, borrow){
   if (!r.ok){ UI.toast(r.message, "bad"); return; }      // the feed says it when it works
   stopPlacing();
   QUOTES.clear();
-  addClaimPlace({name: r.claim.name, x: r.claim.x, y: r.claim.y, path: r.claim.road}, true);
+  addClaimPlace({name: r.claim.name, x: r.claim.x, y: r.claim.y, path: r.claim.road, owner: r.claim.owner}, true);
   const home = S.places[r.place];
   if (home && S.player){
     S.player.root.position.set(home.c.x + 2, groundAt(home.c.x + 2, home.c.z + 3), home.c.z + 3);
@@ -1705,7 +1729,7 @@ function settleBanner(on){
   if (!on){ if (el) el.remove(); return; }
   if (el) return;
   el = document.createElement("div"); el.id = "settle-banner";
-  el.innerHTML = `<b>Choose your land</b><span>Move the home over open grass and click to settle. Land near the trading posts and other people costs more; far out it is cheap. Other outposts are labelled with their owner, so you can settle beside someone you know. The clock starts when you settle.</span>`
+  el.innerHTML = `<b>Choose your land</b><span>Your first home is free. The frontier is hazy: you can see the state's trading posts, but not who is settled out there. Pick a spot and click to settle, then explore -- you can only trade with people you have found. The clock starts when you settle.</span>`
     + `<div class="loan">Borrow from the state as you settle (2% a day, paid from what you earn): `
     + [0, 100, 200, 400].map(n => `<button data-loan="${n}" class="${n === EXTRA_LOAN ? "on" : ""}">${n ? n : "none"}</button>`).join("") + `</div>`;
   el.querySelectorAll("[data-loan]").forEach(b => b.onclick = () => {
@@ -1800,12 +1824,13 @@ function updatePlacement(point){
   let total = Math.round(spec.cost + (wild ? roadM * 0.12 : 0));
   if (q && !q.why_not){
     total = Math.round(spec.cost + q.total);
-    where = `land ${Math.round(q.land_cost)} \u00b7 road ${Math.round(q.road_m)} m (${Math.round(q.road_cost)})`;
+    where = q.free ? `free \u00b7 a dirt road of ${Math.round(q.road_m)} m`
+      : `land ${Math.round(q.land_cost)} \u00b7 road ${Math.round(q.road_m)} m (${Math.round(q.road_cost)})`;
   }
   const verb = spec.home ? "settle here" : wild ? "claim and build" : "build";
-  const loan = borrow ? `<small class="hint">The state lends you ${borrow}, at 2% a day: you keep ${Math.floor(cash + borrow - total)} after the land</small>` : "";
+  const loan = borrow ? `<small class="hint">The state lends you ${borrow}, at 2% a day: you start with ${Math.floor(cash + borrow - total)}</small>` : "";
   g.userData.tag.element.innerHTML = why ? `<b>${esc(placing.type.split(" /")[0])}</b><small class="no">${esc(why)}</small>`
-    : `<b>${esc(placing.type.split(" /")[0])} \u00b7 ${total}</b><small>${where} \u00b7 click to ${verb}</small>${loan}${hint ? `<small class="hint">${esc(hint)}</small>` : ""}`;
+    : `<b>${esc(placing.type.split(" /")[0])}${q && q.free ? "" : ` \u00b7 ${total}`}</b><small>${where} \u00b7 click to ${verb}</small>${loan}${hint ? `<small class="hint">${esc(hint)}</small>` : ""}`;
   blockSq.forEach((b, i) => { if (i >= keys.length) b.visible = false; });
   keys.forEach((k, i) => {
     const sq = blockSq[i];
@@ -2065,7 +2090,7 @@ function updateTimers(){
   if (S.player) people.push(S.player);
   for (const p of people){
     const id = p === S.player ? G.you : p.id;
-    const b = byWorker[id];
+    const b = p.root.visible ? byWorker[id] : null;
     const near = p.root.visible !== false && (camMode === "third" ? p.root.position.distanceTo(camera.position) < 70 : sDist < 45 && p.root.position.distanceTo(focus) < 60);
     if (!b || !near){ if (p.timer) p.timer.visible = false; continue; }
     const t = timerFor(p); t.visible = true;
@@ -2098,7 +2123,7 @@ function updatePrompt(){
   let best = null, bd = 1e9;
   for (const v of S.buildings.values()){
     const d = Math.hypot(me.x - v.pos.x, me.z - v.pos.z) - BUILDING_W * 0.42;
-    if (d < 6 && d < bd){ best = {kind: "building", id: v.b.id, label: `Open the ${SHORT_TYPE[v.b.type] || v.b.type}${v.b.owner === G.you ? " (yours)" : ` \u2014 ${short(ownerName(v.b.owner))}`}`}; bd = d; }
+    if (d < 6 && d < bd && v.root.visible){ best = {kind: "building", id: v.b.id, label: `Open the ${SHORT_TYPE[v.b.type] || v.b.type}${v.b.owner === G.you ? " (yours)" : ` \u2014 ${short(ownerName(v.b.owner))}`}`}; bd = d; }
   }
   for (const v of S.agents.values()){
     const d = v.root.position.distanceTo(me);
@@ -2297,7 +2322,9 @@ function updateDonkey(dt, now){
 /* THE MINIMAP IS CLOUD UNTIL YOU HAVE BEEN NEAR (2026-10-18). The world in
    front of you is always drawn; the map only remembers where you have been.
    Kept per game in this browser. */
-const FOG_CELL = 16, FOG_SIGHT = 75;
+// FOG_SIGHT is discovery.SIGHT_M (400 m) in scene units: what you can see
+// on the map is what the server says you can see people within.
+const FOG_CELL = 16, FOG_SIGHT = 60;
 let explored = new Set(), fogGame = "", fogDirty = false, fogAt = 0;
 const fogC = document.createElement("canvas"), fg = fogC.getContext("2d");
 function fogLoad(){
@@ -2317,9 +2344,13 @@ function updateFog(now){
   fogLoad();
   if (!S.player || now - fogAt < 300) return;
   fogAt = now;
-  reveal(S.player.root.position.x, S.player.root.position.z, FOG_SIGHT);
+  // Before you settle you are only looking: the haze stays until you are there.
+  if (!outposts() || S.ST.you.settled) reveal(S.player.root.position.x, S.player.root.position.z, FOG_SIGHT);
+  // The state's trading posts are known to everyone.
+  for (const k of (S.DATA && S.DATA.cities) || []){ const m = S.places[k.market]; if (m) reveal(m.c.x, m.c.z, 40); }
   // What you own is always known.
-  const home = S.homeObjs && S.homeObjs.get(G.you); if (home) reveal(home.pos.x, home.pos.z, 45);
+  const home = S.homeObjs && S.homeObjs.get(G.you); if (home) reveal(home.pos.x, home.pos.z, FOG_SIGHT);
+  drawHaze();
   for (const v of S.buildings.values()) if (v.b.owner === G.you) reveal(v.pos.x, v.pos.z, 30);
 }
 setInterval(() => {
@@ -2327,6 +2358,51 @@ setInterval(() => {
   fogDirty = false;
   try { localStorage.setItem("convoy.fog." + fogGame, JSON.stringify([...explored])); } catch (e) {}
 }, 5000);
+/* THE GROUND_HAZE ON THE GROUND (outposts, 2026-10-28): the same explored squares,
+   painted into a texture the ground shader veils with. Clear where you have
+   been (and the trading posts), hazy everywhere else. */
+const GROUND_HAZE = {cv: document.createElement("canvas"), box: null, tex: null, uniforms: null, n: -1, on: -1};
+function hazeSetup(w, d){
+  GROUND_HAZE.box = {x0: -w / 2, z0: -d / 2, w, d};
+  GROUND_HAZE.cv.width = Math.ceil(w / FOG_CELL) * 2; GROUND_HAZE.cv.height = Math.ceil(d / FOG_CELL) * 2;
+  GROUND_HAZE.tex = new THREE.CanvasTexture(GROUND_HAZE.cv);
+  GROUND_HAZE.tex.minFilter = GROUND_HAZE.tex.magFilter = THREE.LinearFilter;
+  GROUND_HAZE.tex.flipY = false;                       // canvas rows run with the map's z
+  GROUND_HAZE.uniforms = {tHaze: {value: GROUND_HAZE.tex}, uHazeBox: {value: new THREE.Vector4(-w / 2, -d / 2, w, d)}, uHazeOn: {value: 0}};
+  return GROUND_HAZE.uniforms;
+}
+function drawHaze(){
+  if (!GROUND_HAZE.uniforms) return;
+  const on = outposts() ? 1 : 0;
+  if (on !== GROUND_HAZE.on){ GROUND_HAZE.on = on; GROUND_HAZE.uniforms.uHazeOn.value = on; }
+  if (!on || GROUND_HAZE.n === explored.size) return;
+  GROUND_HAZE.n = explored.size;
+  const c = GROUND_HAZE.cv.getContext("2d"), W = GROUND_HAZE.cv.width, H = GROUND_HAZE.cv.height, px = 2 / FOG_CELL;
+  c.globalCompositeOperation = "source-over"; c.clearRect(0, 0, W, H);
+  c.fillStyle = "#000"; c.fillRect(0, 0, W, H);
+  c.globalCompositeOperation = "destination-out";
+  for (const key of explored){
+    const [gx, gz] = key.split(",").map(Number);
+    const x = ((gx + 0.5) * FOG_CELL - GROUND_HAZE.box.x0) * px, z = ((gz + 0.5) * FOG_CELL - GROUND_HAZE.box.z0) * px;
+    const g = c.createRadialGradient(x, z, 0, x, z, 2.2);
+    g.addColorStop(0, "rgba(0,0,0,1)"); g.addColorStop(1, "rgba(0,0,0,0)");
+    c.fillStyle = g; c.fillRect(x - 2.2, z - 2.2, 4.4, 4.4);
+  }
+  GROUND_HAZE.tex.needsUpdate = true;
+}
+
+/* WHERE YOU ARE, for finding people (outposts): told to the server every
+   couple of seconds while you move, in map metres. */
+let posSent = null;
+setInterval(() => {
+  if (!S.player || !outposts() || !S.ST.you.settled) return;
+  const p = S.player.root.position;
+  if (posSent && Math.hypot(p.x - posSent.x, p.z - posSent.z) < 4) return;
+  posSent = p.clone();
+  const w = toWorld(p);
+  api.post("/api/pos", {x: w.x, y: w.y}).catch(() => {});
+}, 2000);
+
 function drawFog(sx, sz, k, W, H){
   if (fogC.width !== W){ fogC.width = W; fogC.height = H; }
   fg.globalCompositeOperation = "source-over";
@@ -2377,6 +2453,7 @@ function drawMinimap(){
     mg.lineWidth = Math.max(1.5, hw * 2 * k); mg.beginPath(); mg.moveTo(sx(ax), sz(az)); mg.lineTo(sx(bx), sz(bz)); mg.stroke();
   }
   for (const p of Object.values(S.places)){
+    if (p.kind === "claim" && !found(p.owner)) continue;
     mg.fillStyle = "#b59a63aa"; mg.beginPath(); mg.arc(sx(p.c.x), sz(p.c.z), Math.max(3, p.r * k * 0.8), 0, 7); mg.fill();
   }
   mg.fillStyle = "#7d7466";
@@ -2385,11 +2462,12 @@ function drawMinimap(){
     mg.beginPath(); mg.moveTo(x, z - r); mg.lineTo(x + r, z + r * 0.7); mg.lineTo(x - r, z + r * 0.7); mg.closePath(); mg.fill();
   }
   for (const v of S.buildings.values()){
+    if (!found(v.b.owner)) continue;
     mg.fillStyle = v.b.owner === G.you ? "#d8b65a" : "#3a2c1e";
     mg.fillRect(sx(v.pos.x) - 3, sz(v.pos.z) - 3, 6, 6);
   }
   mg.fillStyle = "#ffffff";
-  for (const v of S.agents.values()){ mg.beginPath(); mg.arc(sx(v.root.position.x), sz(v.root.position.z), 2.2, 0, 7); mg.fill(); }
+  for (const v of S.agents.values()){ if (!found(v.id)) continue; mg.beginPath(); mg.arc(sx(v.root.position.x), sz(v.root.position.z), 2.2, 0, 7); mg.fill(); }
   drawFog(sx, sz, k, W, H);          // under the hint circle and the waypoint, over the land
   const dt_ = deliveryTarget();
   if (dt_){
@@ -2524,7 +2602,7 @@ window.convoy = {camera, scene, S, renderer, set idleAt(v){ IDLE_AT = v; for (co
 
 /* ------------------------------------------------------------ start */
 const UI = createUI({api, S, walkToPlace, walkToBuilding, fastTravel, findMe, short,
-  onStatus: () => { checkTravel(); checkSettle(); }, toggleCamera: () => toggleCamera(), mode: () => camMode,
+  onStatus: () => { checkTravel(); checkSettle(); checkKnown(); }, toggleCamera: () => toggleCamera(), mode: () => camMode,
   foundOn: (p, c, t) => foundOn(p, c, t), buyOn: (p, c) => buyOn(p, c), clearSelection: () => clearSelection(),
   startPlacing: t => startPlacing(t), stopPlacing: () => stopPlacing(),
   // A delivery taken: down into the saddle, Red Dead style.
