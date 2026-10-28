@@ -148,6 +148,22 @@ makes each worth playing, and what to build.
 - **Region servers** (see "Scale") map onto the rings: a ring, or a sector
   of one, per server.
 
+### Each era a new world to discover (designer note, 2026-10-28)
+
+Not built; an idea to keep. Reaching a new era should feel like the start
+of the game again: **the next era's land is unexplored when you get
+there**, hazy and full of strangers, and you rediscover it -- find land,
+find people, build a new trading network.
+
+- **Islands, maybe, instead of rings.** Each era could be a separate island
+  rather than a ring around the last: you sail or travel to it, arrive with
+  nothing mapped, and the crossing marks the change of era. This would also
+  fit region servers (an island per server) and the "Ancient Pittsburgh,
+  Medieval Pittsburgh" branches below.
+- Open: what you carry across (money, know-how, family, flag), and whether
+  everyone's map of an island starts blank or towns can share theirs with
+  members.
+
 ### Towns across the eras (designer note, 2026-10-28)
 
 A town keeps its identity as its people level up, without higher houses
