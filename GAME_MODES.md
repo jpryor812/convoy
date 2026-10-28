@@ -148,6 +148,36 @@ makes each worth playing, and what to build.
 - **Region servers** (see "Scale") map onto the rings: a ring, or a sector
   of one, per server.
 
+### Towns across the eras (designer note, 2026-10-28)
+
+A town keeps its identity as its people level up, without higher houses
+living among lower ones.
+
+- **One town, a branch in each era.** Pittsburgh is founded in the ancient
+  ring. When enough of its houses (say three) pass the ring's cap, they found
+  **Medieval Pittsburgh** in the next ring: the same name and flag, a new
+  place. Ancient Pittsburgh, Antiquity Pittsburgh, Medieval Pittsburgh ...
+- **Allegiance is to the whole town.** You live and build in your era's
+  branch, but keep the flag, the town chat and your membership everywhere.
+- **Old buildings stay yours**, as estates run by family or hired hands.
+- **Between eras, only peaceful contact**: trade, chat, groups, marriages,
+  visits. Claiming land and (later) fighting happen only inside your own
+  ring, so everyone you can contest is within ten levels of you.
+- **Guard the early game.** Veterans must not be able to pour wealth into a
+  lower branch: limit what goes down an era (only that era's goods, or a cap
+  on gifts).
+- **Room for everyone.** Rings grow outward, or gain sectors, as players
+  arrive, so land always fits every player even as veterans keep theirs.
+
+### Taking land: no conquest for now (designer note, 2026-10-28)
+
+Land changes hands only by **sale**, or when abandoned land returns to the
+wild. Rivalry between towns is over unclaimed rich land, trade routes, tolls
+and the river -- not over each other's ground. Big towns must not be able to
+force small ones out. If conquest comes later, the known guards are: wars
+only between towns of similar size, protection under a certain size, truce
+periods after a war, and conquest only in the lawless outer rings.
+
 ### Exploration
 
 - **In the game:** the haze, finding people, hidden land luck, ground hints,
@@ -214,7 +244,9 @@ Finding someone (being within sight) only shows you they exist. Then:
 
 - What exactly earns a level, and how fast.
 - Whether a higher-era item works, is weakened or is barred in a lower ring.
-- How the inner ring keeps room for newcomers as veterans' land fills it.
+- How the inner ring keeps room for newcomers as veterans' land fills it
+  (rings that grow, or gain sectors, as players arrive).
+- Whether towns can ever conquer land, and on what terms (see "Taking land").
 - The look across eras: the current models are a western frontier.
 
 ### Order to build
