@@ -167,6 +167,10 @@ class Plot:
     home: bool = False
     # A defense standing on it: "Guard post" | "Catapult" (2026-10-18).
     structure: str = ""
+    # What its owner paid for it (2026-10-28): land counts in net worth at
+    # its purchase price. Land handed over with a business, or made before
+    # this, paid nothing and counts nothing.
+    paid: float = 0.0
 
     def is_building(self, now: float) -> bool:
         return self.developing_until is not None and now < self.developing_until
@@ -487,7 +491,11 @@ class Agent:
             prop_value,
             # What it would sell for, here -- the same rule as a business's stock.
             E.realizable_value(world, self.inventory, world.city_of(self)),
-        ) - self.debt      # owed to the state for settling (outposts)
+        ) + self.land_value(world) - self.debt   # land at cost; owed for settling
+
+    def land_value(self, world: "World") -> float:
+        """The land this agent holds, at what was paid for it."""
+        return sum(p.paid for p in world.plots.values() if p.owner == self.id)
 
     def add_item(self, item: str, qty: int = 1) -> None:
         self.inventory[item] = self.inventory.get(item, 0) + qty

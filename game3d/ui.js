@@ -1573,12 +1573,12 @@ export function createUI(ctx){
     const html = S.BOARD.business_types.map(t => {
       const can = cash >= t.cost;
       const tip = t.defense ? `${t.name}: one square, anywhere. ${t.does}` : t.claim ? `${t.name}: ${t.does}`
-        : `${t.name}: makes ${t.makes.slice(0, 5).join(", ")}. ${t.spur ? "Spur land (farms and mines)." : "Main road."}`;
+        : `${t.name}: makes ${t.makes.slice(0, 5).join(", ")}. ${S.ST && S.ST.you.outposts ? "On open land you claim as you build: the land is extra, priced on the map." : t.spur ? "Spur land (farms and mines)." : "Main road."}`;
       return `<button class="bb${can ? "" : " poor"}${placingType === t.name ? " on" : ""}${t.defense ? " def" : ""}" data-build="${esc(t.name)}"
         title="${esc(tip)}">
         <span class="ic">${BUILD_ICON[t.name] || "\u{1F3E0}"}</span>
         <span class="nm">${esc(t.name.split(" /")[0].replace("Mining/Farming Equipment Store", "Equipment").replace("Private Security Contractor", "Security firm").replace("Home Improvement Store", "Builder").replace("Mining Operation", "Mine"))}</span>
-        <span class="cost">${money(t.cost)}</span>${owned[t.name] ? `<i class="own">${owned[t.name]}</i>` : ""}
+        <span class="cost">${t.from ? "from " : ""}${money(t.cost)}</span>${owned[t.name] ? `<i class="own">${owned[t.name]}</i>` : ""}
       </button>`;
     }).join("");
     const box = $("bb-items");

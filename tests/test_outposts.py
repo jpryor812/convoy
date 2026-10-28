@@ -126,6 +126,26 @@ def test_settling_somewhere_dear_borrows_from_the_state() -> None:
     ok("you settle once", not okb)
 
 
+def test_land_counts_at_cost_and_debt_against_you() -> None:
+    world, log = _world()
+    a = next(iter(world.agents.values()))
+    a.home = ""
+    for v in a.owned_vehicles:
+        world.vehicles[v].location = "Town"
+    x, y = _open_spot(world, random.Random(6), 130, 200)
+    before = a.net_worth(world) - a.land_value(world)
+    q = CL.quote(world, x, y)
+    okb, msg, _ = CL.settle(world, log, a, x, y, borrow=100.0)
+    ok("settled", okb, msg)
+    ok("the land is worth what it cost", abs(a.land_value(world) - sum(
+        p.paid for p in world.plots.values() if p.owner == a.id)) < 0.01)
+    new_land = sum(p.paid for p in world.plots.values() if p.location == a.home)
+    ok("the new claim is valued at its price", abs(new_land - q["total"]) < 0.05, f"{new_land} vs {q['total']}")
+    after = a.net_worth(world) - (a.land_value(world) - new_land)
+    ok("buying land and borrowing leaves worth where it was", abs(after - before) < 0.05, f"{before} -> {after}")
+    ok("the donkey moves in too", all(world.vehicles[v].location == a.home for v in a.owned_vehicles))
+
+
 def test_debt_grows_and_is_paid_from_earnings() -> None:
     world, log = _world()
     a = next(iter(world.agents.values()))

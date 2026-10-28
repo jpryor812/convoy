@@ -372,9 +372,15 @@ def test_prefix_cost_is_within_budget():
     # outposts paragraph, offered only in an outposts world (and the place
     # enum on travel_to dropped there, since outposts are made all game).
     # Measured 18,939 on the real configuration (no state, starter sites).
-    out_tok = (len(O.static_briefing(outposts=True, no_state=True, starter=True)) // 4
-               + len(json.dumps(S.tool_schemas(no_state=True, outposts=True))) // 4)
-    ok("outposts prefix under 19k tokens", out_tok < 19000, f"~{out_tok} tokens")
+    # 19,000 -> 19,300 on 2026-10-28: HOW TO START (claim, travel, found; the
+    # state's wage; the debt) and outposts wording for land, food, taxes and
+    # the state's four sites, asked for so agents know what the new rules let
+    # them do. Measured as a game builds it: a no-state world reads as gone.
+    out_tok = (len(O.static_briefing(outposts=True, no_state=True, starter=True,
+                                     state_gone=True)) // 4
+               + len(json.dumps(S.tool_schemas(no_state=True, outposts=True,
+                                               state_gone=True))) // 4)
+    ok("outposts prefix under 19.3k tokens", out_tok < 19300, f"~{out_tok} tokens")
     ok("prefix is large enough to cache", prefix_tok > 1024, f"~{prefix_tok} tokens")
 
 

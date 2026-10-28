@@ -1063,6 +1063,11 @@ class Game:
                      ["Vehicles", round(sum(D.VEHICLES[t].base_price for t in carts), 1)]]
             if prop:
                 lines.append(["Property", round(prop, 1)])
+            land = a.land_value(w)
+            if land:
+                lines.append(["Land (at cost)", round(land, 1)])
+            if a.debt:
+                lines.append(["Owed to the state", -round(a.debt, 1)])
             return {"id": a.id, "name": a.name, "you": a.id == self.human_id, "house": a.house,
                     "city": city, "city_name": M.CITIES[city].name if city in M.CITIES else city,
                     "calling": a.calling, "worth": round(total, 1), "lines": lines,
@@ -1989,8 +1994,15 @@ class Game:
                       "makes": list(spec.outputs)}
                      for t, spec in D.BUSINESS_TYPES.items()]
             # Land anywhere: four squares of open land, with a road (2026-10-18).
-            types += [{"name": "Land claim", "cost": D.LAND_BASE_PRICE * 4, "spur": None, "claim": True,
-                       "makes": [], "does": "Buy four squares anywhere on open land; a dirt road is laid to them."}]
+            if w.outposts:
+                # Priced where you put it (convoy/claims.py): the cheapest it can be.
+                floor = CL.LAND_FLOOR * M.CLAIM_PLOTS
+                types += [{"name": "Land claim", "cost": floor, "spur": None, "claim": True, "from": True,
+                           "makes": [], "does": (f"Four squares of open land and a dirt road to them: from "
+                                                 f"{floor:.0f} far out, dearer near people. The map shows the price.")}]
+            else:
+                types += [{"name": "Land claim", "cost": D.LAND_BASE_PRICE * 4, "spur": None, "claim": True,
+                           "makes": [], "does": "Buy four squares anywhere on open land; a dirt road is laid to them."}]
             # Defenses take one square, anywhere (2026-10-18).
             types += [{"name": k, "cost": v["cost"], "spur": None, "defense": True, "size": 1,
                        "makes": [], "does": v["does"]} for k, v in D.DEFENSES.items()]

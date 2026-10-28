@@ -212,7 +212,8 @@ def claim(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
         # The land is bought with the claim: its four plots are the claimant's,
         # raw, and nobody else can build there unless they buy one.
         for _ in range(M.CLAIM_PLOTS):
-            q = Plot(id=world.new_id("L"), location=c.name, owner=agent.id)
+            q = Plot(id=world.new_id("L"), location=c.name, owner=agent.id,
+                     paid=round(cost / M.CLAIM_PLOTS, 2))
             world.plots[q.id] = q
         world.government.collect(land)
     log.emit(world.sim_time, "land_claimed", actor=agent.id, location=c.name,
@@ -220,7 +221,8 @@ def claim(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
              land=land, city=c.city)
     if world.outposts:
         return True, (f"Claimed {c.name}: four plots for {land:.0f} and a dirt road of {d:.0f} m "
-                      f"for {road:.0f}. The land is yours to build on."), c
+                      f"for {road:.0f}. The land is yours: travel_to {c.name} and "
+                      f"start_business there."), c
     return True, (f"Claimed {c.name}: a dirt road of {d:.0f} m from the nearest road, for {cost:.0f}. "
                   f"Its four plots are yours to buy or build on."), c
 
@@ -257,6 +259,9 @@ def settle(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
     agent.home = c.name
     agent.location = c.name
     agent.in_transit = None
+    for vid in agent.owned_vehicles:              # the donkey comes too
+        if vid in world.vehicles:
+            world.vehicles[vid].location = c.name
     agent.city = c.city
     agent.settled = True
     log.emit(world.sim_time, "settled", actor=agent.id, location=c.name,

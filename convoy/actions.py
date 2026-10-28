@@ -832,7 +832,8 @@ def start_business(
         q.business = biz.id
         q.developed = True
     for _ in range(plots - len(own)):
-        _claim_plot(world, agent, agent.location, business=biz.id, developed=True)
+        _claim_plot(world, agent, agent.location, business=biz.id, developed=True,
+                    paid=round(land / plots, 2))
     log.emit(
         world.sim_time, "business_founded", actor=agent.id, subject=biz.id,
         location=agent.location, business_type=type, cost=spec.startup_cost,
@@ -874,12 +875,13 @@ def _record_trade(world: World, log: EventLog, t: Transaction, kind: str,
 
 def _claim_plot(
     world: World, agent: Agent, location: str, *,
-    business: str | None = None, developed: bool = False,
+    business: str | None = None, developed: bool = False, paid: float = 0.0,
 ):
-    """Move one unsold plot from the world to an agent. No money changes hands here."""
+    """Move one unsold plot from the world to an agent. No money changes hands
+    here; `paid` records what the caller charged for it."""
     plot = Plot(
         id=world.new_id("L"), location=location, owner=agent.id,
-        business=business, developed=developed,
+        business=business, developed=developed, paid=paid,
     )
     world.plots[plot.id] = plot
     return plot
@@ -908,7 +910,7 @@ def buy_land(
 
     agent.denari -= cost
     world.government.collect(cost)
-    ids = [_claim_plot(world, agent, agent.location).id for _ in range(plots)]
+    ids = [_claim_plot(world, agent, agent.location, paid=D.LAND_BASE_PRICE).id for _ in range(plots)]
     log.emit(
         world.sim_time, "land_bought", actor=agent.id, location=agent.location,
         significance=Significance.MEDIUM,
@@ -1029,6 +1031,7 @@ def buy_listed_land(
     if seller:
         seller.denari += price
     plot.owner = agent.id
+    plot.paid = price
     plot.for_sale_at = None
     log.emit(
         world.sim_time, "land_sold", actor=agent.id, subject=plot.owner,

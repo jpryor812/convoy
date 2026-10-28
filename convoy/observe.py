@@ -106,7 +106,7 @@ def _money(x: float) -> str:
 
 
 def _static_map(city: str = M.HOME_CITY, rival: str | None = None,
-                npc_bandits: bool = True) -> str:
+                npc_bandits: bool = True, outposts: bool = False) -> str:
     """The valley THIS agent lives in, and nothing about anyone else's.
 
     A citizen of Aldermarch cannot walk to Cinderhold, cannot trade there and
@@ -176,6 +176,12 @@ def _static_map(city: str = M.HOME_CITY, rival: str | None = None,
     # usually the observation withholding something; this is the same failure
     # with the sign flipped.
     lines.append(
+        f"{len(M.spurs_in(city))} spur roads dead-end off the main road, "
+        f"{M.SPUR_SECONDS:.0f}s deep each: surveyed land near the trading post. "
+        f"Everyone else lives and works on claims of open land, each joined to "
+        f"the roads by its own dirt road; travel_to any outpost or claim by its "
+        f"name."
+        if outposts else
         f"{len(M.spurs_in(city))} spur roads dead-end off the main road, "
         f"{M.SPUR_SECONDS:.0f}s deep each. Mines, farms and homes live on spurs "
         f"and nowhere else. Travelling spur-to-spur means climbing back to the "
@@ -263,11 +269,21 @@ def _static_map(city: str = M.HOME_CITY, rival: str | None = None,
     # LAND, stated once, in the cached prefix. The rules below decide who can
     # hire and how big anything gets, and repeating them per-tool would cost the
     # same tokens on every call for every agent forever.
-    lines.append(
+    lines.append((
+        f"LAND. A business needs four plots of its own. claim_land takes four "
+        f"plots of open land (a site from OPEN LAND NEAR YOU) with a dirt road to "
+        f"them; then travel_to the claim and start_business there. The price is "
+        f"set by how near it is to a trading post and to land people have built "
+        f"on: dear close in, cheap far out. A claim is its claimant's -- nobody "
+        f"else builds there -- and land counts in your net worth at what you "
+        f"paid. Founding on a named spur charges the same nearness price. Sell "
+        f"plots with list_land; buy others' with buy_listed_land.\n"
+        if outposts else
         f"LAND. Plots are finite everywhere and can sell out; "
         f"{M.market_of(city)} is scarcest. "
         f"Unsold land is {D.LAND_BASE_PRICE:.0f}/plot (buy_land), else buy from a "
-        f"holder (buy_listed_land) or sell your own (list_land).\n"
+        f"holder (buy_listed_land) or sell your own (list_land).\n")
+        +
         f"A BUSINESS SEATS ONE EMPLOYEE PER DEVELOPED PLOT beyond its "
         f"{D.STRUCTURE_PLOTS}-plot building, which you work unpaid. Founding gives "
         f"{D.SITE_BASE_PLOTS} plots = 2 hires; for a third, buy_land then "
@@ -287,7 +303,7 @@ def _static_map(city: str = M.HOME_CITY, rival: str | None = None,
 
 
 def _static_economy(state_gone: bool = False, city: str = M.HOME_CITY,
-                    no_state: bool = False) -> str:
+                    no_state: bool = False, starter: bool = False) -> str:
     lines = ["", "PRICES", ""]
     if no_state:
         # NO FIXED PRICES TO LIST, so list what things are WORTH. Book value is
@@ -400,7 +416,16 @@ def _static_economy(state_gone: bool = False, city: str = M.HOME_CITY,
         # version of this paragraph promised that government businesses "always
         # buy what you bring and sell at the prices above" -- and went on saying
         # it for the whole run after they were demolished.
-        lines.append(
+        lines.append((
+            # STARTER SITES ARE NOT A GOVERNMENT, BUT THEY EXIST (2026-10-28).
+            # A no-state world reports the state as gone, and this used to tell
+            # agents beside a state tavern that there was none.
+            "BUSINESSES. No experience is needed for anything: any role, and "
+            "founding any business, is open at any hour. Apart from the state's "
+            "four sites at each market (above), every business in the valley is "
+            "owned by one of you, or does not exist yet. Businesses are not "
+            "listed here -- find them by going and looking, or by asking in chat."
+        ) if starter else (
             "BUSINESSES. No experience is needed for anything: any role, and "
             "founding any business, is open at any hour. THERE ARE NO "
             "GOVERNMENT BUSINESSES. Nothing will buy what you bring at a fixed "
@@ -410,7 +435,7 @@ def _static_economy(state_gone: bool = False, city: str = M.HOME_CITY,
             + "Every business in the valley is "
             "owned by one of you, or does not exist yet. Businesses are not "
             "listed here -- find them by going and looking, or by asking in chat."
-        )
+        ))
         lines.append(f"  {'type':<32}{'hires'}")
         for name, spec in sorted(D.BUSINESS_TYPES.items()):
             roles = ", ".join(spec.production_roles) if spec.production_roles else "nobody"
@@ -441,6 +466,10 @@ def _static_economy(state_gone: bool = False, city: str = M.HOME_CITY,
     # of a strategy, so the table belongs in front of them.
     lines.append("")
     lines.append(
+        "WAGES per hour. The state's four sites pay the 'typical' rate; a "
+        "citizen may pay anything at or above the floor, and a worker leaves "
+        "for whoever pays more."
+        if no_state and starter else
         "WAGES per hour. Only citizens employ. 'typical' is what the role is "
         "usually worth; an employer may pay anything at or above the floor, and "
         "a worker leaves for whoever pays more."
@@ -472,7 +501,8 @@ def _static_economy(state_gone: bool = False, city: str = M.HOME_CITY,
 
 
 def _static_rules(state_gone: bool = False, city: str = M.HOME_CITY,
-                  no_state: bool = False) -> str:
+                  no_state: bool = False, starter: bool = False,
+                  outposts: bool = False) -> str:
     lines = ["", "HOW THINGS WORK", ""]
     lines.append(
         f"SUSTENANCE. Food is sold at TAVERNS only -- you cannot cook. "
@@ -480,12 +510,15 @@ def _static_rules(state_gone: bool = False, city: str = M.HOME_CITY,
             "THERE IS NO STATE TAVERN. The only food in the valley is in a "
             "tavern somebody here owns and has stocked; if none of you keeps "
             "one supplied, everybody starves. "
-            if state_gone else
+            if state_gone and not starter else
             f"The state's Tavern "
             f"({M.government_sites_for(city)['Tavern / Inn']}) charges "
             f"{E.npc_sell_price('Meal'):.2f} for a Meal: Normal for "
             f"{D.MEALS['Meal'].window_hours:.0f}h. "
         )
+        + ("You live away from the taverns: order_meal has one brought to you "
+           "for its price and a fee by distance -- order before you are hungry. "
+           if outposts else "")
         + f"A player Tavern may charge as "
         f"little as {E.player_price_floor('Meal'):.2f} and can research Quality "
         f"for meals that last longer, heal, or speed your work. "
@@ -585,6 +618,8 @@ def _static_rules(state_gone: bool = False, city: str = M.HOME_CITY,
     )
     lines.append("")
     lines.append(
+        "TAXES. None: there is no government to collect them."
+        if no_state else
         f"TAXES. Four of them. Sales tax is paid by the buyer on top of the price. "
         f"Income tax is withheld from every wage payment. Property tax is billed every "
         f"{D.PROPERTY_TAX_PERIOD_HOURS:.0f}h on assessed property value. Road tax is "
@@ -724,8 +759,10 @@ def static_briefing(
         # to try passing goods back and forth to inflate a valuation.
         "PROFIT MEANS ABOVE BOOK PRICE. Goodwill counts only what you sell ABOVE "
         "a good's listed base price. Selling AT book moves value from shelf to "
-        "purse and earns nothing; selling BELOW it -- the state's 0.4x offer is "
-        "below it -- loses you the difference, and passing goods back and forth "
+        "purse and earns nothing; selling BELOW it -- "
+        + ("the state's convoy pays half what a good sells for between people"
+           if outposts else "the state's 0.4x offer is below it")
+        + " -- loses you the difference, and passing goods back and forth "
         "with a neighbour at book earns neither of you a denari. What pays is "
         "buying low, ADDING something, and selling high."
     )
@@ -735,6 +772,29 @@ def static_briefing(
         # first, or nobody makes it. The food chain is spelled out because the
         # 2026-10-15 run starved for want of a tavern even with a state.
         header += ((
+            # OUTPOSTS (2026-10-27): the state's four as trading posts, the
+            # convoy's price, and how a citizen gets started from an outpost.
+            "\n\nOUTPOSTS: THERE ARE NO TOWNS YET, NO GOVERNMENT AND NO TAX. "
+            "Everyone lives at an outpost of their own on open land -- YOUR "
+            "OUTPOST says where yours is. Each city's market is a STATE TRADING "
+            "POST with four sites, a Tavern, Farm, Mine and Refinery. They SELL at "
+            "a fixed HIGH price (about 1.5x book; its Tavern also sells weapons, "
+            "armour and tools), HIRE anyone at a fixed wage, and BUY ANY good at "
+            "HALF what it sold for between people over the last day "
+            "(sell_to_bidder: the state's convoy collects from your yard, free, "
+            "and pays when it collects). A citizen who makes what the state "
+            "sells and prices it under the state takes its customers.\n"
+            "HOW TO START. Your grown family works any business you own for "
+            "nothing (assign_family). A business needs four plots of its own: "
+            "claim_land a site from OPEN LAND NEAR YOU, travel_to it, then "
+            "start_business there -- farms do best near water, mines near the "
+            "mountains, and each site says which. Land near people and the "
+            "trading posts costs more; far out it is cheap. Short of money, "
+            "take the state's wage at a trading post first. If you borrowed to "
+            "settle, YOUR OUTPOST says what you owe: it grows 2% a day and a "
+            "fifth of what your businesses earn pays it down (repay_debt pays "
+            "more). Settling near others is how towns will form.\n"
+        ) if outposts else (
             "\n\nTHERE IS NO GOVERNMENT, AND NO TAX -- only FOUR STATE SITES "
             "the town was started with: the state's Tavern (in the market "
             "square), Farm, Mine and Refinery. They are a backstop: they SELL "
@@ -759,6 +819,9 @@ def static_briefing(
             "The state's Tavern feeds anyone who can pay its high price, so "
             "the opportunity is to feed the town CHEAPER: a citizen chain of "
             "farm, refinery and tavern that undercuts it takes every customer.\n"
+            + ("You live away from the taverns: order_meal has a meal brought "
+               "for its price and a fee by distance -- order before you are "
+               "hungry.\n" if outposts else "")
         ) if starter else (
             "NOBODY MAKES ANY OF IT "
             "YET: unless citizens found farms, a refinery and a tavern -- and "
@@ -783,6 +846,7 @@ def static_briefing(
                           "Vehicle Dealer / Stable", "Weaponsmith / Armory")
                 if n in D.BUSINESS_TYPES
             )
+            + (", plus the land it stands on" if outposts else "")
             + ". A link that costs more than one person has needs two or more "
             "to POOL their cash with `pay`. Your neighbours are deciding at the "
             "same time as you: one Tavern feeds a city, and a city with four "
@@ -800,22 +864,11 @@ def static_briefing(
             "thing is going to be made, sold, carried or eaten, one of you has "
             "to do it."
         )
-    if outposts:
-        header += (
-            "\n\nOUTPOSTS: THERE ARE NO TOWNS YET. You live at an outpost of your own "
-            "(YOUR OUTPOST). Each city's market is the state's trading post: its "
-            "Tavern, Farm, Mine and Refinery feed you, hire at a low fixed wage and "
-            "buy anything -- at half what it sold for between people, collected by "
-            "its convoy from your yard. Food is taverns only: walk in, or order_meal "
-            "before you are hungry. A business needs four plots of its own: "
-            "claim_land from OPEN LAND NEAR YOU, then found it there. Land near "
-            "people costs more; settling near others is how towns form."
-        )
     return "\n".join([
         header, "",
-        _static_map(city, rival, npc_bandits),
-        _static_economy(state_gone, city, no_state),
-        _static_rules(state_gone, city, no_state),
+        _static_map(city, rival, npc_bandits, outposts),
+        _static_economy(state_gone, city, no_state, starter),
+        _static_rules(state_gone, city, no_state, starter, outposts),
     ])
 
 
@@ -1774,7 +1827,15 @@ def observe(
     # that went on describing the state for another thirty-five hours. This says
     # it at the top of every observation for the rest of the run.
     gone_at = world.state_gone_at(world.city_of(agent))
-    if world.no_state and world.starter_sites:
+    if world.outposts:
+        obs_state_gone = (
+            "NO TOWNS YET AND NO GOVERNMENT: each market is a state trading "
+            "post whose Tavern, Farm, Mine and Refinery sell high, hire at a "
+            "fixed wage and buy at half the price between people. Everything "
+            "else is another citizen's -- if a thing is going to exist, one of "
+            "you makes it."
+        )
+    elif world.no_state and world.starter_sites:
         obs_state_gone = (
             "NO GOVERNMENT BUT FOUR STATE SITES: its Tavern, Farm, Mine and "
             "Refinery sell high, buy low and hire at a fixed wage. Everything "
@@ -2205,6 +2266,22 @@ def observe(
         maker_type = next(
             (t for t, spec in D.BUSINESS_TYPES.items() if item in spec.outputs), None)
         if maker_type is None:
+            continue
+        state_only = world.starter_sites and makers and all(b.is_government for b in makers)
+        makers = [b for b in makers if not b.is_government] or (
+            [] if world.starter_sites else makers)
+        if state_only:
+            # The state's sites sell at their fixed price whether or not they
+            # make anything, and nobody can switch them on: say who supplies it.
+            cost = D.BUSINESS_TYPES[maker_type].startup_cost
+            where = ("on land you claim_land" if world.outposts
+                     else "on free ground")
+            gaps.append(
+                f"ONLY THE STATE SELLS {item}, at its high fixed price. A "
+                f"citizen's {maker_type} ({cost:.0f}, {where}) that undercuts it "
+                f"takes its customers."
+                + (" You can afford it." if agent.denari >= cost else "")
+            )
             continue
         if makers:
             idle = makers[0]
