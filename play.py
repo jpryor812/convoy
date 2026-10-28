@@ -445,8 +445,10 @@ th{color:var(--dim);font-weight:500}
     <label>Your partner is <select id="partner"><option value="f">a woman</option><option value="m">a man</option></select></label>
     <span class="est">You start with your partner, a son and a daughter.</span>
   </div>
-  <div class="row"><label><input type="checkbox" id="outposts" checked> <b>Outposts</b>: no towns yet -- everyone settles on open land around the state's trading posts (the ticked cities), and you choose yours on the map</label></div>
-  <div class="row"><label><input type="checkbox" id="solo"> <b>A town of my own</b>: start alone in a new town beside the agents' towns (tick the agents' towns below)</label></div>
+  <div class="row"><label><input type="checkbox" id="outposts" checked> <b>Outposts</b>: no towns yet -- everyone settles on open land around the state's three trading posts, and you choose your spot on the map</label></div>
+  <div class="row" id="solo-row"><label><input type="checkbox" id="solo"> <b>A town of my own</b>: start alone in a new town beside the agents' towns (tick the agents' towns below)</label></div>
+  <div class="row" id="settlers-row"><label>Settlers <input id="settlers" type="number" min="1" max="180" value="30"></label>
+    <span class="est">AI agents looking for land, spread over the state's three trading posts. You choose your own spot on the map.</span></div>
   <div id="cities"></div>
   <div class="row"><span class="est" id="est"></span></div>
   <div class="row">
@@ -474,7 +476,7 @@ th{color:var(--dim);font-weight:500}
     <label><input type="checkbox" id="reuse" checked> reuse towns that already ran</label>
   </div>
   <div class="row"><span class="est" id="head-note"></span></div>
-  <div class="row"><label><input type="checkbox" id="starter" checked> Start each town with the state's Tavern, Farm, Mine and Refinery (they sell high, buy low and hire at a fixed wage)</label></div>
+  <div class="row" id="starter-row"><label><input type="checkbox" id="starter" checked> Start each town with the state's Tavern, Farm, Mine and Refinery (they sell high, buy low and hire at a fixed wage)</label></div>
   <div class="row"><button id="go">Start game</button><span class="msg" id="msg"></span></div>
 </div>
 
@@ -515,6 +517,7 @@ function cityRows(){
   if (prev){ $("pace").value = prev.pace; $("budget").value = prev.budget; $("workers").value = prev.workers; $("rpm").value = prev.rpm;
     if ("head_start" in prev) $("head").value = prev.head_start; if ("reuse_town" in prev) $("reuse").checked = !!prev.reuse_town;
     if ("outposts" in prev) $("outposts").checked = !!prev.outposts;
+    if (prev.settlers) $("settlers").value = prev.settlers;
     if ("solo" in prev) $("solo").checked = !!prev.solo; if (prev.sex) $("sex").value = prev.sex; if (prev.partner_sex) $("partner").value = prev.partner_sex; }
   $("model").value = (prev && prev.model) || MENU.defaults.model;
   callingCards();
@@ -530,6 +533,21 @@ function settings(){
   const outposts = $("outposts").checked;
   $("solo").disabled = outposts;
   if (outposts) $("solo").checked = false;
+  // OUTPOSTS: no towns to pick. A number of settlers, shared over every
+  // trading post; the cities are only where the posts stand (2026-10-28).
+  $("settlers-row").style.display = outposts ? "" : "none";
+  $("solo-row").style.display = outposts ? "none" : "";
+  $("starter-row").style.display = outposts ? "none" : "";
+  $("cities").style.display = outposts ? "none" : "";
+  if (outposts){
+    const n = Math.max(1, Math.min(180, +$("settlers").value || 30)), keys = MENU.cities.map(c => c.key);
+    const share = {};
+    keys.forEach((k, i) => { const c = Math.floor(n / keys.length) + (i < n % keys.length ? 1 : 0); if (c) share[k] = c; });
+    return {cities: share, your_city: Object.keys(share)[0], settlers: n, pace: +$("pace").value, budget: +$("budget").value,
+            model: $("model").value.trim(), workers: +$("workers").value, rpm: +$("rpm").value,
+            calling: CALLING, starter_sites: true, head_start: +$("head").value, reuse_town: $("reuse").checked,
+            outposts, solo: false, sex: $("sex").value, partner_sex: $("partner").value};
+  }
   // A town of your own: the first town the agents are NOT in.
   if ($("solo") && $("solo").checked){
     const ticked = new Set([...document.querySelectorAll("[data-c]")].filter(c => c.checked).map(c => c.dataset.c));
@@ -551,12 +569,14 @@ function estimate(){
   const n = Object.values(s.cities).reduce((a, b) => a + b, 0);
   const town = (MENU.towns || []).filter(t => t.key === townKey(s)).pop();
   const ahead = s.head_start * n * 1.18 / (30 * 24);
-  $("head-note").textContent = !s.head_start ? "Everyone, you included, starts at once in an empty town."
+  $("head-note").textContent = !s.head_start ? (s.outposts ? "Everyone, you included, starts at once: the settlers choose their land as you do."
+    : "Everyone, you included, starts at once in an empty town.")
     : town && s.reuse_town ? `A town like this already ran (${town.made}, ${town.businesses} businesses by hour ${town.hour}): you start there at once, free.`
     : `The ${n} agents run ${s.head_start} game hours first, as fast as the AI answers -- usually several minutes -- for about $${ahead.toFixed(2)}. You then arrive as one more citizen.`;
   // Measured 2026-10-17: 30 agents for 24 game hours cost $1.18.
   const perAgentHour = 1.18 / (30 * 24);
-  $("est").textContent = n ? `${n} citizens, ${Math.max(0, n - 1)} of them AI. Roughly $${(perAgentHour * (n - 1)).toFixed(3)} per game hour, about $${(perAgentHour * (n - 1) * 24).toFixed(2)} per game day.` : "Pick at least one city.";
+  $("est").textContent = s.outposts ? `${n} AI settlers and you. Roughly $${(perAgentHour * n).toFixed(3)} per game hour, about $${(perAgentHour * n * 24).toFixed(2)} per game day.`
+    : n ? `${n} citizens, ${Math.max(0, n - 1)} of them AI. Roughly $${(perAgentHour * (n - 1)).toFixed(3)} per game hour, about $${(perAgentHour * (n - 1) * 24).toFixed(2)} per game day.` : "Pick at least one city.";
 }
 $("go").onclick = async () => {
   const s = settings();
@@ -592,7 +612,7 @@ async function load(id){
   if (MENU.running) $("running").style.display = "";
   if (MENU.warming) watchWarming();
   $("w-stop").onclick = async () => { await post("/api/end", {}); location.reload(); };
-  ["head", "reuse", "starter", "solo", "outposts"].forEach(id => $(id).addEventListener("input", estimate));
+  ["head", "reuse", "starter", "solo", "outposts", "settlers"].forEach(id => $(id).addEventListener("input", estimate));
   cityRows();
   if (MENU.saved.length){
     $("saved").innerHTML = `<tr><th>Started</th><th>Cities</th><th>Hour</th><th>Spent</th><th></th></tr>`

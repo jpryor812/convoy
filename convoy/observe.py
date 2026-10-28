@@ -667,7 +667,20 @@ def static_briefing(
     -- a one-city world -- produces the briefing exactly as it read before there
     were cities, which is what keeps every earlier run comparable.
     """
-    if rival is None:
+    if outposts:
+        # NO TOWNS, SO NO CITY CONTEST (2026-10-28): every settler plays for
+        # their own house. The cities are only where the trading posts stand.
+        header = (
+            "You are a settler in Convoy, a Bronze Age frontier. Your goal is to "
+            "maximise your own Net Worth (denari + businesses + land at what you "
+            "paid + vehicles + inventory, less what you owe the state) by the end, "
+            "WITHOUT DYING. Starving kills you and wipes everything you own, so a "
+            "dead settler scores nothing however rich it was an hour earlier -- "
+            "staying alive is the first term. You compete and cooperate with other "
+            "real settlers. Nothing below ever changes; your current situation "
+            "arrives separately with each decision.\n\n"
+        )
+    elif rival is None:
         header = (
             "You are a person living in Convoy, a Bronze Age valley economy. Your goal "
             "is to maximise your own Net Worth (denari + businesses + vehicles + "
@@ -1629,7 +1642,7 @@ def _contest_view(world: World, agent: Agent) -> dict[str, Any] | None:
     on any of it, since there is no road, and a page of unusable detail about
     the enemy is per-call tokens spent on a decision that cannot be made.
     """
-    if not world.is_contest():
+    if not world.is_contest() or world.outposts:
         return None
 
     city = world.city_of(agent)
