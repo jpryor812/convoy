@@ -111,6 +111,122 @@ stretched thin. It pairs with the planned map rings (safe valley, contested
 frontier, lawless wilderness) and needs offline protection rules for online
 play.
 
+## The game: five pillars (design, 2026-10-28)
+
+What the game is about, and what everything else serves. Five pillars, each
+of which costs you something in another -- that cost is where the strategy
+is:
+
+> **Explore** -> find land and people -> **trade** -> money -> **develop** ->
+> wealth draws trouble -> **combat** -> safety in numbers -> **towns and
+> dynasties** -> towns compete for land, routes and the river -> push out and
+> explore again.
+
+Combat is on hold for now. The others are below, with what exists, what
+makes each worth playing, and what to build.
+
+### The map: rings, levels and eras
+
+- **Rings.** The world is a set of rings around a centre, like a diagram of
+  the solar system. Everyone starts in the innermost ring. Each ring out has
+  richer ground (more and better deposits) and a level cap: the inner ring
+  is for houses up to **level 10**, the next up to **level 20**, and so on.
+  New players are never next to houses far beyond them.
+- **What the cap governs.** Recommended: where you can **claim new land and
+  build** (and, later, fight) -- **not what you own or where you trade.** A
+  house that outgrows the inner ring keeps its outpost there, run by family
+  and hired hands, and can still visit and trade there. Nothing is
+  abandoned, and towns in the inner ring keep their members as they level.
+  A house may also choose to **hold its level** and stay.
+- **Levels.** A house levels up from all the pillars: land found, people
+  found, trade with others, buildings and their upgrades, know-how.
+- **Eras.** Each ring is an era: ancient, antiquity, medieval, renaissance,
+  industrial, modern. Levelling up and know-how unlock the next era's
+  vehicles, weapons, armour and clothing. To keep a high-era house from
+  being overpowered in a low ring (once combat returns), gear above a ring's
+  era could be scaled down to its ceiling there. TBD.
+- **Region servers** (see "Scale") map onto the rings: a ring, or a sector
+  of one, per server.
+
+### Exploration
+
+- **In the game:** the haze, finding people, hidden land luck, ground hints,
+  claims anywhere, the minimap cloud.
+- **The view.** The over-the-shoulder view (Red Dead) is the default, with
+  the minimap; the minimap opens into a **full map** of the land you have
+  discovered, which keeps everything you have found pinned on it: outposts,
+  towns, taverns, trading posts, people's land.
+- **Deposits.** Some land carries a deposit bonus, unknown at first.
+  Know-how (the **survey** line) makes it more predictable where mineral- or
+  farm-rich land lies: first a hint by area, later a reading of the spot.
+- **No maps or reports for sale.** What is out there is found by playing;
+  town reports go.
+- **The trade-off** is time: while you explore you are not producing or
+  hauling. That is enough -- exploring is how you meet people and build a
+  trading network.
+
+### Trading
+
+- **In the game:** listings, buy orders, bids, delivery runs, couriers, the
+  state's convoy as a floor, only trading with people you have found.
+- **Markets are discovered.** You see prices and listings only at markets you
+  have found (trading posts beyond your own ring, and towns). Each new market
+  widens where you can sell.
+- **Prices differ by place.** Regions lean toward farming or mining (land
+  luck already does), so markets have different prices, and a market's
+  state floor follows its own local prices. Carrying goods to where they are
+  scarce is the trade.
+
+### Development
+
+- **Foundations you build onto**: floors, roofs, extensions, each raising
+  output or storage (see "Building").
+- **Flags, banners and colours** (see "Making it yours").
+- **The town ladder** (see "Why people gather").
+- **Specialising**, so a mining house and a farming house play differently:
+  deeper bonuses and buildings for the line a house invests in, so focus
+  pays more than spreading thin.
+
+### Meeting people (one of the first things to build)
+
+Finding someone (being within sight) only shows you they exist. Then:
+
+- **Say hi.** Click a settler you have found to open a panel of set actions,
+  like Civilization's diplomacy screen.
+- **Share, by request.** Each is asked for and accepted or declined, and can
+  be offered in return: **your level**, **what you own**, **where your land
+  and buildings are** (pinned on their map), **what you are buying or
+  selling now**, and **your children** (for a match).
+- **Share contact.** Unlocks private messages and invitations to group
+  chats.
+- Agents answer and make these requests too, so the early game is meeting
+  and building relationships before trading, like early Civilization.
+
+### Towns and dynasties
+
+- **A town is geographic, a dynasty (clan) is political.** You belong to the
+  town where your land is; your clan and marriages span towns.
+- **Tolls.** From 100 members a town may charge non-members to enter its
+  land, at a rate it sets -- a tariff. (Add to the ladder.)
+- The rest as in "Why people gather" and "Why towns do not grow forever".
+
+### Open questions
+
+- What exactly earns a level, and how fast.
+- Whether a higher-era item works, is weakened or is barred in a lower ring.
+- How the inner ring keeps room for newcomers as veterans' land fills it.
+- The look across eras: the current models are a western frontier.
+
+### Order to build
+
+1. **Meeting people** (say hi, share, contact) and the **full map** with pins;
+   over-the-shoulder view as default.
+2. **Discovered markets and local prices.**
+3. **Towns** (founding, square, ladder, tolls) and **specialising**.
+4. **Foundations and flags** (needs the Meshy rework).
+5. **Rings, levels, survey know-how**, then **eras**.
+6. **Combat** returns: robbing buildings, danger by ring.
+
 ## Next: outposts and towns (design, 2026-10-27)
 
 The game we are building towards. It replaces the open world above: there
