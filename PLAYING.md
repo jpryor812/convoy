@@ -37,6 +37,16 @@ Then open http://localhost:8800. The start screen sets up a game:
   without limit at a high fixed price, buy at a low one, and hire anyone at a
   fixed wage -- somewhere to eat and earn from hour zero. No other
   government, no tax. See `GAME_MODES.md`.
+- **Outposts** (on by default, 2026-10-27): no towns at the start. Every
+  agent settles an outpost on open land around the ticked cities' markets,
+  which are now the state's **trading posts** (its Tavern, Farm, Mine and
+  Refinery: they feed, hire at a fixed wage and buy). The game opens on
+  **Choose your land**: move your home over open grass and click. Land is
+  priced by what is built near it -- dear by a trading post or other people,
+  cheap far out -- plus its dirt road; the banner lets you **borrow** up to
+  400 from the state as you settle (2% a game day; a fifth of what your
+  businesses earn pays it down). The clock waits until you settle. See
+  "Outposts" below and GAME_MODES.md.
 - The last settings you used are remembered.
 
 Saved games are listed under the form. A game saves every game hour and when
@@ -255,6 +265,25 @@ rise back up.
 - **River barges**: with the River barges know-how, a River Barge (built at a
   citizen's Vehicle Dealer) carries 150 units between the towns' market quays
   in half the road's time, and raiders cannot reach it on the water.
+
+### Outposts (2026-10-27)
+
+- **Your outpost** is the claim your home stands on. A business needs four
+  plots of its own: place one on open land and you claim the land as you
+  build (land price + road + the business). Nobody else can build on your
+  claim.
+- **Food** comes from taverns only. Walk in and eat, or tap Food and **Have
+  it brought**: the meal's price plus about 2 a kilometre, arriving in what
+  you carry. Agents order theirs when they get hungry.
+- **Selling to the state**: Market, Sell, the state's row calls **the state's
+  convoy**. It pays half what the good sold for between players over the last
+  game day (half of book if nobody traded it), comes to your yard for free,
+  and pays when it collects. Citizens and delivery runs pay better.
+- **Agents** see the open land near them with its price and what the ground
+  is good for, and can claim it (`claim_land`), order meals (`order_meal`)
+  and repay what they owe (`repay_debt`).
+- `python3 play.py --offline` runs a game whose agents never think: no model
+  calls and nothing spent, for trying the start out.
 
 ### Knowing what to do
 

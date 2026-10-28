@@ -359,7 +359,8 @@ export function createUI(ctx){
       if (!view || view.kind !== "me" || m.error) return;
       show("You", mePanel(m));
       $("pbody").querySelectorAll("[data-eat]").forEach(b => b.onclick = async () => {
-        const body = b.dataset.eat === "carried" ? {carried: true, meal: b.dataset.meal} : {tavern: b.dataset.eat};
+        const body = b.dataset.eat === "carried" ? {carried: true, meal: b.dataset.meal}
+          : b.dataset.order ? {order: b.dataset.order} : {tavern: b.dataset.eat};
         const r = await api.post("/api/eat", body);
         toast(r.ok ? r.message : `Can't: ${r.message}`, r.ok ? "" : "bad");
         refreshSoon(); setTimeout(() => renderView(true), 300);
@@ -401,14 +402,17 @@ export function createUI(ctx){
     let out = `<div class="row"><div class="grow">Health</div><b>${Math.round(m.health)} / 100</b></div><div class="bar hp"><i style="width:${m.health}%"></i></div>`;
     out += `<div class="row"><div class="grow">Food</div><b class="${hungry ? "c-bad" : ""}">${hungry ? esc(m.stage) : `fed for ${m.fed_hours.toFixed(1)}h`}</b></div><div class="bar"><i style="width:${hungry ? 4 : Math.min(100, m.fed_hours / 24 * 100)}%"></i></div>`;
     out += `<div class="dim">Health comes back slowly while you are fed. Hungry, you work and fight slower; starving costs health.</div>`;
-    out += `<h3>Eat</h3><div class="tip">\u{1F37A} <b>Food is sold at taverns</b>, and only there -- you cannot cook. Walk into a tavern and eat there, or buy a Meal there to carry and eat later from this card.</div>`;
+    out += m.outposts
+      ? `<h3>Eat</h3><div class="tip">\u{1F37A} <b>Food comes from taverns</b>, and only there -- you cannot cook. Walk in and eat, or have a meal brought to you for a fee by distance; it arrives in what you carry and you eat it from this card.</div>`
+      : `<h3>Eat</h3><div class="tip">\u{1F37A} <b>Food is sold at taverns</b>, and only there -- you cannot cook. Walk into a tavern and eat there, or buy a Meal there to carry and eat later from this card.</div>`;
+    for (const d of m.on_way || []) out += `<div class="row"><div class="grow"><b>${esc(d.meal)}</b> <span class="dim">on its way to you \u00b7 about ${d.minutes} min</span></div></div>`;
     let any = false;
     for (const c of m.carried){ any = true; out += `<div class="row"><div class="grow"><b>${esc(c.meal)}</b> <span class="dim">you carry ${c.qty} \u00b7 ${c.hours}h</span></div><button class="btn go" data-eat="carried" data-meal="${esc(c.meal)}">Eat</button></div>`; }
     for (const t of m.menu){ any = true; out += `<div class="row"><div class="grow"><b>${esc(t.meal)}</b> <span class="dim">at ${esc(t.name)} \u00b7 ${t.hours}h${t.staffed ? "" : " \u00b7 nobody serving"}</span></div><button class="btn go" data-eat="${esc(t.tavern)}" ${t.staffed && m.coins >= t.price ? "" : "disabled"}>Eat (${money(t.price)})</button></div>`; }
     if (!any) out += `<div class="empty">No food where you stand and none on you.</div>`;
     const away = (m.taverns || []).filter(t => !t.here);
-    if (away.length && !away.some(t => t.home)) out += `<div class="dim">Your town has no tavern yet. The nearest food is in the next town -- or found a tavern yourself.</div>`;
-    if (away.length) out += `<h3>Where to eat</h3>` + away.map(t => `<div class="row"><div class="grow"><b>${esc(t.name)}</b> <span class="dim">at ${esc(t.place)}${t.home ? "" : ", " + esc(t.city_name)} \u00b7 ${esc(t.meal)} ${money(t.price)} \u00b7 ${t.hours}h${t.open ? "" : " \u00b7 not serving now"}</span></div><button class="btn" data-point="${esc(t.place)}" data-label="To the tavern at ${esc(t.place)}">Show me the way</button></div>`).join("");
+    if (away.length && !away.some(t => t.home) && !m.outposts) out += `<div class="dim">Your town has no tavern yet. The nearest food is in the next town -- or found a tavern yourself.</div>`;
+    if (away.length) out += `<h3>Where to eat</h3>` + away.map(t => `<div class="row"><div class="grow"><b>${esc(t.name)}</b> <span class="dim">at ${esc(t.place)}${t.home ? "" : ", " + esc(t.city_name)} \u00b7 ${esc(t.meal)} ${money(t.price)} \u00b7 ${t.hours}h${t.open ? "" : " \u00b7 not serving now"}</span></div>${t.brought ? `<button class="btn go" data-eat="order" data-order="${esc(t.id)}" ${t.open && m.coins >= t.brought ? "" : "disabled"} title="Brought to you in about ${t.minutes} min">Have it brought (${money(t.brought)})</button>` : ""}<button class="btn" data-point="${esc(t.place)}" data-label="To the tavern at ${esc(t.place)}">Show me the way</button></div>`).join("");
     else if (!(m.taverns || []).length) out += `<div class="empty">There is no tavern anywhere yet -- found one.</div>`;
     out += `<h3>Kit</h3><div class="row"><div class="grow">Weapon</div><b>${esc(m.weapon)}</b></div>`
       + `<div class="row"><div class="grow">Armour</div><b>${Object.values(m.armour).length ? esc(Object.values(m.armour).join(", ")) : "none"}</b></div>`
@@ -820,9 +824,10 @@ export function createUI(ctx){
         return `<div class="mk-good"><div class="mk-h"><b>${esc(item)}</b><span>${g ? `you have ${g.qty} at your ${esc(g.type.split(" /")[0])}` : "you have none yet"}</span></div>`
           + M.bids[item].map(b => {
             const n = g ? Math.min(g.qty, b.qty) : 0;
-            const btn = n > 0 ? `<button class="btn go" data-act="sell_to_bidder" data-args='${esc(JSON.stringify({business_id: g.business, buyer_business_id: b.business, item, qty: n}))}'>Sell ${n} \u00b7 ${money2(n * b.price)}</button>` : `<span class="dim">make some first</span>`;
+            const convoy = b.state && S.ST && S.ST.you.outposts;
+            const btn = n > 0 ? `<button class="btn go" data-act="sell_to_bidder" data-args='${esc(JSON.stringify({business_id: g.business, buyer_business_id: b.business, item, qty: n}))}'>${convoy ? `State's convoy: ${n} for ${money2(n * b.price)}` : `Sell ${n} \u00b7 ${money2(n * b.price)}`}</button>` : `<span class="dim">make some first</span>`;
             return `<div class="mk-row"><div class="mk-who"><b>${money2(b.price)}</b> each \u2014 ${b.state ? "the state's" : esc(short(b.owner)) + "'s"} ${esc(b.type.split(" /")[0])}, ${esc(b.place)} <span class="dim">(${esc(b.city)})</span>`
-              + `<small>${b.state ? "fixed low price; its cart collects at once" : `wants ${b.qty}; pays now, sends a courier to fetch it`}</small></div><div class="mk-act">${btn}</div></div>`;
+              + `<small>${convoy ? "half what it sold for between people today; its convoy comes to your yard, free, and pays when it collects" : b.state ? "fixed low price; its cart collects at once" : `wants ${b.qty}; pays now, sends a courier to fetch it`}</small></div><div class="mk-act">${btn}</div></div>`;
           }).join("") + `</div>`;
       }).join("") : `<div class="empty">Found a farm or a mine and the refineries bidding for its goods appear here, best price first.</div>`);
       out += `<h3>Buyers waiting</h3>` + (M.wanted.length ? M.wanted.map(o => {
@@ -983,7 +988,9 @@ export function createUI(ctx){
      a time, each with a button that takes you there. Opens itself the first
      time you play a game; "?" in the top bar brings it back. */
   const OB = [
-    {icon: "\u{1F3E0}", title: "Welcome to your house", body: h => `You head <b>${esc(h.house)}</b>. Your home stands in your town's square, and the gold squares around it are your border. Next door, two towns full of citizens are already trading. Your goal is the richest, largest house in the valley.`},
+    {icon: "\u{1F3E0}", title: "Welcome to your house", body: h => S.ST && S.ST.you.outposts
+      ? `You head <b>${esc(h.house)}</b>. There are no towns yet: everyone lives at an outpost of their own around the state's trading posts, which feed, hire and buy. Choose your land, build out from it, and settle near others when it pays. Your goal is the richest, largest house in the valley.`
+      : `You head <b>${esc(h.house)}</b>. Your home stands in your town's square, and the gold squares around it are your border. Next door, two towns full of citizens are already trading. Your goal is the richest, largest house in the valley.`},
     {icon: "\u{1F46A}", title: "Your family is your first workforce", body: h => `Your partner works any business you own for nothing, always on shift. Your son and daughter come of age in a day or two; then they can work too, or marry into another house. A couple has a child every game month; feeding a child a Meal brings it a day sooner.`, tab: "house", label: "See your house"},
     {icon: "\u26CF", title: "Found a farm or a mine", body: () => `Pick <b>Farm</b> or <b>Mine</b> in the Build menu on the left and place it on a spur road. Then send your partner to work it from your house page, and choose what it makes. Rich ground shows itself at the first harvest.`},
     {icon: "\u{1F4DC}", title: "Deliver your first harvest", body: () => `Once your farm has made something, carry it to a refinery yourself: Market, Sell, <b>Deliver it yourself</b>. Your donkey carries ten, and your first delivery earns a bonus. The <b>Missions</b> page has what comes next: a bandit camp to clear, then a delivery to a citizen.`, tab: "missions", label: "Open Missions"},
@@ -1455,6 +1462,8 @@ export function createUI(ctx){
       else { walkToBuilding(b.id, () => openBuilding(b.id)); toast("On your way"); }
     }
     else if (b.kind === "tab") openTab(b.tab);
+    else if (b.kind === "place") ctx.startPlacing(b.type);
+    else if (b.kind === "me") openMe();
     else if (b.kind === "fetch") fetchIt({consignment_id: b.consignment_id});
     else if (b.kind === "mission") missionAct(b.mission_action, b.mission_id);
   }

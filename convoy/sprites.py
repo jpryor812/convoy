@@ -371,7 +371,7 @@ ACTION_FAMILY = {
         "buy_from_business", "sell_to_business", "order_from_business", "buy_meal",
         "buy_vehicle", "buy_property", "buy_insurance", "deposit", "withdraw", "pay",
         # Land is bought and sold like anything else; developing it is building.
-        "buy_land", "buy_listed_land", "list_land",
+        "buy_land", "buy_listed_land", "list_land", "repay_debt",
         "post_delivery_job",   # paying to move goods is commerce
 
         "set_retail_price", "offer_trade", "accept_trade", "decline_trade",
@@ -399,6 +399,7 @@ ACTION_FAMILY = {
         "upgrade_site_storage",
         "develop_plot",     # raw ground into floor space -- construction
         "build_defense", "start_project",
+        "claim_land",       # outposts: new land, with its road
 
     ),
     "chat": (
@@ -407,7 +408,7 @@ ACTION_FAMILY = {
         "remove_guild_member",
         "propose_marriage", "accept_marriage", "decline_marriage",
     ),
-    "food": ("eat_best_available", "feed_family"),
+    "food": ("eat_best_available", "feed_family", "order_meal"),
     "warning": ("wait",),
 }
 

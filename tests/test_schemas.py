@@ -70,11 +70,13 @@ def test_schemas_are_stable():
 
 
 def test_every_action_is_exposed_and_described():
-    tools = S.tool_schemas()
+    tools = S.tool_schemas(outposts=True)
     names = {t["function"]["name"] for t in tools}
 
     check("one tool per action", len(tools), len(S.ACTIONS))
     ok("names match the action table", names == set(S.ACTIONS))
+    plain = {t["function"]["name"] for t in S.tool_schemas()}
+    ok("outpost-only tools are hidden elsewhere", plain == set(S.ACTIONS) - S.OUTPOSTS_ONLY)
 
     for tool in tools:
         fn = tool["function"]
@@ -366,6 +368,13 @@ def test_prefix_cost_is_within_budget():
     # selling to bidders and NPC hands coming back.
     # +100 more the same day for build_defense.
     ok("cached prefix under 18.6k tokens", prefix_tok < 18600, f"~{prefix_tok} tokens")
+    # OUTPOSTS (2026-10-27): claim_land, order_meal, repay_debt and the
+    # outposts paragraph, offered only in an outposts world (and the place
+    # enum on travel_to dropped there, since outposts are made all game).
+    # Measured 18,939 on the real configuration (no state, starter sites).
+    out_tok = (len(O.static_briefing(outposts=True, no_state=True, starter=True)) // 4
+               + len(json.dumps(S.tool_schemas(no_state=True, outposts=True))) // 4)
+    ok("outposts prefix under 19k tokens", out_tok < 19000, f"~{out_tok} tokens")
     ok("prefix is large enough to cache", prefix_tok > 1024, f"~{prefix_tok} tokens")
 
 

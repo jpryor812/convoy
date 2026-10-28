@@ -88,7 +88,7 @@ def offers(world: "World", agent: "Agent") -> list[dict[str, Any]]:
                 "city": M.city_of(biz.location), "city_name": M.CITIES[M.city_of(biz.location)].name,
                 "state": biz.is_government,
                 "owner": "the state" if biz.is_government else world.agents[biz.owner].name,
-                "gate": round(E.npc_buy_price(item), 2),
+                "gate": E.state_price(world, item),
             })
     out.sort(key=lambda o: -o["unit"])
     return out

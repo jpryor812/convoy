@@ -12,6 +12,7 @@ government, and social actions arrive in Phase 3.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from . import data as D
@@ -29,6 +30,7 @@ from .state import (
     Business,
     Consignment,
     ChatMessage,
+    Dispatch,
     ConvoyMember,
     Employment,
     EscortPosting,
@@ -768,19 +770,45 @@ def start_business(
         return False, f"a {type} belongs on the main road, not down a spur"
 
     need = D.STORE_BASE_PLOTS if type in D.STORE_BUSINESS_TYPES else D.SITE_BASE_PLOTS
-    free = world_map.plots_free(world, agent.location)
-    if free < need:
-        return False, (
-            f"{agent.location} has only {free} unsold plots left; a {type} needs "
-            f"{need}. Buy land from whoever owns it, or found somewhere else."
-        )
+    # OUTPOSTS (2026-10-27): a claim's land was bought with it and is its
+    # claimant's, so you build there on plots you own; anywhere else you pay
+    # the land's price on top of the business.
+    own: list[Plot] = []
+    land = 0.0
+    if world.outposts and world_map.is_claim(agent.location):
+        own = [q for q in world.plots.values()
+               if q.location == agent.location and q.owner == agent.id
+               and not q.business and not q.home and not q.structure]
+        if len(own) < need:
+            holder = world.claims.get(agent.location)
+            if holder is not None and holder.owner != agent.id and not own:
+                who = world.agents.get(holder.owner)
+                return False, (f"{agent.location} is {who.name if who else 'somebody'}'s land; "
+                               f"buy plots from them, or claim your own")
+            return False, (f"you own {len(own)} free plots at {agent.location}; a {type} "
+                           f"needs {need}. Claim more land.")
+        own = own[:need]
+    else:
+        free = world_map.plots_free(world, agent.location)
+        if free < need:
+            return False, (
+                f"{agent.location} has only {free} unsold plots left; a {type} needs "
+                f"{need}. Buy land from whoever owns it, or found somewhere else."
+            )
+        if world.outposts:
+            from . import claims as CL
+            at = CL.place_xy(world, agent.location)
+            land = round(CL.land_price(world, *at) * need, 2) if at else 0.0
     plots = need
 
-    total = spec.startup_cost + seed_cash
+    total = spec.startup_cost + seed_cash + land
     if agent.denari < total:
-        return False, f"need {total:.0f} to found a {type}"
+        extra = f" ({land:.0f} of it the land)" if land else ""
+        return False, f"need {total:.0f} to found a {type}{extra}"
 
     agent.denari -= total
+    if land:
+        world.government.collect(land)
     biz = Business(
         id=world.new_id("B"),
         type=type,
@@ -800,7 +828,10 @@ def start_business(
     # first 72-hour run one agent in twelve founded anything, on its fifth
     # attempt at hour 60 of 72. Land is meant to constrain GROWTH, not re-close
     # the door this economy spent a phase getting open.
-    for _ in range(plots):
+    for q in own:
+        q.business = biz.id
+        q.developed = True
+    for _ in range(plots - len(own)):
         _claim_plot(world, agent, agent.location, business=biz.id, developed=True)
     log.emit(
         world.sim_time, "business_founded", actor=agent.id, subject=biz.id,
@@ -1859,6 +1890,119 @@ def eat_meal(world: World, log: EventLog, agent: Agent, meal: str = "") -> Resul
     return _apply_meal(world, log, agent, meal, E.meal_window(meal), 0.0, "carried")
 
 
+# ---------------------------------------------------------------------------
+# THINGS BROUGHT TO YOU (outposts, 2026-10-27): meals and the state's convoy
+# ---------------------------------------------------------------------------
+
+MEAL_FEE_BASE = 1.0            # a tavern's runner, whatever the distance ...
+MEAL_FEE_PER_KM = 2.0          # ... and this a kilometre
+MEAL_PREP_H = 0.25             # cooking and setting off
+STATE_CONVOY_PREP_H = 0.5      # the state's convoy loading up to come out
+MAX_MEALS_ON_WAY = 2
+
+
+def _clock(hours: float) -> str:
+    m = max(1, round(hours * 60))
+    return f"{m} min" if m < 60 else f"{m // 60}h {m % 60:02d}m"
+
+
+def _distance_m(world: World, a: str, b: str) -> float:
+    from . import claims as CL
+    pa, pb = CL.place_xy(world, a), CL.place_xy(world, b)
+    if not pa or not pb:
+        return 600.0
+    return math.hypot(pa[0] - pb[0], pa[1] - pb[1])
+
+
+def _dispatch_hours(world: World, origin: str, destination: str, prep: float) -> float:
+    from . import claims as CL
+    return prep + _distance_m(world, origin, destination) / CL.TRACK_SPEED / 3600.0
+
+
+def _meal_fee(world: World, tavern: Business, destination: str) -> float:
+    return round(MEAL_FEE_BASE + MEAL_FEE_PER_KM * _distance_m(world, tavern.location, destination) / 1000.0, 2)
+
+
+def order_meal(world: World, log: EventLog, agent: Agent, business_id: str,
+               meal: str | None = None) -> Result:
+    """Have a tavern send a meal to where you are. You pay its price and a
+    runner's fee by distance now; the meal arrives in what you carry, and you
+    eat it when you are hungry. Standing at the tavern, you just eat."""
+    tavern = world.businesses.get(business_id)
+    if not tavern or tavern.closed or tavern.type != "Tavern / Inn":
+        return False, "no such tavern"
+    if tavern.location == agent.location:
+        return buy_meal(world, log, agent, tavern.id, meal=meal)
+    if not is_staffed(world, tavern):
+        return False, f"{tavern.name} is unattended -- nobody is cooking"
+    on_way = sum(1 for d in world.dispatches.values()
+                 if d.kind == "meal" and d.agent == agent.id and d.status == "on_way")
+    if on_way >= MAX_MEALS_ON_WAY:
+        return False, f"you have {on_way} meals on the way already"
+    tier = 0 if tavern.is_government else tavern.research.quality_tier
+    meal = meal or E.best_meal_for_tier(tier, "duration")
+    spec = D.MEALS.get(meal)
+    if spec is None or spec.required_tier > tier:
+        return False, f"{tavern.name} cannot send {meal}"
+    price = tavern.price_for(meal)
+    fee = _meal_fee(world, tavern, agent.location)
+    if agent.denari < price + fee:
+        return False, f"{meal} brought to you costs {price + fee:.2f} ({price:.2f} and {fee:.2f} to bring it)"
+    if not tavern.is_government:
+        if tavern.inventory.get(meal, 0) < 1:
+            return False, f"{tavern.name} is out of {meal}"
+        tavern.remove_item(meal, 1)
+    tax = E.sales_tax_on(price, world.government.sales_tax)
+    agent.denari -= price + fee
+    if tavern.is_government:
+        world.government.collect(price + fee)
+    else:
+        world.government.collect(tax)
+        _income(world, tavern, price - tax + fee)
+    _record_trade(world, log, Transaction(world.sim_time, meal, 1, price, tavern.id, agent.id,
+                                          city=world.city_of(agent)), "meal", tavern.location)
+    hours = _dispatch_hours(world, tavern.location, agent.location, MEAL_PREP_H)
+    d = Dispatch(id=world.new_id("D"), kind="meal", agent=agent.id, business=tavern.id,
+                 item=meal, qty=1, unit_price=price, fee=fee, destination=agent.location,
+                 created_at=world.sim_time, arrives_at=world.sim_time + hours * 3600.0)
+    world.dispatches[d.id] = d
+    log.emit(world.sim_time, "meal_ordered", actor=agent.id, subject=tavern.id,
+             location=agent.location, item=meal, price=price, fee=fee, hours=round(hours, 2))
+    return True, (f"{tavern.name} is sending {meal} to you for {price + fee:.2f} "
+                  f"({fee:.2f} to bring it); it arrives in about {_clock(hours)}")
+
+
+def repay_debt(world: World, log: EventLog, agent: Agent, amount: float = 0.0) -> Result:
+    """Pay down what you owe the state from your pocket (all of it if you can,
+    when no amount is given)."""
+    if agent.debt <= 0:
+        return False, "you owe the state nothing"
+    pay = round(min(agent.debt, agent.denari, float(amount) if amount and amount > 0 else agent.debt), 2)
+    if pay <= 0:
+        return False, "you have nothing to pay with"
+    agent.denari -= pay
+    agent.debt = round(agent.debt - pay, 2)
+    world.government.collect(pay)
+    log.emit(world.sim_time, "debt_repaid", actor=agent.id, amount=pay, left=agent.debt)
+    left = f"; you still owe {agent.debt:.2f}" if agent.debt > 0 else "; you owe nothing now"
+    return True, f"paid the state {pay:.2f}{left}"
+
+
+def claim_land(world: World, log: EventLog, agent: Agent, site_id: str, purpose: str = "") -> Result:
+    """Claim a site of open land from OPEN LAND NEAR YOU: four plots of your
+    own, joined to the roads by a dirt road. Found a business there next."""
+    from . import claims as CL
+    try:
+        _, xs, ys = str(site_id).split("_")
+        x, y = float(xs), float(ys)
+    except ValueError:
+        return False, f"no such site {site_id!r}: use a site id from OPEN LAND NEAR YOU"
+    if purpose and purpose not in CL.SUFFIX:
+        purpose = ""
+    ok, msg, _ = CL.claim(world, log, agent, x, y, purpose)
+    return ok, msg
+
+
 def eat_best_available(world: World, log: EventLog, agent: Agent) -> Result:
     """Self-prep if we're holding the ingredients, otherwise buy at a local tavern."""
     ok, msg = buy_meal(world, log, agent)
@@ -2443,6 +2587,13 @@ def _income(world: World, biz: Business, amount: float) -> None:
     owner = world.agents.get(biz.owner) if not biz.is_government else None
     if owner is not None:
         owner.denari += amount
+        if owner.debt > 0 and amount > 0:
+            # What you owe the state for settling comes out of what you earn.
+            from .claims import LOAN_REPAY_SHARE
+            pay = round(min(owner.debt, amount * LOAN_REPAY_SHARE), 2)
+            owner.denari -= pay
+            owner.debt = round(owner.debt - pay, 2)
+            world.government.collect(pay)
     else:
         biz.cash += amount
 
@@ -3054,7 +3205,7 @@ def deliver_consignment(world: World, log: EventLog, agent: Agent, consignment_i
     if con.seller_posted and buyer is not None and buyer.is_government:
         seller = world.businesses.get(con.seller_business)
         if seller is not None and not seller.closed:
-            paid = E.npc_buy_price(con.item) * con.qty
+            paid = E.state_price(world, con.item) * con.qty
             _income(world, seller, paid)
             world.government.treasury -= paid
             log.emit(
@@ -3541,7 +3692,7 @@ def standing_bid(world: World, biz: Business, item: str) -> tuple[float, int] | 
         # citizen, a buy order or a delivery always beats it.
         if item == "On Foot" or item in D.VEHICLES or item not in D.ALL_ITEMS:
             return None
-        return (round(E.npc_buy_price(item), 2), 999)
+        return (E.state_price(world, item), 999)
     out = biz.active_production
     recipe = (D.REFINING_RECIPES.get(out) or D.CRAFTING_RECIPES.get(out)) if out else None
     if not recipe or item not in recipe.inputs:
@@ -3590,6 +3741,19 @@ def sell_to_bidder(
     take = min(have, wanted, int(qty) if qty and qty > 0 else have)
     goods = round(price * take, 2)
     seller.remove_item(item, take)
+    if buyer.is_government and world.outposts:
+        # THE STATE'S CONVOY (2026-10-27): it comes out from the nearest anchor
+        # to collect, and pays when it has the goods. The price is fixed now.
+        hours = _dispatch_hours(world, buyer.location, seller.location, STATE_CONVOY_PREP_H)
+        d = Dispatch(id=world.new_id("D"), kind="state_pickup", agent=agent.id,
+                     business=seller.id, item=item, qty=take, unit_price=price, fee=0.0,
+                     destination=seller.location, created_at=world.sim_time,
+                     arrives_at=world.sim_time + hours * 3600.0)
+        world.dispatches[d.id] = d
+        log.emit(world.sim_time, "state_convoy_called", actor=agent.id, subject=seller.id,
+                 location=seller.location, item=item, qty=take, price=price, hours=round(hours, 2))
+        return True, (f"the state's convoy is coming for {take} {item} at {price:.2f} "
+                      f"({goods:.2f}), in about {_clock(hours)}; it pays when it collects")
     if buyer.is_government:
         _income(world, seller, goods)
         world.government.treasury -= goods

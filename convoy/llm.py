@@ -155,7 +155,7 @@ class LLMPolicy:
         if key not in self._prefixes:
             self._prefixes[key] = (
                 O.briefing_for(world, agent),
-                S.tool_schemas(state_gone=gone, no_state=world.no_state),
+                S.tool_schemas(state_gone=gone, no_state=world.no_state, outposts=world.outposts),
             )
         return self._prefixes[key]
 

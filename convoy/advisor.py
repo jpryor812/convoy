@@ -339,8 +339,30 @@ def advice(world: "World", log: "EventLog", me: "Agent", history: History) -> li
     mine = [world.businesses[b] for b in me.owned_businesses
             if b in world.businesses and not world.businesses[b].closed]
 
+    # 0. OUTPOSTS (2026-10-27): before anything, somewhere to live.
+    if world.outposts and not me.home:
+        return [_move("Choose your land and settle",
+                      "Near the trading posts and other people costs more; far out is cheap. "
+                      "The clock starts when you settle.", "Choose land", "place", type="Your home")]
+
     # 1. FOOD. Nothing else matters if you starve.
-    if me.sustenance_stage != "Normal" or fed_left < 4:
+    if world.outposts and (me.sustenance_stage != "Normal" or fed_left < 4) \
+            and not world.businesses_at(here, "Tavern / Inn"):
+        coming = any(d.agent == me.id and d.kind == "meal" and d.status == "on_way"
+                     for d in world.dispatches.values())
+        carried = [m for m, q in me.inventory.items() if m in D.MEALS and q > 0]
+        taverns = [t for t in world.businesses.values() if t.type == "Tavern / Inn" and not t.closed
+                   and M.city_of(t.location) in world.cities and A.is_staffed(world, t)]
+        if carried:
+            out.append(_move(f"Eat the {carried[0]} you carry", "You must eat soon or start to starve.",
+                             "Eat", "me"))
+        elif not coming and taverns:
+            t = min(taverns, key=lambda t: t.price_for("Meal") + A._meal_fee(world, t, here))
+            cost = t.price_for("Meal") + A._meal_fee(world, t, here)
+            out.append(_move(f"Have a meal brought from {t.location} ({cost:.0f})",
+                             "You must eat soon. It arrives in what you carry.",
+                             "Order it", "act", action="order_meal", args={"business_id": t.id}))
+    elif me.sustenance_stage != "Normal" or fed_left < 4:
         open_taverns = [b for b in local if b.type == "Tavern / Inn" and b.inventory.get("Meal", 0) > 0
                         and "Meal" in b.retail_prices]
         staffed = [b for b in open_taverns if b.is_staffed(world)]
@@ -527,30 +549,46 @@ def advice(world: "World", log: "EventLog", me: "Agent", history: History) -> li
                 break
         wanted = wanted or "Farm"
         spec = D.BUSINESS_TYPES[wanted]
-        spur = wanted in D.EXTRACTION_BUSINESS_TYPES
-        sites = [p for p in M.places_in(city)
-                 if (p in M.SPUR_BY_NAME) == spur and _free_plots(world, p) >= D.SITE_BASE_PLOTS]
-        site = min(sites, key=lambda p: (p != here, p)) if sites else None
-        if me.denari >= spec.startup_cost and site:
-            gap = f"Nobody in {M.CITIES[city].name} is making {gaps[0]}." if gaps else "It feeds the food chain."
-            if site == here:
-                out.append(_move(f"Found a {wanted} here ({spec.startup_cost:.0f})", gap,
-                                 "Found it", "form", action="start_business", args={"type": wanted}))
+        if world.outposts:
+            # On open land near home: the land is part of the price.
+            from . import claims as CL
+            at = CL.place_xy(world, me.home) if me.home else None
+            land = round(CL.land_price(world, *at) * M.CLAIM_PLOTS + 20) if at else 60
+            need = spec.startup_cost + land
+            if me.denari >= need:
+                out.append(_move(f"Found a {wanted} on open land near your home (about {need:.0f})",
+                                 f"{spec.startup_cost:.0f} for the {wanted} and about {land:.0f} for its land and road.",
+                                 "Place it", "place", type=wanted))
             else:
-                out.append(_move(f"Found a {wanted} at {site} ({spec.startup_cost:.0f})", gap,
-                                 f"Walk to {site}", "walk", place=site))
+                out.append(_move(f"You need about {need - me.denari:.0f} more for a {wanted}",
+                                 f"{spec.startup_cost:.0f} for it and about {land:.0f} for land near you. "
+                                 f"The state's sites at the trading post hire anyone at a fixed wage.",
+                                 "Find work", "tab", tab="jobs"))
         else:
-            jobs = sorted((p for p in world.job_postings.values() if p.is_live(world.sim_time)
-                           and not getattr(p, "invitee", "")), key=lambda p: -p.wage)
-            if jobs:
-                p = jobs[0]
-                out.append(_move(f"Take a job: {p.role} at {p.wage:.2f}/hr",
-                                 f"A {wanted} costs {spec.startup_cost:.0f}; you have {me.denari:.0f}. Earn the rest, or pool cash with someone.",
-                                 "Apply", "act", action="apply_to_job", args={"posting_id": p.id}))
+            spur = wanted in D.EXTRACTION_BUSINESS_TYPES
+            sites = [p for p in M.places_in(city)
+                     if (p in M.SPUR_BY_NAME) == spur and _free_plots(world, p) >= D.SITE_BASE_PLOTS]
+            site = min(sites, key=lambda p: (p != here, p)) if sites else None
+            if me.denari >= spec.startup_cost and site:
+                gap = f"Nobody in {M.CITIES[city].name} is making {gaps[0]}." if gaps else "It feeds the food chain."
+                if site == here:
+                    out.append(_move(f"Found a {wanted} here ({spec.startup_cost:.0f})", gap,
+                                     "Found it", "form", action="start_business", args={"type": wanted}))
+                else:
+                    out.append(_move(f"Found a {wanted} at {site} ({spec.startup_cost:.0f})", gap,
+                                     f"Walk to {site}", "walk", place=site))
             else:
-                out.append(_move(f"You need {spec.startup_cost - me.denari:.0f} more for a {wanted}",
-                                 "Nobody is advertising work. Pool cash with a neighbour (pay) or offer your labour in chat.",
-                                 "Open chat", "tab", tab="chat"))
+                jobs = sorted((p for p in world.job_postings.values() if p.is_live(world.sim_time)
+                               and not getattr(p, "invitee", "")), key=lambda p: -p.wage)
+                if jobs:
+                    p = jobs[0]
+                    out.append(_move(f"Take a job: {p.role} at {p.wage:.2f}/hr",
+                                     f"A {wanted} costs {spec.startup_cost:.0f}; you have {me.denari:.0f}. Earn the rest, or pool cash with someone.",
+                                     "Apply", "act", action="apply_to_job", args={"posting_id": p.id}))
+                else:
+                    out.append(_move(f"You need {spec.startup_cost - me.denari:.0f} more for a {wanted}",
+                                     "Nobody is advertising work. Pool cash with a neighbour (pay) or offer your labour in chat.",
+                                     "Open chat", "tab", tab="chat"))
 
     # 5. ANYTHING YOU CARRY that a business here would buy.
     if me.inventory:
@@ -605,6 +643,25 @@ def goals(world: "World", log: "EventLog", me: "Agent") -> list[dict[str, Any]]:
     family_working = any(m.works_at for m in me.family)
     studied = bool(me.tech or me.researching)
     proposed = any(o.proposer == me.id for o in world.marriage_offers.values()) or bool(me.allies)
+    if world.outposts:
+        # OUTPOSTS (2026-10-27): the arc starts with land and food.
+        fed = ate or any(e.type == "meal_ordered" and e.actor == me.id for e in log.events)
+        return [
+            {"goal": "Choose your land and settle", "done": bool(me.home),
+             "how": "Move your home over open grass and click. Near people costs more; far out is cheap."},
+            {"goal": "Get fed", "done": fed,
+             "how": "Food comes from taverns: walk to a trading post's tavern, or tap Food and have a meal brought."},
+            {"goal": "Found a farm or a mine", "done": extraction,
+             "how": "Build menu, left: put it on open land near your home -- you claim the land as you build."},
+            {"goal": "Put your family to work there", "done": family_working,
+             "how": "Your house (house button): set your partner to work at it -- unpaid, always on shift."},
+            {"goal": "Set it producing", "done": founded and producing,
+             "how": "Open the business and choose what it makes; rich ground shows at the first harvest."},
+            {"goal": "Sell your first goods", "done": sold,
+             "how": "Market, Sell: a citizen's refinery pays best; the state's convoy comes to you and collects."},
+            {"goal": "Start learning something", "done": studied,
+             "how": "Know-how (light bulb): your first study lands in six hours."},
+        ]
     return [
         {"goal": "Found a farm or a mine", "done": extraction,
          "how": "Build menu, left: a Farm or Mine goes down a spur road. Pick its 2x2 squares."},

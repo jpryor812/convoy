@@ -46,7 +46,8 @@ def town_key(settings) -> str:
     """What makes two head starts interchangeable."""
     cities = "-".join(f"{c}{int(n)}" for c, n in sorted(settings.cities.items()))
     model = settings.model.split("/")[-1]
-    return f"{cities}_{'starter' if settings.starter_sites else 'bare'}_{model}_{int(settings.head_start)}h"
+    kind = "outposts" if getattr(settings, "outposts", False) else ("starter" if settings.starter_sites else "bare")
+    return f"{cities}_{kind}_{model}_{int(settings.head_start)}h"
 
 
 def find_template(settings, towns_dir: Path = TOWNS_DIR) -> Path | None:
@@ -109,10 +110,13 @@ class HeadStart:
                           starter_sites=s.starter_sites)
         world.npc_bandits = False
         deal = random.Random(world.land_seed)
-        for a in world.agents.values():
-            a.calling = deal.choice(list(D.CALLINGS))
-            FAM.found_household(world, a, deal)
-            FAM.give_donkey(world, a)
+        if getattr(s, "outposts", False):
+            populate_outposts(world, log, deal)
+        else:
+            for a in world.agents.values():
+                a.calling = deal.choice(list(D.CALLINGS))
+                FAM.found_household(world, a, deal)
+                FAM.give_donkey(world, a)
         # Nobody is watching, so it runs as fast as the model allows: a higher
         # request rate and more agents thinking at once than live play uses.
         models = self.models if self.models is not None else llm.LLMPolicy(
@@ -175,6 +179,20 @@ def arrive(template: Path, run_dir: Path, settings) -> tuple[Any, EventLog, str,
 HOME_PLOTS = 4
 
 
+def populate_outposts(world, log: EventLog, rng: random.Random) -> None:
+    """OUTPOSTS (2026-10-27): no towns at hour zero. Every agent gets a
+    calling, a house and a donkey, and settles on open land near its roster
+    city's anchor -- the state's trading post. See `claims.auto_settle`."""
+    from . import claims as CL
+    world.outposts = True
+    for a in list(world.agents.values()):
+        a.calling = rng.choice(list(D.CALLINGS))
+        FAM.found_household(world, a, rng)
+        FAM.give_donkey(world, a)
+        a.settled = False
+        CL.auto_settle(world, log, a, a.city or world.cities[0], rng)
+
+
 def settle(world, log: EventLog, settings) -> str:
     """Add the player to a world: in their town (a new one of their own, in a
     solo start), with a house, a home on four plots of the square, and a
@@ -203,6 +221,13 @@ def settle(world, log: EventLog, settings) -> str:
     you.protected_until = world.sim_time + 24 * 3600.0     # a newcomer's first day
     if world.no_state:
         you.last_meal_window = D.START_FED_HOURS_NO_STATE
+    if world.outposts:
+        # You choose your land on the map before the clock runs: no home in
+        # the square. You wait at the anchor until then. See `claims.settle`.
+        you.settled = False
+        log.emit(world.sim_time, "arrived_in_town", actor=you.id, location=you.location,
+                 city=city, text=f"{you.name} came to the frontier near {M.CITIES[city].name}.")
+        return you.id
     # YOUR HOME (2026-10-18): four plots of your town's square, yours and not
     # for sale. The page draws it with your border around it.
     home = M.market_of(city)

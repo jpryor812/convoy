@@ -264,6 +264,14 @@ class Agent:
     allies: list[str] = field(default_factory=list)
     # Raiders cannot touch a newcomer until this time (sim seconds).
     protected_until: float = 0.0
+    # OUTPOSTS (2026-10-27): the claim your home stands on, and whether you
+    # have chosen it yet. Everyone before outposts is settled, homeless or in
+    # a market square. See `claims.settle`.
+    home: str = ""
+    settled: bool = True
+    # Owed to the state: borrowed to settle somewhere dear. Grows daily and is
+    # paid down from what your businesses earn. See `claims.settle`.
+    debt: float = 0.0
     # A delivery run under way (convoy/delivery.py), or None.
     delivery: dict[str, Any] | None = None
     # Missions (convoy/missions.py): those finished, and the one under way.
@@ -479,7 +487,7 @@ class Agent:
             prop_value,
             # What it would sell for, here -- the same rule as a business's stock.
             E.realizable_value(world, self.inventory, world.city_of(self)),
-        )
+        ) - self.debt      # owed to the state for settling (outposts)
 
     def add_item(self, item: str, qty: int = 1) -> None:
         self.inventory[item] = self.inventory.get(item, 0) + qty
@@ -980,6 +988,25 @@ class Claim:
 
 
 @dataclass
+class Dispatch:
+    """Something on its way that nobody walks (2026-10-27): a meal a tavern
+    sends out to someone's outpost, or the state's convoy coming to collect
+    goods it has bought from a yard. Paid or delivered at `arrives_at`."""
+    id: str
+    kind: str                        # "meal" | "state_pickup"
+    agent: str                       # who ordered it
+    business: str                    # the tavern that sends, or the yard sold from
+    item: str
+    qty: int
+    unit_price: float
+    fee: float
+    destination: str                 # where it goes (a meal) or is collected from
+    created_at: float
+    arrives_at: float
+    status: str = "on_way"           # on_way | done
+
+
+@dataclass
 class MarriageOffer:
     """A proposal: your member marries theirs, who joins your household, and
     you pay the dowry. Accepted, the two houses are allies."""
@@ -1400,6 +1427,11 @@ class World:
     buy_orders: dict[str, "BuyOrder"] = field(default_factory=dict)
     marriage_offers: dict[str, "MarriageOffer"] = field(default_factory=dict)
     claims: dict[str, "Claim"] = field(default_factory=dict)
+    dispatches: dict[str, "Dispatch"] = field(default_factory=dict)
+    # OUTPOSTS (2026-10-27): nobody starts in a town. Everyone settles on open
+    # land; the state's sites in each market are the anchors that feed, hire
+    # and buy, and selling to the state calls its convoy. See GAME_MODES.md.
+    outposts: bool = False
     # Faceless dice-roll bandits on every road (`engine._resolve_banditry`).
     # Off for runs since 2026-10-16: robbery is done by people (`Raid`).
     npc_bandits: bool = True

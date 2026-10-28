@@ -217,6 +217,15 @@ DESCRIPTIONS: dict[str, str] = {
         "Raiders on the roads at this place fight at half (guard post) or three "
         "quarters (catapult) strength -- protection for every load on those roads."
     ),
+    "order_meal": (
+        "Have a tavern send a meal to where you are: its price plus a fee by "
+        "distance. It arrives in what you carry; you eat it when hungry."
+    ),
+    "repay_debt": "Pay down what you owe the state for settling, from your pocket. It grows 2% a day.",
+    "claim_land": (
+        "Claim a site from OPEN LAND NEAR YOU: four plots of your own and a road "
+        "to them, at its listed cost. Found a business there next."
+    ),
     "feed_family": "Feed a child of your house a Meal you carry: they grow up a day sooner (a month otherwise).",
     "sell_to_bidder": (
         "Sell your business's stock to a business bidding for it, at its bid -- "
@@ -329,6 +338,19 @@ DESCRIPTIONS: dict[str, str] = {
     # -- risk ---------------------------------------------------------------
 }
 
+
+# OUTPOSTS (2026-10-27): what changes when nobody starts in a town.
+DESCRIPTIONS_OUTPOSTS: dict[str, str] = {
+    "sell_to_bidder": (
+        "Sell your business's stock to a business bidding for it (BUSINESSES "
+        "THAT WOULD BUY). The state's convoy collects from your yard and pays on "
+        "collection; a citizen's pays now and sends a courier."
+    ),
+    "travel_to": (
+        "Travel to another place: a named place, or an outpost or claim by its "
+        "name. Takes real time -- you cannot act until you arrive."
+    ),
+}
 
 # Static value sets. Runtime IDs are excluded on purpose -- see the module note.
 def _enum_for(action: str, param: str) -> list[str] | None:
@@ -486,6 +508,9 @@ DESCRIPTIONS_AFTER_WITHDRAWAL: dict[str, str] = {
 # the first no-state smoke. And `apply_for_job` is only ever the owner staffing
 # their own place, which its old description did not say: in that smoke it was
 # refused 23 times in 29, agents trying it on somebody else's tavern.
+# Only make sense when nobody starts in a town; kept off every other run's
+# prompt, which has no budget to spare for them.
+OUTPOSTS_ONLY: frozenset = frozenset({"claim_land", "order_meal", "repay_debt"})
 NO_STATE_HIDDEN: frozenset = frozenset()     # NPC hands came back, slower, 2026-10-18
 DESCRIPTIONS_NO_STATE: dict[str, str] = {
     "apply_for_job": (
@@ -499,7 +524,8 @@ DESCRIPTIONS_NO_STATE: dict[str, str] = {
 }
 
 
-def tool_schemas(state_gone: bool = False, no_state: bool = False) -> list[dict[str, Any]]:
+def tool_schemas(state_gone: bool = False, no_state: bool = False,
+                 outposts: bool = False) -> list[dict[str, Any]]:
     """OpenAI-style tool definitions for every callable action.
 
     Part of the cached prefix, so this must not vary between calls or between
@@ -512,6 +538,8 @@ def tool_schemas(state_gone: bool = False, no_state: bool = False) -> list[dict[
     for name, fn in ACTIONS.items():
         if no_state and name in NO_STATE_HIDDEN:
             continue
+        if not outposts and name in OUTPOSTS_ONLY:
+            continue
         sig = inspect.signature(fn)
         properties: dict[str, Any] = {}
         required: list[str] = []
@@ -519,6 +547,10 @@ def tool_schemas(state_gone: bool = False, no_state: bool = False) -> list[dict[
             if param.name in ("world", "log", "agent"):
                 continue
             properties[param.name] = _param_schema(name, param)
+            if outposts and param.name == "destination":
+                # Outposts are made all game long; an enum fixed at the start
+                # would leave everyone unable to name their own home.
+                properties[param.name].pop("enum", None)
             if param.default is inspect.Parameter.empty:
                 required.append(param.name)
         # WHY, ON EVERY ACTION. Asked for in the briefing and nowhere else, the
@@ -534,7 +566,8 @@ def tool_schemas(state_gone: bool = False, no_state: bool = False) -> list[dict[
             "function": {
                 "name": name,
                 "description": (
-                    (DESCRIPTIONS_NO_STATE.get(name) if no_state else None)
+                    (DESCRIPTIONS_OUTPOSTS.get(name) if outposts else None)
+                    or (DESCRIPTIONS_NO_STATE.get(name) if no_state else None)
                     or (DESCRIPTIONS_AFTER_WITHDRAWAL.get(name) if state_gone else None)
                     or DESCRIPTIONS.get(name, f"Perform {name.replace('_', ' ')}.")
                 ),

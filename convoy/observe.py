@@ -613,6 +613,7 @@ def static_briefing(
     no_state: bool = False,
     npc_bandits: bool = True,
     starter: bool = False,
+    outposts: bool = False,
 ) -> str:
     """Everything that never changes, for the cached system prompt.
 
@@ -799,6 +800,17 @@ def static_briefing(
             "thing is going to be made, sold, carried or eaten, one of you has "
             "to do it."
         )
+    if outposts:
+        header += (
+            "\n\nOUTPOSTS: THERE ARE NO TOWNS YET. You live at an outpost of your own "
+            "(YOUR OUTPOST). Each city's market is the state's trading post: its "
+            "Tavern, Farm, Mine and Refinery feed you, hire at a low fixed wage and "
+            "buy anything -- at half what it sold for between people, collected by "
+            "its convoy from your yard. Food is taverns only: walk in, or order_meal "
+            "before you are hungry. A business needs four plots of its own: "
+            "claim_land from OPEN LAND NEAR YOU, then found it there. Land near "
+            "people costs more; settling near others is how towns form."
+        )
     return "\n".join([
         header, "",
         _static_map(city, rival, npc_bandits),
@@ -823,6 +835,7 @@ def briefing_for(world: World, agent: Agent) -> str:
         no_state=world.no_state,
         npc_bandits=world.npc_bandits,
         starter=world.starter_sites,
+        outposts=world.outposts,
     )
 
 
@@ -1130,71 +1143,88 @@ def affordances(world: World, agent: Agent) -> list[str]:
     # and headcount is a property of land -- so an owner who cannot see the
     # ground market cannot grow, and would read a hiring refusal as the world
     # being arbitrary. PHASE4 §2, in advance, for a system built today.
-    free = M.plots_free(world, agent.location)
-    mine_here = [
-        p for p in world.plots.values()
-        if p.owner == agent.id and p.location == agent.location
-    ]
-    spare = [p for p in mine_here if not p.developed and p.business is None
-             and not p.is_building(world.sim_time)]
-    if free:
-        out.append(
-            f"LAND HERE: {free} of {M.plots_at(agent.location)} plots unsold at "
-            f"{D.LAND_BASE_PRICE:.0f} each -- buy_land(plots=N). Raw land seats "
-            f"nobody until develop_plot builds on it."
-        )
+    if world.outposts and M.is_claim(agent.location):
+        # A claim is somebody's land, bought with it: there is no unsold land
+        # here to buy, and its four plots are one building's worth.
+        held = world.claims.get(agent.location)
+        free_mine = [p for p in world.plots.values()
+                     if p.owner == agent.id and p.location == agent.location
+                     and not p.business and not p.home]
+        if held is not None and held.owner != agent.id:
+            who = world.agents.get(held.owner)
+            out.append(f"LAND HERE: {agent.location} is {who.name if who else 'somebody'}'s claim.")
+        elif agent.home == agent.location:
+            out.append("LAND HERE: your home fills this claim. To found a business, "
+                       "claim_land a site from OPEN LAND NEAR YOU and found it there.")
+        elif len(free_mine) >= M.SITE_BASE_PLOTS:
+            out.append(f"LAND HERE: your claim, {len(free_mine)} plots free -- found any "
+                       f"business here with start_business (the land is already yours).")
     else:
-        out.append(
-            f"LAND HERE: every one of {M.plots_at(agent.location)} plots is owned. "
-            f"To build here you must buy from a holder -- check land for sale."
-        )
-    if spare:
-        out.append(
-            f"You hold {len(spare)} undeveloped plot(s) here. develop_plot(business) "
-            f"turns one into a place for one more employee."
-        )
-
-    if M.is_spur(agent.location):
-        out.append(
-            f"This is spur land: found a mine or farm ({M.SITE_BASE_PLOTS} plots, "
-            f"included in the startup cost) or buy a home ({M.HOME_BASE_PLOTS} "
-            f"plots) here."
-        )
-    else:
-        # Saying only what CANNOT be built here reads as "you cannot build here",
-        # and agents behaved accordingly: in the 2026-08-15 smoke, three agents
-        # sat on 225-285 denari -- enough to found four of the five types that
-        # belong on this ground -- and never tried. Name what IS possible, and
-        # what it costs, since affording it is the whole question.
-        affordable = sorted(
-            (spec.startup_cost, name)
-            for name, spec in D.BUSINESS_TYPES.items()
-            if name not in M.PLOT_CONSUMING_BUSINESSES
-            and spec.startup_cost <= agent.denari
-        )
-        if affordable and free >= D.STORE_BASE_PLOTS:
+        free = M.plots_free(world, agent.location)
+        mine_here = [
+            p for p in world.plots.values()
+            if p.owner == agent.id and p.location == agent.location
+        ]
+        spare = [p for p in mine_here if not p.developed and p.business is None
+                 and not p.is_building(world.sim_time)]
+        if free:
             out.append(
-                "Main road: mines and farms need spur land, but you could found "
-                + ", ".join(f"a {n} ({c:.0f})" for c, n in affordable[:5])
-                + " right here."
-            )
-        elif affordable:
-            out.append(
-                f"Main road: you can afford to found here but there are only "
-                f"{free} unsold plots and a business needs "
-                f"{D.STORE_BASE_PLOTS}. Buy land from a holder, or found elsewhere."
+                f"LAND HERE: {free} of {M.plots_at(agent.location)} plots unsold at "
+                f"{D.LAND_BASE_PRICE:.0f} each -- buy_land(plots=N). Raw land seats "
+                f"nobody until develop_plot builds on it."
             )
         else:
-            cheapest = min(
+            out.append(
+                f"LAND HERE: every one of {M.plots_at(agent.location)} plots is owned. "
+                f"To build here you must buy from a holder -- check land for sale."
+            )
+        if spare:
+            out.append(
+                f"You hold {len(spare)} undeveloped plot(s) here. develop_plot(business) "
+                f"turns one into a place for one more employee."
+            )
+
+        if M.is_spur(agent.location):
+            out.append(
+                f"This is spur land: found a mine or farm ({M.SITE_BASE_PLOTS} plots, "
+                f"included in the startup cost) or buy a home ({M.HOME_BASE_PLOTS} "
+                f"plots) here."
+            )
+        else:
+            # Saying only what CANNOT be built here reads as "you cannot build here",
+            # and agents behaved accordingly: in the 2026-08-15 smoke, three agents
+            # sat on 225-285 denari -- enough to found four of the five types that
+            # belong on this ground -- and never tried. Name what IS possible, and
+            # what it costs, since affording it is the whole question.
+            affordable = sorted(
                 (spec.startup_cost, name)
                 for name, spec in D.BUSINESS_TYPES.items()
                 if name not in M.PLOT_CONSUMING_BUSINESSES
+                and spec.startup_cost <= agent.denari
             )
-            out.append(
-                f"Main road: mines and farms need spur land. The cheapest business "
-                f"you could found here is a {cheapest[1]} at {cheapest[0]:.0f} "
-                f"and you have {agent.denari:.0f}."
-            )
+            if affordable and free >= D.STORE_BASE_PLOTS:
+                out.append(
+                    "Main road: mines and farms need spur land, but you could found "
+                    + ", ".join(f"a {n} ({c:.0f})" for c, n in affordable[:5])
+                    + " right here."
+                )
+            elif affordable:
+                out.append(
+                    f"Main road: you can afford to found here but there are only "
+                    f"{free} unsold plots and a business needs "
+                    f"{D.STORE_BASE_PLOTS}. Buy land from a holder, or found elsewhere."
+                )
+            else:
+                cheapest = min(
+                    (spec.startup_cost, name)
+                    for name, spec in D.BUSINESS_TYPES.items()
+                    if name not in M.PLOT_CONSUMING_BUSINESSES
+                )
+                out.append(
+                    f"Main road: mines and farms need spur land. The cheapest business "
+                    f"you could found here is a {cheapest[1]} at {cheapest[0]:.0f} "
+                    f"and you have {agent.denari:.0f}."
+                )
 
     if not M.is_protected(agent.location):
         out.append("Unprotected ground: you can be attacked and robbed here.")
@@ -1915,7 +1945,8 @@ def observe(
             {
                 "id": p.id, "at": p.location,
                 "state": (
-                    "building" if p.is_building(world.sim_time)
+                    "your home" if p.home
+                    else "building" if p.is_building(world.sim_time)
                     else "developed" if p.developed else "raw"
                 ),
                 "attached_to": p.business,
@@ -1923,6 +1954,46 @@ def observe(
             }
             for p in sorted(my_land, key=lambda x: x.id)[:12]
         ]
+
+    # OUTPOSTS (2026-10-27): where you live, what you owe, how you eat, and the
+    # land you could claim next. Per agent, so here and not in the briefing.
+    if world.outposts:
+        from . import claims as CL
+        outpost: dict[str, Any] = {"home": agent.home or "not settled"}
+        if agent.debt > 0:
+            outpost["you_owe_the_state"] = (
+                f"{agent.debt:.2f} -- grows {CL.LOAN_RATE_PER_DAY:.0%} a day; a fifth of what your "
+                f"businesses earn pays it down; repay_debt pays more")
+        coming = [d for d in world.dispatches.values()
+                  if d.agent == agent.id and d.status == "on_way"]
+        for d in coming:
+            mins = max(1, round((d.arrives_at - world.sim_time) / 60))
+            what = (f"{d.item} on its way to you" if d.kind == "meal"
+                    else f"the state's convoy coming for {d.qty} {d.item} ({d.unit_price * d.qty:.2f})")
+            outpost.setdefault("on_the_way", []).append(f"{what}, in {mins} min")
+        meals = sum(q for i, q in agent.inventory.items() if i in D.MEALS)
+        if meals:
+            outpost["meals_you_carry"] = meals
+        food = []
+        for t in world.businesses.values():
+            if t.closed or t.type != "Tavern / Inn" or M.city_of(t.location) not in world.cities:
+                continue
+            if t.location == agent.location:
+                food.append({"tavern": t.id, "at": t.location, "note": "here: buy_meal"})
+                continue
+            meal = E.best_meal_for_tier(0 if t.is_government else t.research.quality_tier, "duration")
+            price = t.price_for(meal)
+            fee = A._meal_fee(world, t, agent.location)
+            mins = round(A._dispatch_hours(world, t.location, agent.location, A.MEAL_PREP_H) * 60)
+            food.append({"tavern": t.id, "at": t.location, "meal": meal,
+                         "brought_to_you": round(price + fee, 2), "minutes": mins})
+        food.sort(key=lambda r: r.get("brought_to_you", 0))
+        if food:
+            outpost["food (order_meal(tavern) to have it brought)"] = food[:4]
+        obs["your_outpost"] = outpost
+        sites = CL.sites_near(world, agent)
+        if sites:
+            obs["open_land_near_you"] = sites
 
     # Land other agents have put up for sale. Without this, `buy_listed_land`
     # is an action whose only argument is unobtainable.
@@ -2438,12 +2509,14 @@ def render(obs: dict[str, Any]) -> str:
         ("the_contest", "THE CONTEST (your city against theirs -- this is the score)"),
         ("whats_working", "WHAT'S WORKING ACROSS THE WORLD (a summary everyone gets)"),
         ("you", "YOU"),
+        ("your_outpost", "YOUR OUTPOST (where you live, what you owe, how you eat)"),
         ("here", "WHERE YOU ARE"),
         ("on_the_ground_here", "ON THE GROUND HERE, UNCLAIMED (loot_ground takes it)"),
         ("player_prices_here", "PLAYER PRICES HERE"),
         ("market_prices", "WHAT GOODS HAVE ACTUALLY BEEN SELLING FOR"),
         ("your_land", "LAND YOU OWN"),
         ("land_for_sale", "LAND FOR SALE (other agents' asking prices)"),
+        ("open_land_near_you", "OPEN LAND NEAR YOU (claim_land(site_id); near people costs more)"),
         ("you_can", "WHAT YOU CAN DO FROM HERE"),
         ("nobody_makes", "WHAT NOBODY IN YOUR CITY IS MAKING"),
         ("nobody_uses", "WHAT YOU HOLD THAT NOBODY USES"),

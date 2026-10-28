@@ -55,6 +55,7 @@ from .events import EventLog, Significance
 from . import actions as A
 from . import advisor as ADV
 from . import land as LAND
+from . import claims as CL
 from .state import Activity, Agent, World
 from .world_setup import new_world
 
@@ -109,6 +110,10 @@ class Settings:
     # next to the towns the agents run -- your own patch, nobody else in it yet.
     # `cities` are then the agents' towns and `your_city` is not among them.
     solo: bool = False
+    # OUTPOSTS (2026-10-27): no towns at the start. Everyone settles on open
+    # land; each city's market is the state's trading post. You choose your
+    # land on the map when the game opens. See GAME_MODES.md.
+    outposts: bool = False
     # You and your partner: "m" or "f".
     sex: str = "m"
     partner_sex: str = "f"
@@ -247,6 +252,18 @@ class Game:
             n += 1
         run_dir.mkdir(parents=True, exist_ok=True)
         log = EventLog(run_dir / "events.jsonl", echo_min=99)
+        if settings.outposts:
+            # Every count is agents; you arrive as one more, as with a head start.
+            from . import town as TOWN
+            world = new_world(log, [], TOWN._rosters(settings), government=settings.government,
+                              starter_sites=settings.starter_sites)
+            world.npc_bandits = False
+            TOWN.populate_outposts(world, log, random.Random(world.land_seed))
+            you = TOWN.settle(world, log, settings)
+            game = cls(run_dir, world, log, settings, you, models=models)
+            game._welcome()
+            game._write_meta()
+            return game
         rosters, seat = _rosters(settings)
         world = new_world(log, [], rosters, government=settings.government,
                           starter_sites=settings.starter_sites)
@@ -301,6 +318,15 @@ class Game:
         """What you walk into: the town as it stands when you arrive."""
         w, you = self.world, self.you
         city = w.city_of(you)
+        if w.outposts and not you.settled:
+            n = sum(1 for a in w.agents.values() if a.id != you.id and a.home)
+            self._push("milestone", (
+                f"There are no towns yet. {n} people have settled outposts around the state's "
+                f"{len(w.cities)} trading posts ({', '.join(M.market_of(c) for c in w.cities)}), "
+                f"which feed, hire and buy. Choose your land: near people costs more, far out is "
+                f"cheap, and the state lends up to {CL.MAX_SETTLE_LOAN:.0f} to settle somewhere dear. "
+                f"You have {you.denari:.0f}. The clock starts when you settle."))
+            return
         mine = [b for b in w.businesses.values()
                 if not b.closed and not b.is_government and M.city_of(b.location) == city]
         kinds = Counter(b.type.split(" /")[0] for b in mine)
@@ -392,7 +418,8 @@ class Game:
                           cities=list(w.cities), no_state=w.no_state)
             self.engine._stagger_opening()
         while not self.stopped:
-            if self.paused:
+            # Outposts: the clock waits while you choose your land.
+            if self.paused or not self.you.settled:
                 time.sleep(0.2)
                 continue
             if self.spent() >= self.settings.budget:
@@ -1078,13 +1105,20 @@ class Game:
                              "open": A.is_staffed(w, t) and (t.is_government or t.inventory.get(meal, 0) > 0),
                              "owner": "the state" if t.is_government else
                                       (w.agents[t.owner].name if t.owner in w.agents else "")})
+                if w.outposts and t.location != you.location:
+                    town[-1]["brought"] = round(town[-1]["price"] + A._meal_fee(w, t, you.location), 2)
+                    town[-1]["minutes"] = round(A._dispatch_hours(w, t.location, you.location, A.MEAL_PREP_H) * 60)
+            on_way = [{"meal": d.item, "minutes": max(1, round((d.arrives_at - w.sim_time) / 60))}
+                      for d in w.dispatches.values()
+                      if d.kind == "meal" and d.agent == you.id and d.status == "on_way"]
             fed_left = you.last_meal_window - you.hours_since_last_meal
             return {"name": you.name, "house": you.house, "health": round(you.health, 1),
                     "stage": you.sustenance_stage, "fed_hours": round(max(0.0, fed_left), 1),
                     "weapon": you.equipped_weapon, "armour": {k: v for k, v in you.equipped_armor.items() if v},
                     "carried": [{"meal": m, "qty": q, "hours": E.meal_window(m)}
                                 for m, q in sorted(you.inventory.items()) if m in D.MEALS and q > 0],
-                    "menu": menu, "coins": round(you.denari, 2),
+                    "menu": menu, "coins": round(you.denari, 2), "on_way": on_way,
+                    "outposts": w.outposts,
                     "nearest_tavern": ({"id": near.id, "place": near.location, "name": near.name}
                                        if near else None),
                     "taverns": town}
@@ -1096,12 +1130,34 @@ class Game:
             if body.get("carried"):
                 ok, msg = A.eat_meal(self.world, self.log, self.you, str(body.get("meal", "")))
                 self._push("did" if ok else "alert", msg)
+            elif body.get("order"):
+                ok, msg = self._do("order_meal", {"business_id": str(body["order"])})
             else:
                 args = {"business_id": body["tavern"]} if body.get("tavern") else {}
                 ok, msg = self._do("buy_meal", args)
         return {"ok": ok, "message": msg}
 
     # -- claims on open land (2026-10-18) -------------------------------------
+
+    def settle(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Found your outpost at (x, y), borrowing `borrow` from the state."""
+        with self.engine.world_lock:
+            try:
+                x, y = float(body.get("x")), float(body.get("y"))
+                borrow = float(body.get("borrow") or 0.0)
+            except (TypeError, ValueError):
+                return {"ok": False, "message": "where?"}
+            if body.get("quote"):
+                q = CL.quote(self.world, x, y)
+                need = max(0.0, q["total"] - self.you.denari)
+                return {"ok": True, **q, "ground": CL.ground_hint(self.world, x, y),
+                        "cash": round(self.you.denari, 2),
+                        "borrow_needed": round(need, 2), "max_loan": CL.MAX_SETTLE_LOAN}
+            ok, msg, c = CL.settle(self.world, self.log, self.you, x, y, borrow)
+        self._push("milestone" if ok else "alert", msg)
+        self._map_dirty = True
+        return {"ok": ok, "message": msg, "place": c.name if c else None,
+                "claim": ({"name": c.name, "x": c.x, "y": c.y, "road": c.road, "city": c.city} if c else None)}
 
     def wild_claim(self, body: dict[str, Any]) -> dict[str, Any]:
         from . import claims as CL
@@ -1385,6 +1441,13 @@ class Game:
             return "you", f"Autopilot: {d.get('did', d.get('reflex'))}"
         if e.actor == me and e.type in _OWN_ACTION_ECHOES:
             return None
+        # Outposts: things brought to you, and what you settled (2026-10-27).
+        if e.actor == me and e.type == "meal_delivered":
+            return "wake", f"Your {d.get('item', 'meal')} has arrived; eat it from your card when you are hungry."
+        if e.actor == me and e.type == "state_collected":
+            return "milestone", f"The state's convoy collected {d.get('qty')} {d.get('item')}: +{d.get('paid', 0):.0f}."
+        if e.actor == me and e.type in ("settled", "meal_ordered", "state_convoy_called", "debt_repaid"):
+            return None
         if e.actor == me and e.type == "delivered":
             return "milestone", f"Delivered {d.get('qty')} {d.get('item')}: +{d.get('paid', 0):.0f}."
         # The countdowns landing, and the household (2026-10-18).
@@ -1663,6 +1726,13 @@ class Game:
             if m.spouse and m.next_child_at:
                 out.append({"what": f"{m.name}'s next child", "hours": max(0.0, (m.next_child_at - w.sim_time) / 3600),
                             "kind": "family"})
+        for d in w.dispatches.values():
+            if d.agent != you.id or d.status != "on_way":
+                continue
+            what = (f"{d.item} brought to you" if d.kind == "meal" else
+                    f"The state's convoy collects {d.qty} {d.item} ({d.unit_price * d.qty:.0f})")
+            out.append({"what": what, "hours": max(0.0, (d.arrives_at - w.sim_time) / 3600),
+                        "kind": "dispatch", "ref": d.business if d.kind == "state_pickup" else None})
         out.sort(key=lambda x: x["hours"])
         return [{**x, "hours": round(x["hours"], 2)} for x in out[:6]]
 
@@ -1681,7 +1751,8 @@ class Game:
         city = self.world.city_of(self.you)
         gone = self.world.state_gone_at(city) is not None
         return [t["function"] for t in S.tool_schemas(state_gone=gone,
-                                                      no_state=self.world.no_state)]
+                                                      no_state=self.world.no_state,
+                                                      outposts=self.world.outposts)]
 
     def arrive(self, place: str) -> dict[str, Any]:
         """The player WALKED here, in the 3D world.
@@ -1840,6 +1911,8 @@ class Game:
             "budget": self.settings.budget,
             "thinking": self.thinking(),
             "you": {"id": you.id, "name": you.name, "city": w.city_of(you),
+                    "settled": you.settled, "home": you.home, "debt": round(you.debt, 2),
+                    "outposts": w.outposts,
                     "denari": round(you.denari, 2),
                     "net_worth": round(you.net_worth(w), 2), "alive": you.alive},
             "leaders": [

@@ -111,44 +111,150 @@ stretched thin. It pairs with the planned map rings (safe valley, contested
 frontier, lawless wilderness) and needs offline protection rules for online
 play.
 
-## Later: outposts first, towns grow (designer note, 2026-10-27)
+## Next: outposts and towns (design, 2026-10-27)
 
-Instead of joining a town that is already there, everyone starts with an
-outpost of their own and builds out from it: farms, mines, refineries. To sell,
-you haul goods to other outposts. Towns are not placed; they form where
-outposts gather.
+The game we are building towards. It replaces the open world above: there
+are no starting towns. Everyone starts at an outpost of their own on open
+land, and towns form where people choose to gather.
 
-**Anchors.** The map is seeded with a few neutral places -- a fort, a trading
-post, a river ford -- and the state backstop (sells high, buys low, hires at a
-fixed wage) moves there. Nobody starves on day one, and early trade has
-somewhere to go. Real frontier towns grew around exactly these.
+### Starting out
 
-**Reasons to cluster.**
+- **An outpost on open land.** You start with your house -- you, your partner,
+  a son and a daughter -- a donkey, a bat and 300, on a claim of your own
+  joined to the roads by a dirt road.
+- **Choosing where.** You pick your plot on the map yourself (no random
+  placement for now). Land is priced
+  by how much is built near it: cheap far out, dear beside other people. To
+  start somewhere dear you can take on **debt** from the state.
+- **Settling near friends.** Players who know each other can settle side by
+  side: pick a friend and the map shows the open land around their outpost.
+  Two friends starting together should be able to arrange it.
+- **Agents settle outposts too**, by the same rules, for now. The end game has
+  no agents; they fill a world until people do.
 
-- Roads are shared: linking to a neighbour's road costs less than laying your
-  own to the main road.
-- A guard post covers its neighbours' sites as well as its own.
-- When enough outposts sit within some radius, a market square appears among
-  them. That is the moment a cluster becomes a town.
+### Anchors: the state's trading posts
 
-**Forces that sort it.** Bandits and building robberies (see "the cost of
-spreading out") push people together. Smoke, which slows crops within about
-600 m, pushes farms away from refineries and mines. Between the two, towns get
-neighbourhoods and zoning without anyone planning them.
+The map is seeded with the state's trading posts, at a ford or a crossroads.
+Each has the **starter tavern**, and is where the government's convoys run
+from. Nobody owns them. The state also **hires** there, at a low fixed wage,
+so anyone short of coin can earn while their outpost gets going. Eventually
+there is about one per region (around ten);
+we start with **three, fairly close together**, to see whether three towns
+form.
 
-**Building, not buying.** Structures stay on the grid as foundations that are
-upgraded, not freeform piece-by-piece building. Room to make them your own:
+- **Food comes from taverns only.** You walk to a tavern and buy a meal, or
+  order one brought to your outpost. There is no cooking at home unless you
+  build a tavern of your own. This is what draws the first settlers to the
+  anchors, and what a later town needs a player's tavern for.
+- **Selling to the state.** From any building of yours you can order a
+  **government convoy** to come and collect goods. It pays **50% of the
+  average price that good sold for between players** over the last game day
+  (50% of book when it has not traded), and charges no fee: they come to you.
+  It is a floor, never the best price.
+- **First sales work as now**: delivery runs to buyers who pay more at their
+  door.
 
-- Upgrade tiers that change the look (tent, log cabin, timber frame, brick),
-  each needing the material and know-how -- brick needs Masonry and bricks
-  bought from someone, so how a place looks is also demand in the market.
-- Choices per building: sign and name, paint, roof style.
-- Spare squares for fences, lamps, gardens, a parked wagon, a flag in the
-  house colour.
-- Naming your outpost (claims are auto-named today, e.g. "Kestrel Fields").
+### Building
 
-**Open questions.** Servers split by region instead of by town; how agents
-pick where to settle; what a town is called once it forms with no government.
+Structures sit on the grid as **foundations you add to**, not freeform
+building and not finished products. Components stack on a foundation -- a
+new floor, a roof, an extension -- and each raises its storage or its output.
+The Meshy buildings need redoing for this: a base that reads as unfinished,
+and parts that fit on top of it.
+
+### Making it yours
+
+- A **flag and banner** you design, and a **colour scheme** for your
+  buildings.
+- You fly your **family flag**, and your **town's flag** once you join one.
+- Your **border** is your family's colour; once you are in a town it is a
+  gradient from your family's colour to the town's.
+
+### Why people gather
+
+Being near people pays, and joining a town pays more. Both are needed, or
+nobody joins.
+
+| Anyone nearby gets | Only members get |
+|---|---|
+| A tavern in reach, short meal deliveries | The market square and its shared yard |
+| Shared roads, cheaper road links | Members' road upgrades, police, the bank |
+| Workers who can reach your shifts | Town chat, flag, vote, gradient border, rankings |
+| Easier trade with neighbours (and dearer land) | The know-how boost |
+
+**Founding a town.** Three or more households with outposts within about
+500 m of a tavern can found one by charter. The founder names it. Population
+counts **everyone living in member households**, partners and children
+included, so a starting house is 4 people and families grow towns. (No limit
+on children for now.)
+
+**The ladder.**
+
+| Population | Unlocks |
+|---|---|
+| 12+ (3 houses) near a tavern | Found the town: name, flag, chat |
+| **50** | **Market square**: trades between members in the shared yard are quicker, safer and cheaper -- no haul |
+| **75** | **Road upgrades**, paid for by members: faster travel |
+| **100** | **Police**: warns the town when bandits come and does some simple defence -- weaker than people fighting, better with higher town taxes |
+| **200** | **Bank**: a player can open one; loans backed by the town fund, whose earnings pay for police and roads |
+
+**Know-how boost.** Every member's own know-how is studied faster: +1% at 20
+people, and each further 1% takes 1.5 times as many more people as the last.
+
+| People | 20 | 50 | 95 | 162 | 264 | 416 | 643 | 985 |
+|---|---|---|---|---|---|---|---|---|
+| Faster study | +1% | +2% | +3% | +4% | +5% | +6% | +7% | +8% |
+
+**Town taxes.** A town sets its own taxes and only its members pay them; they
+fund the police, the roads and the bank's fund. The *state* still taxes
+nobody.
+
+**Organising around pollution.** A town can pay for chimneys, tailings dams
+and the like together, and make pacts with the towns downstream (see "the
+river rises").
+
+### Why towns do not grow forever
+
+No hard cap. The rewards stop at 200 people; the costs keep climbing:
+
+- **Smoke.** A dense town fouls its own air and slows its own work.
+- **Land.** Prices rise as a town grows, so a newcomer gets a better deal in a
+  small one.
+- **Reach.** The market square serves a radius. Members on the far edge of a
+  sprawling town lose its no-haul trades; past that, a second square is in
+  effect a second town.
+- **Crowded markets.** Twelve farms in one town push Wheat down; a small town
+  with no refinery pays well for one. The map shows what each town lacks.
+- **Upkeep.** Police and roads cost more per head as a town grows, so taxes
+  rise.
+- **Bandits follow money.** Raids on a town grow with its wealth.
+- **Being a big fish.** Titles and leadership are easier to win in a small
+  town, and towns rank per head, not by total wealth.
+- **Alliances, not mergers.** Towns can ally -- cheaper trade between them,
+  roads paid for together, river pacts -- so cooperating does not mean
+  becoming one town.
+
+An entry fee is up to each town, but towns want members, so it is not the
+brake.
+
+### Scale (when there are players)
+
+- A **world** is one map, one clock and one market: who you can trade with,
+  fight and ally with. About 10,000 members, 1,000-2,000 online.
+- It is split into **regions**, one server each, up to about 1,000 online.
+  Borders follow rivers and ridges; crossing a bridge, a ford or a pass hands
+  you to the next server during the crossing. The market, messages, clans and
+  rankings stay world-wide, and your outposts keep working while you are away.
+- A town sits inside one region (anchors mid-region); a bridge belongs to one
+  side; nobody builds on a border. Towns and alliances live inside a world;
+  only social things (profiles, clan chat) span worlds.
+- Not built: one server holds the first world. The code should stop keying
+  everything by city and keep the market separate from where people stand.
+
+### Later
+
+- **Robbing buildings**, once combat is settled (see "the cost of spreading
+  out").
 
 ## Later: the river rises (designer note, 2026-10-27)
 

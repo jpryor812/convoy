@@ -36,7 +36,7 @@ from . import progress as PG
 from . import family as FAM
 from . import delivery as DL
 from . import land as LAND
-from .state import Activity, Agent, Business, World
+from .state import Activity, Agent, Business, Transaction, World
 
 TICK_SECONDS = 60.0     # one simulated minute of continuous processes
 
@@ -325,6 +325,8 @@ class Engine:
         FAM.tick(w, self.log)
         CB.regen(w, hours)
         GR.tick(w, hours)
+        self._dispatches()
+        self._debt_interest(hours)
         self._property_tax()
         self._road_tax()
         self._expire_social()
@@ -335,6 +337,48 @@ class Engine:
         self._diaries()
 
     # -- continuous processes ---------------------------------------------
+
+    def _dispatches(self) -> None:
+        """Meals a tavern sent out arrive in what their buyer carries; the
+        state's convoy collects what it bought and pays for it. Outposts,
+        2026-10-27; see `actions.order_meal` and `actions.sell_to_bidder`."""
+        w = self.world
+        for d in list(w.dispatches.values()):
+            if d.status != "on_way" or d.arrives_at > w.sim_time:
+                continue
+            d.status = "done"
+            if d.kind == "meal":
+                a = w.agents.get(d.agent)
+                if a is not None and a.alive:
+                    a.add_item(d.item, d.qty)
+                    self.log.emit(w.sim_time, "meal_delivered", actor=d.agent, subject=d.business,
+                                  location=a.location, item=d.item)
+            elif d.kind == "state_pickup":
+                biz = w.businesses.get(d.business)
+                total = round(d.unit_price * d.qty, 2)
+                if biz is not None and not biz.closed:
+                    A._income(w, biz, total)
+                    w.government.treasury -= total
+                    buyer = next((b.id for b in w.businesses.values()
+                                  if b.is_government and not b.closed), "Government")
+                    A._record_trade(w, self.log, Transaction(w.sim_time, d.item, d.qty, d.unit_price,
+                                                             biz.id, buyer, city=M.city_of(biz.location)),
+                                    "sell", biz.location)
+                    self.log.emit(w.sim_time, "state_collected", actor=d.agent, subject=biz.id,
+                                  location=biz.location, item=d.item, qty=d.qty, paid=total,
+                                  significance=Significance.MEDIUM)
+        done = [k for k, d in w.dispatches.items()
+                if d.status == "done" and d.arrives_at < w.sim_time - 6 * 3600.0]
+        for k in done:
+            del w.dispatches[k]
+
+    def _debt_interest(self, hours: float) -> None:
+        """What people owe the state for settling grows each game day."""
+        from .claims import LOAN_RATE_PER_DAY
+        grow = (1.0 + LOAN_RATE_PER_DAY) ** (hours / 24.0)
+        for a in self.world.agents.values():
+            if a.debt > 0:
+                a.debt = round(a.debt * grow, 4)
 
     def _withdraw_the_state(self, city: str | None = None) -> None:
         """Delete every government business and spill its stores onto the ground.

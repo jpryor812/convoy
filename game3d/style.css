@@ -618,3 +618,12 @@ html,body{background:#2a2219;font-size:15px}
 #topbar .res.c-blue,#topbar .res{color:var(--hudtext)}
 #minimapbox{background:#2a1e14;border:2px solid var(--brass)!important}
 #minimapbox .cap{color:var(--hudtext);font-family:var(--head)}
+
+/* ---------- choosing your land (outposts, 2026-10-27) ---------- */
+#settle-banner{position:fixed;left:50%;top:64px;transform:translateX(-50%);z-index:40;max-width:min(560px,calc(100% - 32px));
+  background:var(--cream,#fff6e0);border:3px solid var(--ink);border-radius:14px;box-shadow:0 3px 0 var(--ink);padding:8px 14px;text-align:center}
+#settle-banner b{display:block;font:700 17px var(--head);color:var(--ink)}
+#settle-banner span{display:block;font:600 13px var(--body);color:var(--soft)}
+#settle-banner .loan{margin-top:6px;font:600 12px var(--body);color:var(--ink)}
+#settle-banner .loan button{margin-left:4px;border:2px solid var(--ink);border-radius:999px;background:#fff;color:var(--ink);font:700 12px var(--head);padding:1px 10px;cursor:pointer}
+#settle-banner .loan button.on{background:var(--gold)}

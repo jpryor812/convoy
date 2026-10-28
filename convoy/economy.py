@@ -24,6 +24,39 @@ def npc_buy_price(item: str) -> float:
     return D.base_price(item) * D.NPC_BUY_PCT_RAW
 
 
+STATE_SHARE_OF_PLAYER_PRICE = 0.50   # the state's convoy pays this share ...
+STATE_PRICE_WINDOW_H = 24.0          # ... of the average between players over this long
+
+
+def state_price(world, item: str) -> float:
+    """What the state pays for `item` (outposts, 2026-10-27): half the
+    average price it sold for between players over the last game day, or half
+    of book when nobody has traded it. A floor, never the best price. Worlds
+    without outposts keep the old fixed rate."""
+    if not getattr(world, "outposts", False):
+        return npc_buy_price(item)
+    since = world.sim_time - STATE_PRICE_WINDOW_H * 3600.0
+    units = paid = 0.0
+    for t in reversed(world.market.transactions):
+        if t.sim_time < since:
+            break
+        if t.item != item or t.unit_price <= 0:
+            continue
+        if _is_state(world, t.seller) or _is_state(world, t.buyer):
+            continue
+        units += t.qty
+        paid += t.unit_price * t.qty
+    avg = paid / units if units else D.base_price(item)
+    return round(avg * STATE_SHARE_OF_PLAYER_PRICE, 2)
+
+
+def _is_state(world, party: str) -> bool:
+    if not party or party == "Government":
+        return True
+    b = world.businesses.get(party)
+    return bool(b is not None and b.is_government)
+
+
 def npc_sell_price(item: str) -> float:
     """What an NPC business charges a player for `item`.
 

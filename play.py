@@ -45,8 +45,11 @@ ASSETS3D = HERE / "art" / "generated" / "3d"  # Meshy models, shrunk for the web
 class Host:
     """At most one game at a time, and the map built from it."""
 
-    def __init__(self, games_dir: Path):
+    def __init__(self, games_dir: Path, models: Any = None):
         self.games_dir = games_dir
+        # None plays the agents with the model API; `--offline` passes a
+        # stand-in so the game can be tried without spending anything.
+        self.models = models
         self.game: Game | None = None
         self._lock = threading.RLock()
         self._map: tuple[float, bytes] | None = None
@@ -77,7 +80,8 @@ class Host:
                     starter_sites=bool(raw.get("starter_sites", True)),
                     calling=str(raw.get("calling") or "Farmer"),
                     head_start=float(raw.get("head_start", 8)),
-                    solo=bool(raw.get("solo", False)),
+                    outposts=bool(raw.get("outposts", False)),
+                    solo=bool(raw.get("solo", False)) and not bool(raw.get("outposts", False)),
                     sex=str(raw.get("sex") or "m"),
                     partner_sex=str(raw.get("partner_sex") or "f"),
                 )
@@ -87,12 +91,12 @@ class Host:
                     if template is None:
                         # Run the towns first, in the background; the start
                         # page shows the clock and opens the game when you arrive.
-                        self.warming = TOWN.HeadStart(settings)
+                        self.warming = TOWN.HeadStart(settings, models=self.models)
                         self.warming.start(lambda path: self._arrive(settings, path))
                         return {"ok": True, "warming": True}
-                    game = Game.from_town(settings, template, self.games_dir)
+                    game = Game.from_town(settings, template, self.games_dir, models=self.models)
                 else:
-                    game = Game.new(settings, self.games_dir)
+                    game = Game.new(settings, self.games_dir, models=self.models)
             except (ValueError, TypeError) as exc:
                 return {"ok": False, "error": str(exc)}
             game.save()            # names on the map from the first frame
@@ -104,7 +108,7 @@ class Host:
     def _arrive(self, settings: Settings, template: Path) -> None:
         """The head start is done: you arrive in the towns it made."""
         with self._lock:
-            game = Game.from_town(settings, template, self.games_dir)
+            game = Game.from_town(settings, template, self.games_dir, models=self.models)
             game.save()
             game.start()
             self.game = game
@@ -119,7 +123,7 @@ class Host:
             run_dir = self.games_dir / name
             if not name or "/" in name or not (run_dir / "checkpoint.json").exists():
                 return {"ok": False, "error": "no saved game by that name"}
-            game = Game.load(run_dir)
+            game = Game.load(run_dir, models=self.models)
             game.paused = True      # a loaded game waits for you to press play
             game.note = "Loaded. Press play when you are ready."
             game.start()
@@ -333,6 +337,14 @@ def make_handler(host: Host):
                 out = g.wild_claim(body if isinstance(body, dict) else {})
                 host._map = None                      # the map must show it at once
                 return self._send(out)
+            if path == "/api/settle":
+                g = host.game
+                if g is None:
+                    return self._send({"error": "no game running"}, 409)
+                out = g.settle(body if isinstance(body, dict) else {})
+                if out.get("claim"):
+                    host._map = None                  # the map must show it at once
+                return self._send(out)
             if path == "/api/fight":
                 g = host.game
                 if g is None:
@@ -433,7 +445,8 @@ th{color:var(--dim);font-weight:500}
     <label>Your partner is <select id="partner"><option value="f">a woman</option><option value="m">a man</option></select></label>
     <span class="est">You start with your partner, a son and a daughter.</span>
   </div>
-  <div class="row"><label><input type="checkbox" id="solo" checked> <b>A town of my own</b>: start alone in a new town beside the agents' towns (tick the agents' towns below)</label></div>
+  <div class="row"><label><input type="checkbox" id="outposts" checked> <b>Outposts</b>: no towns yet -- everyone settles on open land around the state's trading posts (the ticked cities), and you choose yours on the map</label></div>
+  <div class="row"><label><input type="checkbox" id="solo"> <b>A town of my own</b>: start alone in a new town beside the agents' towns (tick the agents' towns below)</label></div>
   <div id="cities"></div>
   <div class="row"><span class="est" id="est"></span></div>
   <div class="row">
@@ -501,6 +514,7 @@ function cityRows(){
   $("cities").querySelectorAll("input").forEach(el => el.addEventListener("input", estimate));
   if (prev){ $("pace").value = prev.pace; $("budget").value = prev.budget; $("workers").value = prev.workers; $("rpm").value = prev.rpm;
     if ("head_start" in prev) $("head").value = prev.head_start; if ("reuse_town" in prev) $("reuse").checked = !!prev.reuse_town;
+    if ("outposts" in prev) $("outposts").checked = !!prev.outposts;
     if ("solo" in prev) $("solo").checked = !!prev.solo; if (prev.sex) $("sex").value = prev.sex; if (prev.partner_sex) $("partner").value = prev.partner_sex; }
   $("model").value = (prev && prev.model) || MENU.defaults.model;
   callingCards();
@@ -512,6 +526,10 @@ function settings(){
     if (cb.checked) cities[cb.dataset.c] = +document.querySelector(`[data-n="${cb.dataset.c}"]`).value;
   });
   let you = (document.querySelector("input[name=you]:checked") || {}).value;
+  // Outposts and a town of your own cannot both be had.
+  const outposts = $("outposts").checked;
+  $("solo").disabled = outposts;
+  if (outposts) $("solo").checked = false;
   // A town of your own: the first town the agents are NOT in.
   if ($("solo") && $("solo").checked){
     const ticked = new Set([...document.querySelectorAll("[data-c]")].filter(c => c.checked).map(c => c.dataset.c));
@@ -521,12 +539,12 @@ function settings(){
           model: $("model").value.trim(), workers: +$("workers").value, rpm: +$("rpm").value,
           calling: CALLING, starter_sites: $("starter").checked,
           head_start: +$("head").value, reuse_town: $("reuse").checked,
-          solo: $("solo").checked, sex: $("sex").value, partner_sex: $("partner").value};
+          outposts, solo: $("solo").checked, sex: $("sex").value, partner_sex: $("partner").value};
 }
 // Matches convoy/town.py town_key.
 function townKey(s){
   const cities = Object.keys(s.cities).sort().map(c => c + s.cities[c]).join("-");
-  return `${cities}_${s.starter_sites ? "starter" : "bare"}_${(s.model || "").split("/").pop()}_${s.head_start}h`;
+  return `${cities}_${s.outposts ? "outposts" : s.starter_sites ? "starter" : "bare"}_${(s.model || "").split("/").pop()}_${s.head_start}h`;
 }
 function estimate(){
   const s = settings();
@@ -574,7 +592,7 @@ async function load(id){
   if (MENU.running) $("running").style.display = "";
   if (MENU.warming) watchWarming();
   $("w-stop").onclick = async () => { await post("/api/end", {}); location.reload(); };
-  ["head", "reuse", "starter", "solo"].forEach(id => $(id).addEventListener("input", estimate));
+  ["head", "reuse", "starter", "solo", "outposts"].forEach(id => $(id).addEventListener("input", estimate));
   cityRows();
   if (MENU.saved.length){
     $("saved").innerHTML = `<tr><th>Started</th><th>Cities</th><th>Hour</th><th>Spent</th><th></th></tr>`
@@ -585,14 +603,29 @@ async function load(id){
 """
 
 
+class Offline:
+    """Plays every agent by doing nothing: their reflexes still eat, restock
+    and haul, but nobody decides anything and no model is called."""
+
+    def __init__(self):
+        import contextlib
+        self.world_lock = contextlib.nullcontext()
+        self.usage: dict[str, Any] = {}
+
+    def decide(self, world, agent, reason) -> None:
+        return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8800)
     ap.add_argument("--games-dir", type=Path, default=GAMES_DIR)
+    ap.add_argument("--offline", action="store_true",
+                    help="agents do not think (no model calls, nothing spent): for trying the game out")
     args = ap.parse_args()
     load_env()
-    host = Host(args.games_dir)
+    host = Host(args.games_dir, models=Offline() if args.offline else None)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(host))
     print(f"Convoy is ready: http://localhost:{args.port}")
     try:

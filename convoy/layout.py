@@ -590,7 +590,12 @@ def border_rivers(cities: list[str] | None = None) -> list[float]:
     cities = cities or [M.HOME_CITY]
     if len(cities) < 2:
         return []
-    places = build(cities)
+    # Cached: claims ask this for every spot they test (2026-10-27), and it
+    # was rebuilding the whole map each time.
+    key = tuple(cities)
+    if key in _BORDER_CACHE:
+        return list(_BORDER_CACHE[key])
+    places = places_cached(list(cities))
 
     def reach(city: str) -> tuple[float, float]:
         xs = [q.x for p in places.values() if M.city_of(p.name) == city
@@ -600,7 +605,11 @@ def border_rivers(cities: list[str] | None = None) -> list[float]:
     axes = []
     for a, b in zip(cities, cities[1:]):
         axes.append((reach(a)[1] + reach(b)[0]) / 2.0)
+    _BORDER_CACHE[key] = list(axes)
     return axes
+
+
+_BORDER_CACHE: dict[tuple[str, ...], list[float]] = {}
 
 
 def in_river(y: float, margin: float = 0.0) -> bool:

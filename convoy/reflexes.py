@@ -160,6 +160,12 @@ def _note(world: "World", log: "EventLog", agent: "Agent", kind: str, did: str) 
 def _eat(world: "World", log: "EventLog", agent: "Agent") -> bool:
     if agent.sustenance_stage == "Normal":
         return False
+    # A meal you carry first: it was paid for (outposts, 2026-10-27).
+    if any(q > 0 for i, q in agent.inventory.items() if i in A.D.MEALS):
+        ok, msg = A.eat_meal(world, log, agent)
+        if ok:
+            _note(world, log, agent, "eat", msg)
+            return True
     for tavern in world.businesses_at(agent.location, "Tavern / Inn"):
         if tavern.closed or not A.is_staffed(world, tavern):
             continue
@@ -169,7 +175,34 @@ def _eat(world: "World", log: "EventLog", agent: "Agent") -> bool:
         if ok:
             _note(world, log, agent, "eat", msg)
             return True
+    if world.outposts:
+        return _send_for_a_meal(world, log, agent)
     return False
+
+
+def _send_for_a_meal(world: "World", log: "EventLog", agent: "Agent") -> bool:
+    """Hungry, away from a tavern, with nothing on the way: have the cheapest
+    tavern send one. Living at an outpost should not starve anybody who can
+    pay -- that is a decision about money, not about remembering to eat."""
+    if any(d.agent == agent.id and d.kind == "meal" and d.status == "on_way"
+           for d in world.dispatches.values()):
+        return False
+    best = None
+    for t in world.businesses.values():
+        if t.closed or t.type != "Tavern / Inn" or not A.is_staffed(world, t):
+            continue
+        if not t.is_government and not any(q > 0 for i, q in t.inventory.items() if i in A.D.MEALS):
+            continue
+        meal = A.E.best_meal_for_tier(0 if t.is_government else t.research.quality_tier, "duration")
+        cost = t.price_for(meal) + A._meal_fee(world, t, agent.location)
+        if cost <= agent.denari and (best is None or cost < best[0]):
+            best = (cost, t)
+    if best is None:
+        return False
+    ok, msg = A.order_meal(world, log, agent, best[1].id)
+    if ok:
+        _note(world, log, agent, "order meal", msg)
+    return ok
 
 
 def _courier(world: "World", log: "EventLog", agent: "Agent") -> bool:

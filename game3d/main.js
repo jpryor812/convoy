@@ -55,7 +55,7 @@ let PLAYER_CHARACTER = "cowboy";       // a woman's model if you chose to be one
 const MODEL_FOR_TYPE = {
   "Tavern / Inn": "tavern", "Farm": "farm", "Refinery": "refinery",
   "Vehicle Dealer / Stable": "stable", "Weaponsmith / Armory": "blacksmith",
-  "Mining Operation": "mine",
+  "Mining Operation": "mine", "Your home": "home",
 };
 const PLAIN_COLOUR = {
   "Home Improvement Store": "#9b7651", "Mining/Farming Equipment Store": "#6f8191",
@@ -1665,12 +1665,70 @@ function holo(type){
   scene.add(root);
   return root;
 }
+/* ------------------------------------------------------------ settling (outposts) */
+/* OUTPOSTS (2026-10-27): nobody starts in a town. Until you settle, the game
+   opens on the map with a home to place on open land; the server prices it
+   (land by what is built nearby, plus its road) and lends the shortfall. */
+const HOME_SPEC = {name: "Your home", cost: 0, home: true};
+const QUOTES = new Map();
+function outposts(){ return !!(S.ST && S.ST.you && S.ST.you.outposts); }
+function landQuote(cx, cz){
+  const key = `${Math.round(cx / CELL)},${Math.round(cz / CELL)}`;
+  if (QUOTES.has(key)) return QUOTES.get(key);
+  QUOTES.set(key, null);
+  const w = toWorld(new THREE.Vector3(cx, 0, cz));
+  api.post("/api/settle", {x: w.x, y: w.y, quote: true}).then(r => {
+    QUOTES.set(key, r && r.ok ? r : {why_not: (r && r.message) || "cannot price this land"});
+    if (placing && lastGround) updatePlacement(lastGround);
+  }).catch(() => QUOTES.delete(key));
+  return null;
+}
+async function settleAt(cx, cz, borrow){
+  const w = toWorld(new THREE.Vector3(cx, 0, cz));
+  const r = await api.post("/api/settle", {x: w.x, y: w.y, borrow: Math.max(borrow || 0, EXTRA_LOAN)});
+  if (!r.ok){ UI.toast(r.message, "bad"); return; }      // the feed says it when it works
+  stopPlacing();
+  QUOTES.clear();
+  addClaimPlace({name: r.claim.name, x: r.claim.x, y: r.claim.y, path: r.claim.road}, true);
+  const home = S.places[r.place];
+  if (home && S.player){
+    S.player.root.position.set(home.c.x + 2, groundAt(home.c.x + 2, home.c.z + 3), home.c.z + 3);
+    S.here = r.place;
+    flyTo(home.c, 160);
+  }
+  if (S.ST) S.ST.you.settled = true;
+  settleBanner(false);
+  pollPlots();
+}
+function settleBanner(on){
+  let el = $("settle-banner");
+  if (!on){ if (el) el.remove(); return; }
+  if (el) return;
+  el = document.createElement("div"); el.id = "settle-banner";
+  el.innerHTML = `<b>Choose your land</b><span>Move the home over open grass and click to settle. Land near the trading posts and other people costs more; far out it is cheap. Other outposts are labelled with their owner, so you can settle beside someone you know. The clock starts when you settle.</span>`
+    + `<div class="loan">Borrow from the state as you settle (2% a day, paid from what you earn): `
+    + [0, 100, 200, 400].map(n => `<button data-loan="${n}" class="${n === EXTRA_LOAN ? "on" : ""}">${n ? n : "none"}</button>`).join("") + `</div>`;
+  el.querySelectorAll("[data-loan]").forEach(b => b.onclick = () => {
+    EXTRA_LOAN = +b.dataset.loan;
+    el.querySelectorAll("[data-loan]").forEach(x => x.classList.toggle("on", x === b));
+    QUOTES.clear(); if (placing && lastGround) updatePlacement(lastGround);
+  });
+  document.body.appendChild(el);
+}
+// A loan taken when settling, beyond what the land itself needs: money to
+// found a first business with. Up to the state's limit, chosen on the banner.
+let EXTRA_LOAN = 0;
+function checkSettle(){
+  if (!outposts() || S.ST.you.settled){ settleBanner(false); return; }
+  settleBanner(true);
+  if (!placing) startPlacing("Your home");
+}
 function startPlacing(type){
   stopPlacing();
   clearSelection();
   placing = {type, ghost: holo(type)};
   renderer.domElement.style.cursor = "crosshair";
-  UI.toast(`Choose where to build the ${type.split(" /")[0]}: click to place, Esc to cancel`);
+  if (type !== "Your home") UI.toast(`Choose where to build the ${type.split(" /")[0]}: click to place, Esc to cancel`);
   if (lastGround) updatePlacement(lastGround);
 }
 function stopPlacing(){
@@ -1684,7 +1742,8 @@ function stopPlacing(){
 }
 function updatePlacement(point){
   if (!placing) return;
-  const spec = (S.BOARD ? S.BOARD.business_types : []).find(t => t.name === placing.type) || {cost: 0, spur: false};
+  const spec = placing.type === "Your home" ? HOME_SPEC
+    : (S.BOARD ? S.BOARD.business_types : []).find(t => t.name === placing.type) || {cost: 0, spur: false};
   // A business takes the 2x2 block whose shared corner is nearest the cursor;
   // a defense takes the one square under it (2026-10-18).
   const one = spec.size === 1;
@@ -1707,25 +1766,46 @@ function updatePlacement(point){
     else if (centres.some(([x, z]) => distToRoads(x, z) < CELL * 0.62)) why = "That is on a road";
     else if ((S.mountains || []).some(mt => Math.hypot(cx - mt.x, cz - mt.z) < mt.r + CELL)) why = "That is on the mountainside";
     else if (roadM > 1200) why = "Too far from any road";
-    else if (cash < spec.cost + roadM * 0.12) why = `Need ${Math.ceil(spec.cost + roadM * 0.12 - cash)} more`;
+    else if (!outposts() && cash < spec.cost + roadM * 0.12) why = `Need ${Math.ceil(spec.cost + roadM * 0.12 - cash)} more`;
     place = null;
-  } else if (!cells.every(Boolean)) why = "Build on a place's squares, or on open land";
+  } else if (spec.home) why = "Settle on open land, away from the places and roads";
+  else if (!cells.every(Boolean)) why = "Build on a place's squares, or on open land";
   else if (!cells.every(c => c.place === place)) why = "All four squares must be in one place";
   else if (cells.some(c => S.cellOwner.has(c.key))) why = "Those squares are not free";
   else if (!spec.defense && !spec.claim && S.places[place].kind !== "claim" && (S.places[place].kind === "spur") !== !!spec.spur) why = spec.spur ? "Farms and mines need spur land" : "This belongs on the main road, not a spur";
   else if (cash < spec.cost) why = `Need ${Math.ceil(spec.cost - cash)} more`;
+  // OUTPOSTS (2026-10-27): open land has a price, set by the server from how
+  // much is built nearby. Ask for it; until it answers, say so.
+  let q = null, borrow = 0;
+  if (wild && !why && outposts()){
+    q = landQuote(cx, cz);
+    if (!q) why = "Pricing this land…";
+    else if (q.why_not) why = q.why_not[0].toUpperCase() + q.why_not.slice(1);
+    else {
+      const short = spec.cost + q.total - cash;
+      if (short > 0 && spec.home && short <= q.max_loan) borrow = Math.ceil(short);
+      else if (short > 0) why = `Need ${Math.ceil(short)} more`;
+      if (spec.home && EXTRA_LOAN > borrow) borrow = Math.min(q.max_loan, EXTRA_LOAN);
+    }
+  }
   placing.valid = !why; placing.why = why; placing.cells = keys; placing.place = place; placing.wild = wild;
-  placing.cx = cx; placing.cz = cz;
+  placing.cx = cx; placing.cz = cz; placing.borrow = borrow;
   const g = placing.ghost;
   g.position.set(cx, groundAt(cx, cz), cz);
   if (place){ const pc = S.places[place].c; g.rotation.y = Math.atan2(pc.x - cx, pc.z - cz); }
   g.userData.mat.color.set(why ? "#ff6a5a" : "#3fd8ff");
   g.userData.lines.color.set(why ? "#ffd0c8" : "#c8f7ff");
-  const hint = groundHint(placing.type, cx, cz);
-  const where = wild ? `open land \u00b7 road ${Math.round(roadM)} m (${Math.round(roadM * 0.12)})` : esc(place);
-  const total = Math.round(spec.cost + (wild ? roadM * 0.12 : 0));
+  const hint = spec.home ? (q && q.ground) || "" : groundHint(placing.type, cx, cz);
+  let where = wild ? `open land \u00b7 road ${Math.round(roadM)} m (${Math.round(roadM * 0.12)})` : esc(place);
+  let total = Math.round(spec.cost + (wild ? roadM * 0.12 : 0));
+  if (q && !q.why_not){
+    total = Math.round(spec.cost + q.total);
+    where = `land ${Math.round(q.land_cost)} \u00b7 road ${Math.round(q.road_m)} m (${Math.round(q.road_cost)})`;
+  }
+  const verb = spec.home ? "settle here" : wild ? "claim and build" : "build";
+  const loan = borrow ? `<small class="hint">The state lends you ${borrow}, at 2% a day: you keep ${Math.floor(cash + borrow - total)} after the land</small>` : "";
   g.userData.tag.element.innerHTML = why ? `<b>${esc(placing.type.split(" /")[0])}</b><small class="no">${esc(why)}</small>`
-    : `<b>${esc(placing.type.split(" /")[0])} \u00b7 ${total}</b><small>${where} \u00b7 click to ${wild ? "claim and build" : "build"}</small>${hint ? `<small class="hint">${esc(hint)}</small>` : ""}`;
+    : `<b>${esc(placing.type.split(" /")[0])} \u00b7 ${total}</b><small>${where} \u00b7 click to ${verb}</small>${loan}${hint ? `<small class="hint">${esc(hint)}</small>` : ""}`;
   blockSq.forEach((b, i) => { if (i >= keys.length) b.visible = false; });
   keys.forEach((k, i) => {
     const sq = blockSq[i];
@@ -1753,7 +1833,8 @@ function groundHint(type, x, z){
 function confirmPlacement(){
   if (!placing) return;
   if (!placing.valid){ UI.toast(placing.why, "bad"); return; }
-  const {type, place, cells, wild, cx, cz} = placing;
+  const {type, place, cells, wild, cx, cz, borrow} = placing;
+  if (type === "Your home"){ settleAt(cx, cz, borrow); return; }
   const spec = (S.BOARD ? S.BOARD.business_types : []).find(t => t.name === type) || {};
   stopPlacing();
   if (wild){ wildFound(type, cx, cz, !!spec.claim); return; }
@@ -2443,7 +2524,7 @@ window.convoy = {camera, scene, S, renderer, set idleAt(v){ IDLE_AT = v; for (co
 
 /* ------------------------------------------------------------ start */
 const UI = createUI({api, S, walkToPlace, walkToBuilding, fastTravel, findMe, short,
-  onStatus: () => checkTravel(), toggleCamera: () => toggleCamera(), mode: () => camMode,
+  onStatus: () => { checkTravel(); checkSettle(); }, toggleCamera: () => toggleCamera(), mode: () => camMode,
   foundOn: (p, c, t) => foundOn(p, c, t), buyOn: (p, c) => buyOn(p, c), clearSelection: () => clearSelection(),
   startPlacing: t => startPlacing(t), stopPlacing: () => stopPlacing(),
   // A delivery taken: down into the saddle, Red Dead style.

@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 from . import layout as L
 from . import world_map as M
 from .events import Significance
-from .state import Claim
+from .state import Claim, Plot
 
 if TYPE_CHECKING:
     from .events import EventLog
@@ -92,10 +92,78 @@ def check(world: "World", x: float, y: float) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# LAND PRICE (outposts, 2026-10-27): dear beside people, cheap far out
+# ---------------------------------------------------------------------------
+#
+# There are no towns to price against at the start, so a plot's price is how
+# close it is to what people have: the state's anchors, and land somebody has
+# built on. Whichever pull is stronger sets it. Only worlds with outposts on
+# charge it; a claim elsewhere costs just its road, as it always has.
+
+LAND_FLOOR = 5.0               # a plot out where nobody is
+LAND_PREMIUM = 60.0            # ... and how much more one beside people costs
+ANCHOR_REACH_M = 400.0         # the anchor's pull falls by 1/e every this far
+BUILT_RADIUS_M = 500.0         # built land counts within this far
+BUILT_FULL = 32                # ... and this many built plots is as dear as it gets
+MAX_SETTLE_LOAN = 400.0        # the most the state lends you to settle
+LOAN_RATE_PER_DAY = 0.02       # interest on what you owe, each game day
+LOAN_REPAY_SHARE = 0.20        # of what your businesses earn, until it is paid
+
+
+def anchors(world: "World") -> dict[str, tuple[float, float]]:
+    """Each city's market -- the state's trading post -- as {city: (x, y)}."""
+    places = L.places_cached(list(world.cities))
+    return {c: (places[M.market_of(c)].center.x, places[M.market_of(c)].center.y)
+            for c in world.cities if M.market_of(c) in places}
+
+
+def place_xy(world: "World", place: str) -> tuple[float, float] | None:
+    c = world.claims.get(place)
+    if c is not None:
+        return c.x, c.y
+    p = L.places_cached(list(world.cities)).get(place)
+    return (p.center.x, p.center.y) if p else None
+
+
+def nearest_anchor(world: "World", x: float, y: float) -> tuple[str, float]:
+    """(city, metres) of the nearest anchor."""
+    best = (world.cities[0], float("inf"))
+    for city, (ax, ay) in anchors(world).items():
+        d = math.hypot(x - ax, y - ay)
+        if d < best[1]:
+            best = (city, d)
+    return best
+
+
+def land_price(world: "World", x: float, y: float) -> float:
+    """What one plot here costs. Charged only when the world has outposts."""
+    if not world.outposts:
+        return 0.0
+    _, d = nearest_anchor(world, x, y)
+    pull = math.exp(-d / ANCHOR_REACH_M)
+    built = 0
+    xy: dict[str, tuple[float, float] | None] = {}
+    for q in world.plots.values():
+        if not q.developed or q.owner == "Government":
+            continue
+        if q.location not in xy:
+            xy[q.location] = place_xy(world, q.location)
+        at = xy[q.location]
+        if at and math.hypot(x - at[0], y - at[1]) <= BUILT_RADIUS_M:
+            built += 1
+    pull = max(pull, min(1.0, built / BUILT_FULL))
+    return round(LAND_FLOOR + LAND_PREMIUM * pull, 2)
+
+
 def quote(world: "World", x: float, y: float) -> dict:
     """What a claim here would cost and where its road would come from."""
     d, rx, ry = nearest_road(world, x, y)
-    return {"road_m": round(d), "road_cost": round(d * ROAD_COST_PER_M, 2), "from": [rx, ry],
+    plot = land_price(world, x, y)
+    road = round(d * ROAD_COST_PER_M, 2)
+    return {"road_m": round(d), "road_cost": road, "from": [rx, ry],
+            "plot_price": plot, "land_cost": round(plot * M.CLAIM_PLOTS, 2),
+            "total": round(road + plot * M.CLAIM_PLOTS, 2),
             "why_not": check(world, x, y)}
 
 
@@ -124,9 +192,13 @@ def claim(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
     if why:
         return False, why, None
     d, rx, ry = nearest_road(world, x, y)
-    cost = round(d * ROAD_COST_PER_M, 2)
+    road = round(d * ROAD_COST_PER_M, 2)
+    land = round(land_price(world, x, y) * M.CLAIM_PLOTS, 2)
+    cost = round(road + land, 2)
     if agent.denari < cost:
-        return False, f"the road here costs {cost:.0f} ({d:.0f} m); you have {agent.denari:.0f}", None
+        what = f"the road here costs {road:.0f} ({d:.0f} m)" if not land else \
+            f"this land costs {land:.0f} and its road {road:.0f} ({d:.0f} m)"
+        return False, f"{what}; you have {agent.denari:.0f}", None
     junction = _nearest_junction(world, x, y)
     jp = L.places_cached(list(world.cities))[junction].center
     seconds = (math.hypot(x - jp.x, y - jp.y)) / TRACK_SPEED
@@ -136,8 +208,137 @@ def claim(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
     agent.denari -= cost
     world.claims[c.name] = c
     M.register_claims(world.claims.values())
+    if world.outposts:
+        # The land is bought with the claim: its four plots are the claimant's,
+        # raw, and nobody else can build there unless they buy one.
+        for _ in range(M.CLAIM_PLOTS):
+            q = Plot(id=world.new_id("L"), location=c.name, owner=agent.id)
+            world.plots[q.id] = q
+        world.government.collect(land)
     log.emit(world.sim_time, "land_claimed", actor=agent.id, location=c.name,
              significance=Significance.MEDIUM, x=c.x, y=c.y, road_m=c.road_m, cost=cost,
-             city=c.city)
+             land=land, city=c.city)
+    if world.outposts:
+        return True, (f"Claimed {c.name}: four plots for {land:.0f} and a dirt road of {d:.0f} m "
+                      f"for {road:.0f}. The land is yours to build on."), c
     return True, (f"Claimed {c.name}: a dirt road of {d:.0f} m from the nearest road, for {cost:.0f}. "
                   f"Its four plots are yours to buy or build on."), c
+
+
+# ---------------------------------------------------------------------------
+# SETTLING (outposts, 2026-10-27)
+# ---------------------------------------------------------------------------
+
+def settle(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
+           borrow: float = 0.0) -> tuple[bool, str, Claim | None]:
+    """Found your outpost: claim the land, put your home on all four plots and
+    move in. `borrow` is lent by the state, up to MAX_SETTLE_LOAN, and only
+    here -- it is how somebody starts somewhere dear."""
+    if agent.home:
+        return False, f"you have settled already, at {agent.home}", None
+    borrow = max(0.0, min(MAX_SETTLE_LOAN, round(float(borrow or 0.0), 2)))
+    q = quote(world, x, y)
+    if q["why_not"]:
+        return False, q["why_not"], None
+    if agent.denari + borrow < q["total"]:
+        return False, (f"this land and its road cost {q['total']:.0f}; you have "
+                       f"{agent.denari:.0f}" + ("" if borrow >= MAX_SETTLE_LOAN else
+                       f" -- borrow up to {MAX_SETTLE_LOAN:.0f} from the state to settle")), None
+    agent.denari += borrow
+    ok, msg, c = claim(world, log, agent, x, y, "home")
+    if not ok or c is None:
+        agent.denari -= borrow
+        return False, msg, None
+    agent.debt = round(agent.debt + borrow, 2)
+    for p in world.plots.values():
+        if p.location == c.name and p.owner == agent.id:
+            p.home = True
+            p.developed = True
+    agent.home = c.name
+    agent.location = c.name
+    agent.in_transit = None
+    agent.city = c.city
+    agent.settled = True
+    log.emit(world.sim_time, "settled", actor=agent.id, location=c.name,
+             significance=Significance.MEDIUM, x=c.x, y=c.y, cost=q["total"],
+             borrowed=borrow, city=c.city)
+    owe = f" You owe the state {agent.debt:.0f}." if agent.debt else ""
+    return True, f"You settled at {c.name}, {q['total']:.0f} for the land and its road.{owe}", c
+
+
+def sample_sites(world: "World", cx: float, cy: float, rng, n: int = 40,
+                 near: float = 150.0, far: float = 1100.0) -> list[tuple[float, float]]:
+    """Valid open land in a ring around (cx, cy), nearest first."""
+    out = []
+    for _ in range(n * 6):
+        if len(out) >= n:
+            break
+        r = rng.uniform(near, far)
+        a = rng.uniform(0.0, 2 * math.pi)
+        x, y = cx + r * math.cos(a), cy + r * math.sin(a)
+        if not check(world, x, y):
+            out.append((round(x, 1), round(y, 1)))
+    out.sort(key=lambda p: math.hypot(p[0] - cx, p[1] - cy))
+    return out
+
+
+def auto_settle(world: "World", log: "EventLog", agent: "Agent", city: str, rng) -> bool:
+    """Settle an agent near its roster city's anchor. Each picks how far out
+    it wants to be -- most a good way out where land is cheap, some close in,
+    borrowing to afford it -- and takes the nearest open land at that distance."""
+    ax, ay = anchors(world).get(city, next(iter(anchors(world).values())))
+    want = rng.choice([200.0, 350.0, 500.0, 650.0, 800.0, 950.0])
+    for attempt in range(4):
+        sites = sample_sites(world, ax, ay, rng, n=30, near=max(130.0, want - 150), far=want + 150)
+        for x, y in sites:
+            cost = quote(world, x, y)["total"]
+            keep = 80.0                     # enough to eat and start
+            borrow = max(0.0, cost + keep - agent.denari)
+            if borrow > MAX_SETTLE_LOAN:
+                continue
+            ok, _, _ = settle(world, log, agent, x, y, borrow=borrow)
+            if ok:
+                return True
+        want += 200.0
+    return False
+
+
+def ground_hint(world: "World", x: float, y: float) -> str:
+    """What the land here is good for, as the hologram and agents are told."""
+    from . import land as LAND
+    farm = LAND.affinity_at(world, x, y, "Farm")
+    mine = LAND.affinity_at(world, x, y, "Mining Operation")
+    if max(farm, mine) < 0.25:
+        return "plain ground"
+    if farm >= mine:
+        return "near water: good for farms" if farm >= 0.6 else "fair farmland"
+    return "near the mountains: good for mines" if mine >= 0.6 else "fair mining ground"
+
+
+def sites_near(world: "World", agent: "Agent", n: int = 5) -> list[dict]:
+    """Open land an agent could claim now: a few sites around its outpost and
+    its nearest anchor, the same for six game hours so a plan survives a turn.
+    Each site's id carries its position (`actions.claim_land`)."""
+    import random
+    home = place_xy(world, agent.home) if agent.home else None
+    city = agent.city or world.cities[0]
+    anchor = anchors(world).get(city)
+    rng = random.Random(f"{world.land_seed}:{agent.id}:{int(world.sim_hour // 6)}")
+    spots: list[tuple[float, float]] = []
+    if home:
+        spots += sample_sites(world, home[0], home[1], rng, n=3, near=90.0, far=450.0)
+    if anchor:
+        spots += sample_sites(world, anchor[0], anchor[1], rng, n=n - len(spots), near=150.0, far=700.0)
+    out = []
+    for x, y in spots[:n]:
+        q = quote(world, x, y)
+        if q["why_not"]:
+            continue
+        acity, ad = nearest_anchor(world, x, y)
+        row = {"site_id": f"S_{x:.0f}_{y:.0f}", "cost": q["total"],
+               "from_trading_post": f"{ad:.0f} m from {M.market_of(acity)}",
+               "ground": ground_hint(world, x, y)}
+        if home:
+            row["from_your_home"] = f"{math.hypot(x - home[0], y - home[1]):.0f} m"
+        out.append(row)
+    return out

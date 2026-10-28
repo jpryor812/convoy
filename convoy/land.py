@@ -80,11 +80,15 @@ def coords(world: "World", place: str) -> tuple[float, float] | None:
 
 def affinity(world: "World", place: str, kind: str) -> float:
     """0..1: how close this place is to what its kind of business wants."""
-    from . import layout as L
     xy = coords(world, place)
     if xy is None:
         return 0.0
-    x, y = xy
+    return affinity_at(world, xy[0], xy[1], kind)
+
+
+def affinity_at(world: "World", x: float, y: float, kind: str) -> float:
+    """`affinity` for a spot on the map rather than a place."""
+    from . import layout as L
     if kind == "Farm":
         d = abs(y - L.river_axis())
         for bx in L.border_rivers(list(world.cities)):
