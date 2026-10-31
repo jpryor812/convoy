@@ -335,6 +335,14 @@ def make_handler(host: Host):
                 out = g.wild_claim(body if isinstance(body, dict) else {})
                 host._map = None                      # the map must show it at once
                 return self._send(out)
+            if path == "/api/road":
+                g = host.game
+                if g is None:
+                    return self._send({"error": "no game running"}, 409)
+                out = g.road(body if isinstance(body, dict) else {})
+                if out.get("road"):
+                    host._map = None                  # the map must show it at once
+                return self._send(out)
             if path == "/api/pins":
                 g = host.game
                 if g is None:
@@ -453,7 +461,7 @@ th{color:var(--dim);font-weight:500}
     <label>Your partner is <select id="partner"><option value="f">a woman</option><option value="m">a man</option></select></label>
     <span class="est">You start with your partner, a son and a daughter.</span>
   </div>
-  <div class="row"><label><input type="checkbox" id="outposts" checked> <b>Outposts</b>: no towns yet -- everyone settles on open land around the state's three trading posts, and you choose your spot on the map</label></div>
+  <div class="row"><label><input type="checkbox" id="outposts" checked> <b>Outposts</b>: no towns yet -- everyone, you included, starts at an outpost of their own out on open land around the state's three trading posts</label></div>
   <div class="row" id="solo-row"><label><input type="checkbox" id="solo"> <b>A town of my own</b>: start alone in a new town beside the agents' towns (tick the agents' towns below)</label></div>
   <div class="row" id="settlers-row"><label>Settlers <input id="settlers" type="number" min="1" max="180" value="30"></label>
     <span class="est">AI agents looking for land, spread over the state's three trading posts. You choose your own spot on the map.</span></div>
@@ -577,7 +585,7 @@ function estimate(){
   const n = Object.values(s.cities).reduce((a, b) => a + b, 0);
   const town = (MENU.towns || []).filter(t => t.key === townKey(s)).pop();
   const ahead = s.head_start * n * 1.18 / (30 * 24);
-  $("head-note").textContent = !s.head_start ? (s.outposts ? "Everyone, you included, starts at once: the settlers choose their land as you do."
+  $("head-note").textContent = !s.head_start ? (s.outposts ? "Everyone, you included, starts at once, each at an outpost of their own."
     : "Everyone, you included, starts at once in an empty town.")
     : town && s.reuse_town ? `A town like this already ran (${town.made}, ${town.businesses} businesses by hour ${town.hour}): you start there at once, free.`
     : `The ${n} agents run ${s.head_start} game hours first, as fast as the AI answers -- usually several minutes -- for about $${ahead.toFixed(2)}. You then arrive as one more citizen.`;

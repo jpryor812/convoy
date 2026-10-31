@@ -21,6 +21,7 @@ Worlds without outposts see everything, exactly as before.
 from __future__ import annotations
 
 import math
+import zlib
 from typing import TYPE_CHECKING, Any
 
 from . import discovery as DS
@@ -130,6 +131,12 @@ def view_of(world: "World", viewer: "Agent", other: "Agent") -> dict[str, Any]:
                                              else round(max(0.0, (m.grown_at - now) / 3600), 1))}
                          for m in other.family]
     out["contact"] = sees(world, viewer, other, "contact")
+    # Their answer to what you asked and did not get (2026-10-30): no, or their
+    # price -- worked out now, so it follows anything you have traded since.
+    asked = {r.kind for r in world.share_requests.values()
+             if r.sender == viewer.id and r.target == other.id and r.status in ("priced", "declined")}
+    out["terms"] = {k: terms(world, other, viewer, k) for k in sorted(asked) if not sees(world, viewer, other, k)}
+    out["temper"] = temper(other) if other.id != world.human else ""
     return out
 
 
@@ -148,3 +155,113 @@ def hearers(world: "World", agent: "Agent") -> list[str]:
         if me and p and math.hypot(me[0] - p[0], me[1] - p[1]) <= DS.SIGHT_M:
             out.append(a.id)
     return out
+
+
+# ---------------------------------------------------------------------------
+# WHAT IT TAKES (designer request, 2026-10-30)
+# ---------------------------------------------------------------------------
+#
+# "Maybe it would be better if they're more deterministic in sharing info ...
+# and maybe sometimes require me to negotiate with the AIs, such as not
+# sharing their location, but I can offer them some resources to sell to them
+# at a good price for information." Settlers answer at once, by rule, not by
+# model: some things they share freely, some they will not, and for some they
+# name a price -- in coins, or in goods they need sold to them cheap.
+
+INFO_PRICE = {"contact": 20.0, "holdings": 25.0, "locations": 40.0}
+GUARDED_MARKUP = 1.5            # a guarded house asks half as much again
+TRADED_DISCOUNT = 0.5           # ... and anyone halves it for a trading partner
+DEAL_SHARE = 0.5                # goods for information are sold at half of book
+
+
+def temper(agent: "Agent") -> str:
+    """Open or guarded: one house in three keeps itself to itself. Fixed by
+    who they are, so the same settler answers the same way every time."""
+    return "guarded" if zlib.crc32(agent.id.encode()) % 3 == 0 else "open"
+
+
+def traded(world: "World", a: "Agent", b: "Agent") -> bool:
+    """Whether two houses have ever traded, either way round."""
+    mine = {a.id, *a.owned_businesses}
+    theirs = {b.id, *b.owned_businesses}
+    return any((t.seller in mine and t.buyer in theirs) or (t.seller in theirs and t.buyer in mine)
+               for t in world.market.transactions)
+
+
+def _marriageable(world: "World", agent: "Agent") -> bool:
+    soon = world.sim_time + 48 * 3600.0
+    return any(m.role != "partner" and not m.spouse and (m.adult or (m.grown_at and m.grown_at <= soon))
+               for m in agent.family)
+
+
+def wants(world: "World", agent: "Agent") -> list[str]:
+    """Goods a settler would take cheap: what its businesses use, then meals."""
+    from . import data as D
+    out: list[str] = []
+    for b in agent.owned_businesses:
+        biz = world.businesses.get(b)
+        if biz is None or biz.closed:
+            continue
+        for out_item in [biz.active_production] if biz.active_production else []:
+            r = D.REFINING_RECIPES.get(out_item) or D.CRAFTING_RECIPES.get(out_item)
+            if r:
+                out += [i for i in r.inputs if i not in out]
+    return out + [m for m in ("Meal",) if m not in out]
+
+
+def holding(world: "World", agent: "Agent", item: str) -> int:
+    """How many of `item` a settler has: carried, and in its businesses."""
+    n = agent.inventory.get(item, 0)
+    for b in agent.owned_businesses:
+        biz = world.businesses.get(b)
+        if biz is not None and not biz.closed:
+            n += biz.inventory.get(item, 0)
+    return n
+
+
+def terms(world: "World", holder: "Agent", asker: "Agent", kind: str) -> dict[str, Any]:
+    """What `holder` wants before sharing `kind` with `asker`: {"free": why},
+    {"no": why}, or {"price": coins, "goods": a cheap sale it would take
+    instead (or None), "why": ...}."""
+    from . import data as D
+    if kind in asker.shared.get(holder.id, []):
+        return {"free": "you shared yours"}
+    if kind == "family":
+        return ({"free": "they have someone to marry"} if _marriageable(world, holder)
+                else {"no": "they have nobody of an age to marry yet"})
+    if kind in ("standing", "trade"):
+        return {"free": "nothing to hide"}
+    guarded = temper(holder) == "guarded"
+    partners = traded(world, holder, asker)
+    if kind == "contact" and (not guarded or partners):
+        return {"free": "glad to keep in touch"}
+    if kind == "holdings" and not guarded:
+        return {"free": "nothing to hide"}
+    price = INFO_PRICE.get(kind, 20.0) * (GUARDED_MARKUP if guarded else 1.0)
+    if partners:
+        price *= TRADED_DISCOUNT
+    price = float(round(price))
+    goods = None
+    have = [(i, holding(world, asker, i)) for i in wants(world, holder) if D.base_price(i) > 0]
+    pick = max(have, key=lambda x: x[1] * D.base_price(x[0]), default=None)
+    if pick:
+        item = pick[0]
+        book = D.base_price(item)
+        unit = round(book * DEAL_SHARE, 2)
+        qty = max(1, math.ceil(price / max(0.01, book - unit)))
+        goods = {"item": item, "qty": qty, "unit": unit, "book": round(book, 2), "you_have": pick[1]}
+    why = ("they keep to themselves" if guarded else "they would want something for it") + \
+          (", though less from a trading partner" if partners else "")
+    return {"price": price, "goods": goods, "why": why}
+
+
+def describe_terms(holder: "Agent", kind: str, t: dict[str, Any]) -> str:
+    if "free" in t:
+        return f"{holder.name} shares their {kind} freely"
+    if "no" in t:
+        return f"{holder.name} will not share their {kind}: {t['no']}"
+    g = t.get("goods")
+    deal = (f", or sell them {g['qty']} {g['item']} at {g['unit']:.2f} each (book {g['book']:.2f})"
+            if g else "")
+    return (f"{holder.name} will share their {kind} for {t['price']:.0f} coins{deal} -- {t['why']}. "
+            f"offer_for_info to pay")

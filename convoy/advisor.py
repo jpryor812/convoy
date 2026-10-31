@@ -347,12 +347,6 @@ def advice(world: "World", log: "EventLog", me: "Agent", history: History) -> li
     mine = [world.businesses[b] for b in me.owned_businesses
             if b in world.businesses and not world.businesses[b].closed]
 
-    # 0. OUTPOSTS (2026-10-27): before anything, somewhere to live.
-    if world.outposts and not me.home:
-        return [_move("Choose your land and settle",
-                      "Your first home is free. Who lives out there is hidden until you find them. "
-                      "The clock starts when you settle.", "Choose land", "place", type="Your home")]
-
     # 1. FOOD. Nothing else matters if you starve.
     if world.outposts and (me.sustenance_stage != "Normal" or fed_left < 4) \
             and not world.businesses_at(here, "Tavern / Inn"):
@@ -420,6 +414,20 @@ def advice(world: "World", log: "EventLog", me: "Agent", history: History) -> li
                                  f"Put {m.name} to work", "act", action="assign_family",
                                  args={"member_id": m.id, "business_id": b.id}))
                 break
+
+    # 2b. A YARD WITH NO ROAD (outposts, 2026-10-30): goods pile up where the
+    # state's convoy cannot come. Say so once there is something to sell.
+    if world.outposts:
+        from . import claims as CL
+        stuck = [b for b in mine if b.location in world.claims and not CL.connected(world, b.location)
+                 and any(q > 0 for q in b.inventory.values())]
+        if stuck:
+            b = stuck[0]
+            plan = CL.road_plan(world, b.location)
+            if not plan["why_not"]:
+                out.append(_move(f"Build a road from {b.location} ({plan['metres']} m, {plan['cost']:.0f})",
+                                 "Your goods wait there: the state's convoy only collects by road. "
+                                 "Or carry them to a trading post yourself.", "Build it", "place", type="Road"))
 
     # 2e. A DELIVERY UNDER WAY: load it, then follow the compass.
     d = me.delivery
@@ -561,11 +569,11 @@ def advice(world: "World", log: "EventLog", me: "Agent", history: History) -> li
             # On open land near home: the land is part of the price.
             from . import claims as CL
             at = CL.place_xy(world, me.home) if me.home else None
-            land = round(CL.land_price(world, *at) * M.CLAIM_PLOTS + 20) if at else 60
+            land = round(CL.land_price(world, *at) * M.CLAIM_PLOTS) if at else 40
             need = spec.startup_cost + land
             if me.denari >= need:
                 out.append(_move(f"Found a {wanted} on open land near your home (about {need:.0f})",
-                                 f"{spec.startup_cost:.0f} for the {wanted} and about {land:.0f} for its land and road.",
+                                 f"{spec.startup_cost:.0f} for the {wanted} and about {land:.0f} for its land; a road to it is extra.",
                                  "Place it", "place", type=wanted))
             else:
                 out.append(_move(f"You need about {need - me.denari:.0f} more for a {wanted}",
@@ -655,8 +663,6 @@ def goals(world: "World", log: "EventLog", me: "Agent") -> list[dict[str, Any]]:
         # OUTPOSTS (2026-10-27): the arc starts with land and food.
         fed = ate or any(e.type == "meal_ordered" and e.actor == me.id for e in log.events)
         return [
-            {"goal": "Choose your land and settle", "done": bool(me.home),
-             "how": "Move your home over open grass and click. Your first home is free."},
             {"goal": "Get fed", "done": fed,
              "how": "Food comes from taverns: walk to a trading post's tavern, or tap Food and have a meal brought."},
             {"goal": "Found a farm or a mine", "done": extraction,
@@ -667,8 +673,10 @@ def goals(world: "World", log: "EventLog", me: "Agent") -> list[dict[str, Any]]:
              "how": "Open the business and choose what it makes; rich ground shows at the first harvest."},
             {"goal": "Find a neighbour", "done": bool(me.known),
              "how": "Ride out along the roads and spurs: anyone whose land you pass within sight, you find."},
+            {"goal": "Build a road to it", "done": any(c.owner == me.id and c.road for c in world.claims.values()),
+             "how": "Build menu, Road: click your land, then a road. The state's convoy only collects by road."},
             {"goal": "Sell your first goods", "done": sold,
-             "how": "Market, Sell: the state's convoy always collects; people you have found may pay more."},
+             "how": "Market, Sell: the state's convoy collects where there is a road; people you have found may pay more."},
             {"goal": "Start learning something", "done": studied,
              "how": "Know-how (light bulb): your first study lands in six hours."},
         ]

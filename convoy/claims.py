@@ -29,8 +29,11 @@ if TYPE_CHECKING:
 
 ROAD_COST_PER_M = 0.12         # coins per metre of dirt road
 TRACK_SPEED = 4.0              # metres a second along a track, at Medium
+OFFROAD_SPEED = 2.0            # ... and across open country, with no road (2026-10-30)
+ROAD_SNAP_M = 60.0             # a road you build must end this near a road or a claim
 MIN_FROM_PLACE = 110.0         # metres from a named place's middle
 MIN_FROM_CLAIM = 85.0          # two squares: neighbouring claims may touch, not overlap
+OUTPOSTS_FROM_PLACE = 45.0     # with outposts, only a place's own middle is off limits
 MAX_ROAD_M = 1200.0
 # FIRST HOMES (2026-10-28): free, and far apart -- "far enough that you can
 # see some in the distance, but not close enough that you can see many clear
@@ -84,11 +87,18 @@ def check(world: "World", x: float, y: float, home: bool = False) -> str:
     for bx in L.border_rivers(cities):
         if abs(x - bx) < L.BORDER_RIVER_HALF_WIDTH + 30:
             return "that is in the river"
-    for m in L.mountains(cities):
+    # NO RESTRICTIONS ON WHERE (designer request, 2026-10-30): with outposts
+    # you may build on the mountainside, close by a named place and as far
+    # from a road as you like. Only what is physically there stops you.
+    # First homes, put down for people, still keep off the mountains and
+    # within reach of a road.
+    free = world.outposts and not home
+    for m in ([] if free else L.mountains(cities)):
         if math.hypot(x - m["x"], y - m["y"]) < m["r"] + 25:
             return "that is on the mountainside"
+    near_place = OUTPOSTS_FROM_PLACE if world.outposts else MIN_FROM_PLACE
     for p in places.values():
-        if math.hypot(x - p.center.x, y - p.center.y) < MIN_FROM_PLACE:
+        if math.hypot(x - p.center.x, y - p.center.y) < near_place:
             return f"that is part of {p.name}"
     for c in world.claims.values():
         if math.hypot(x - c.x, y - c.y) < MIN_FROM_CLAIM:
@@ -97,7 +107,7 @@ def check(world: "World", x: float, y: float, home: bool = False) -> str:
     if d < 30:
         return "that is on a road"
     reach = HOME_MAX_ROAD_M if home else MAX_ROAD_M
-    if d > reach:
+    if d > reach and not free:
         return f"too far from any road ({d:.0f} m; at most {reach:.0f})"
     if home and world.outposts:
         for a in world.agents.values():
@@ -178,9 +188,11 @@ def quote(world: "World", x: float, y: float, home: bool = False) -> dict:
     d, rx, ry = nearest_road(world, x, y)
     plot = land_price(world, x, y)
     road = round(d * ROAD_COST_PER_M, 2)
-    return {"road_m": round(d), "road_cost": road, "from": [rx, ry],
+    # With outposts the road is not part of a claim: it is built after, if at all.
+    laid = 0.0 if world.outposts else road
+    return {"road_m": round(d), "road_cost": road, "from": [rx, ry], "road_included": not world.outposts,
             "plot_price": plot, "land_cost": round(plot * M.CLAIM_PLOTS, 2),
-            "total": round(road + plot * M.CLAIM_PLOTS, 2),
+            "total": round(laid + plot * M.CLAIM_PLOTS, 2),
             "why_not": check(world, x, y, home=home)}
 
 
@@ -209,7 +221,11 @@ def claim(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
     if why:
         return False, why, None
     d, rx, ry = nearest_road(world, x, y)
-    road = round(d * ROAD_COST_PER_M, 2)
+    # BUILT ROADS (designer request, 2026-10-30): with outposts a claim comes
+    # with no road. You lay one yourself, and pay for it, with build_road --
+    # or do without, and go cross-country at half the pace.
+    bare = world.outposts
+    road = 0.0 if bare else round(d * ROAD_COST_PER_M, 2)
     land = round(land_price(world, x, y) * M.CLAIM_PLOTS, 2)
     if free:
         road = land = 0.0
@@ -220,10 +236,12 @@ def claim(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
         return False, f"{what}; you have {agent.denari:.0f}", None
     junction = _nearest_junction(world, x, y)
     jp = L.places_cached(list(world.cities))[junction].center
-    seconds = (math.hypot(x - jp.x, y - jp.y)) / TRACK_SPEED
+    seconds = (math.hypot(x - jp.x, y - jp.y)) / (OFFROAD_SPEED if bare else TRACK_SPEED)
     c = Claim(name=_name(world, agent, purpose), city=M.city_of(junction), junction=junction,
-              x=round(x, 1), y=round(y, 1), road=[[round(rx, 1), round(ry, 1)], [round(x, 1), round(y, 1)]],
-              road_m=round(d, 1), seconds=round(seconds, 1), owner=agent.id, created_at=world.sim_time)
+              x=round(x, 1), y=round(y, 1),
+              road=[] if bare else [[round(rx, 1), round(ry, 1)], [round(x, 1), round(y, 1)]],
+              road_m=0.0 if bare else round(d, 1), seconds=round(seconds, 1), owner=agent.id,
+              created_at=world.sim_time, link="" if bare else "road")
     agent.denari -= cost
     world.claims[c.name] = c
     M.register_claims(world.claims.values())
@@ -239,11 +257,140 @@ def claim(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
              significance=Significance.MEDIUM, x=c.x, y=c.y, road_m=c.road_m, cost=cost,
              land=land, city=c.city)
     if world.outposts:
-        return True, (f"Claimed {c.name}: four plots for {land:.0f} and a dirt road of {d:.0f} m "
-                      f"for {road:.0f}. The land is yours: travel_to {c.name} and "
-                      f"start_business there."), c
+        return True, (f"Claimed {c.name}: four plots for {land:.0f}. The land is yours: travel_to "
+                      f"{c.name} and start_business there. It has no road: the nearest is {d:.0f} m "
+                      f"off (build_road, {d * ROAD_COST_PER_M:.0f}) -- the state's convoy collects "
+                      f"only over a road."), c
     return True, (f"Claimed {c.name}: a dirt road of {d:.0f} m from the nearest road, for {cost:.0f}. "
                   f"Its four plots are yours to buy or build on."), c
+
+
+# ---------------------------------------------------------------------------
+# BUILT ROADS (outposts, designer request 2026-10-30)
+# ---------------------------------------------------------------------------
+#
+# "You have to pay and manually build roads to connect farms and homes, and
+# you don't have to if you don't want, but ... it's required for government
+# people to come get your food that there's a road to it connected to a main
+# road." A claim's road runs straight from it to a point on a road, or to
+# another claim; it is CONNECTED when that chain reaches the road network.
+# Travel to a claim goes at a track's pace with a road, half that without.
+
+
+def _chain(world: "World", place: str) -> set[str]:
+    """Every claim a claim's road leads through, itself included."""
+    out: set[str] = set()
+    while place in world.claims and place not in out:
+        out.add(place)
+        place = world.claims[place].link
+    return out
+
+
+def _line_at(world: "World", x: float, y: float, start: str = "",
+             only_connected: bool = False) -> tuple[float, float, float, str]:
+    """(distance, x, y, what) of the nearest point on a road: `what` is
+    "road" for the network, or the name of the claim whose road it is. A road
+    from `start` is building out of it: roads that lead back there are left
+    out, and with `only_connected` so is any not yet joined to the network."""
+    cities = list(world.cities)
+    lines = [([(p.x, p.y) for p in road], "road") for road in L.main_roads(cities)]
+    lines += [([(p.x, p.y) for p in road], "road") for road in L.intercity_roads(cities)]
+    lines += [([(p.x, p.y) for p in pl.path], "road") for pl in L.places_cached(cities).values() if pl.path]
+    lines += [([tuple(pt) for pt in c.road], c.name) for c in world.claims.values()
+              if c.road and start not in _chain(world, c.name)
+              and (not only_connected or connected(world, c.name))]
+    best = (float("inf"), x, y, "road")
+    for line, what in lines:
+        for a, b in zip(line, line[1:]):
+            d, qx, qy = _nearest_on(x, y, a, b)
+            if d < best[0]:
+                best = (d, qx, qy, what)
+    return best
+
+
+def connected(world: "World", place: str) -> bool:
+    """Whether a place is joined to the road network by road. Every named
+    place is; a claim is if its road reaches the network, or a claim that does.
+    Without outposts every claim came with its road."""
+    seen: set[str] = set()
+    while place in world.claims and place not in seen:
+        seen.add(place)
+        c = world.claims[place]
+        if not world.outposts or c.link == "road" or (not c.link and c.road):
+            return True
+        if not c.link:
+            return False
+        place = c.link
+    return place not in world.claims and place not in seen
+
+
+def _reprice(world: "World", c: "Claim") -> None:
+    """Travel time to a claim: a track's pace by road, half that without."""
+    jp = L.places_cached(list(world.cities))[c.junction].center
+    speed = TRACK_SPEED if connected(world, c.name) else OFFROAD_SPEED
+    c.seconds = round(math.hypot(c.x - jp.x, c.y - jp.y) / speed, 1)
+
+
+def road_plan(world: "World", place: str, x: float | None = None, y: float | None = None,
+              to: str = "") -> dict:
+    """Where a road from claim `place` would go and what it costs: to claim
+    `to`; else to the road or claim nearest (x, y); else to the nearest road."""
+    c = world.claims.get(place)
+    if c is None:
+        return {"why_not": f"{place} is not land you can build a road from"}
+    if c.road and c.link:
+        return {"why_not": f"{place} has a road already"}
+    if to:
+        o = world.claims.get(to)
+        if o is None or o.name == place:
+            return {"why_not": f"no claim called {to}"}
+        ex, ey, link = o.x, o.y, o.name
+    elif x is not None and y is not None:
+        near = min(world.claims.values(), key=lambda o: math.hypot(o.x - x, o.y - y))
+        if near.name != place and math.hypot(near.x - x, near.y - y) <= MIN_FROM_CLAIM:
+            ex, ey, link = near.x, near.y, near.name
+        else:
+            d, ex, ey, link = _line_at(world, x, y, start=place)
+            if d > ROAD_SNAP_M:
+                return {"why_not": "a road must end on a road or on a claim"}
+    else:
+        _, ex, ey, link = _line_at(world, c.x, c.y, start=place, only_connected=True)
+    if link != "road" and place in _chain(world, link):
+        return {"why_not": f"{link}'s road leads back here"}
+    metres = math.hypot(ex - c.x, ey - c.y)
+    if metres > HOME_MAX_ROAD_M:
+        return {"why_not": f"too long ({metres:.0f} m; at most {HOME_MAX_ROAD_M:.0f})"}
+    joins = "the road network" if link == "road" else link
+    return {"from": [c.x, c.y], "to": [round(ex, 1), round(ey, 1)], "link": link, "joins": joins,
+            "metres": round(metres), "cost": round(metres * ROAD_COST_PER_M, 2),
+            "connects": link == "road" or connected(world, link), "why_not": ""}
+
+
+def build_road(world: "World", log: "EventLog", agent: "Agent", place: str,
+               x: float | None = None, y: float | None = None, to: str = "") -> tuple[bool, str]:
+    """Lay and pay for a dirt road from your claim `place` (see road_plan)."""
+    c = world.claims.get(place)
+    if c is None or c.owner != agent.id:
+        return False, f"{place} is not your land"
+    plan = road_plan(world, place, x, y, to)
+    if plan["why_not"]:
+        return False, plan["why_not"]
+    if agent.denari < plan["cost"]:
+        return False, f"a road of {plan['metres']} m costs {plan['cost']:.0f}; you have {agent.denari:.0f}"
+    agent.denari -= plan["cost"]
+    world.government.collect(plan["cost"])
+    c.road = [plan["to"], [c.x, c.y]]
+    c.road_m = float(plan["metres"])
+    c.link = plan["link"]
+    for o in world.claims.values():                 # anything joined through it speeds up too
+        _reprice(world, o)
+    M.register_claims(world.claims.values())
+    log.emit(world.sim_time, "road_built", actor=agent.id, location=place,
+             significance=Significance.MEDIUM, metres=plan["metres"], cost=plan["cost"],
+             joins=plan["joins"], road=c.road)
+    tail = ("The state's convoy can come for your goods now." if connected(world, place)
+            else f"{plan['joins']} has no road to the network yet, so neither does this.")
+    return True, f"Built a dirt road of {plan['metres']} m from {place} to {plan['joins']} for {plan['cost']:.0f}. {tail}"
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +431,8 @@ def settle(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
     log.emit(world.sim_time, "settled", actor=agent.id, location=c.name,
              significance=Significance.MEDIUM, x=c.x, y=c.y, borrowed=borrow, city=c.city)
     owe = f" You borrowed {borrow:.0f} from the state." if borrow else ""
+    if world.outposts:
+        return True, f"You settled at {c.name}. Your first home is free; it has no road yet.{owe}", c
     return True, f"You settled at {c.name}. Your first home and its road are free.{owe}", c
 
 
@@ -332,6 +481,37 @@ def auto_settle(world: "World", log: "EventLog", agent: "Agent", city: str, rng)
     finally:
         HOME_SPACING_M = spacing
     return False
+
+
+# YOUR START (designer request, 2026-10-30): "place me somewhere random on
+# the map. Somewhat near a road, but not a visible road" -- and not by a
+# trading post. Far enough off a road that it is out of sight from home, near
+# enough to find by riding; well away from the state's taverns.
+START_ROAD_M = (250.0, 700.0)
+START_FROM_ANCHOR_M = 900.0
+
+
+def random_home(world: "World", log: "EventLog", agent: "Agent", rng) -> bool:
+    """Settle `agent` at a random spot on the map, off the roads and away
+    from every trading post. Falls back to `auto_settle` if none is found."""
+    minx, miny, maxx, maxy = L.bounds(L.places_cached(list(world.cities)))
+    edge = L.MOUNTAIN_OFFSET - 150.0
+    # Away from every state site -- its tavern, farm, mine and refinery.
+    marks = list(anchors(world).values()) + [
+        xy for xy in (place_xy(world, b.location) for b in world.businesses.values()
+                      if b.is_government and not b.closed) if xy]
+    for _ in range(600):
+        x = rng.uniform(minx - edge, maxx + edge)
+        y = rng.uniform(miny - edge, maxy + edge)
+        if any(math.hypot(x - ax, y - ay) < START_FROM_ANCHOR_M for ax, ay in marks):
+            continue
+        d, _, _ = nearest_road(world, x, y)
+        if not START_ROAD_M[0] <= d <= START_ROAD_M[1]:
+            continue
+        ok, _, _ = settle(world, log, agent, round(x, 1), round(y, 1))
+        if ok:
+            return True
+    return auto_settle(world, log, agent, agent.city or world.cities[0], rng)
 
 
 def ground_hint(world: "World", x: float, y: float) -> str:

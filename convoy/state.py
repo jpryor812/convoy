@@ -276,6 +276,12 @@ class Agent:
     # Owed to the state: borrowed to settle somewhere dear. Grows daily and is
     # paid down from what your businesses earn. See `claims.settle`.
     debt: float = 0.0
+    # When a gang last came for one of this house's buildings (robbery.py).
+    robbed_at: float = -1e12
+    # Goods sold to the state on game day `state_sold_day` (2026-10-30): it
+    # buys at most `actions.STATE_DAILY_CAP` a day from each house.
+    state_sold_day: int = -1
+    state_sold_qty: int = 0
     # The settlers this one has found (agent ids). With outposts you can only
     # trade with people you have met. See `convoy/discovery.py`.
     known: list[str] = field(default_factory=list)
@@ -1001,6 +1007,9 @@ class Claim:
     seconds: float                   # one way to the junction at Medium
     owner: str                       # who paid for it
     created_at: float = 0.0
+    # BUILT ROADS (outposts, 2026-10-30): what its road joins -- "" none yet,
+    # "road" the road network, or another claim's name (see claims.connected).
+    link: str = ""
 
 
 @dataclass
@@ -1031,7 +1040,9 @@ class ShareRequest:
     target: str
     kind: str
     created_at: float
-    status: str = "open"             # open | accepted | declined
+    status: str = "open"             # open | accepted | declined | priced
+    # What they asked for it, when they named a price (social.terms, 2026-10-30).
+    terms: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -1085,6 +1096,24 @@ class BuyOrder:
     courier_fee: float = 0.0         # for the whole order; a fill carries its share
     escrow: float = 0.0              # held now: goods + carriage still unspent
     status: str = "open"             # open | filled | cancelled
+
+
+@dataclass
+class Robbery:
+    """A bandit gang coming for a building, then robbing it for an hour
+    (designer request, 2026-10-30). See `convoy/robbery.py`."""
+    id: str
+    business: str
+    owner: str
+    place: str
+    gang: list[str]                  # the bandits' weapons, one each
+    hideout: list[float]             # [x, y] map metres they set out from
+    set_out: float                   # sim seconds
+    sighted_at: float                # when the owner hears of it
+    arrives_at: float
+    ends_at: float                   # the hour of looting is up
+    status: str = "coming"           # coming | looting | robbed | beaten
+    outcome: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -1471,6 +1500,7 @@ class World:
     consignments: dict[str, "Consignment"] = field(default_factory=dict)
     escort_postings: dict[str, "EscortPosting"] = field(default_factory=dict)
     raids: dict[str, "Raid"] = field(default_factory=dict)
+    robberies: dict[str, "Robbery"] = field(default_factory=dict)
     buy_orders: dict[str, "BuyOrder"] = field(default_factory=dict)
     marriage_offers: dict[str, "MarriageOffer"] = field(default_factory=dict)
     claims: dict[str, "Claim"] = field(default_factory=dict)
@@ -1484,6 +1514,9 @@ class World:
     # land; the state's sites in each market are the anchors that feed, hire
     # and buy, and selling to the state calls its convoy. See GAME_MODES.md.
     outposts: bool = False
+    # The player's agent id, so the rules that answer for everyone else leave
+    # questions to the player to the player (social.terms, 2026-10-30).
+    human: str = ""
     # Faceless dice-roll bandits on every road (`engine._resolve_banditry`).
     # Off for runs since 2026-10-16: robbery is done by people (`Raid`).
     npc_bandits: bool = True

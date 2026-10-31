@@ -104,6 +104,7 @@ POSE_FOR_ROLE = {
     "Stablehand": "cloaked",
     "Laborer": "villager",
     "Researcher": "hooded",
+    "Lookout": "armed",              # a security firm's watch (2026-10-30)
 }
 
 
@@ -399,7 +400,8 @@ ACTION_FAMILY = {
         "upgrade_site_storage",
         "develop_plot",     # raw ground into floor space -- construction
         "build_defense", "start_project",
-        "claim_land",       # outposts: new land, with its road
+        "claim_land",       # outposts: new land
+        "build_road",       # outposts: a dirt road to it (2026-10-30)
 
     ),
     "chat": (
@@ -407,7 +409,7 @@ ACTION_FAMILY = {
         "create_guild", "invite_to_guild", "accept_guild_invite", "leave_guild",
         "remove_guild_member",
         "propose_marriage", "accept_marriage", "decline_marriage",
-        "say_hi", "share_info", "ask_info", "answer_request",
+        "say_hi", "share_info", "ask_info", "answer_request", "offer_for_info",
         "make_group", "invite_to_group", "post_group_chat",
     ),
     "food": ("eat_best_available", "feed_family", "order_meal"),

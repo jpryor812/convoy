@@ -111,6 +111,91 @@ stretched thin. It pairs with the planned map rings (safe valley, contested
 frontier, lawless wilderness) and needs offline protection rules for online
 play.
 
+## Robbing buildings (design, 2026-10-30)
+
+Planned with the designer; builds on "the cost of spreading out" above.
+Decisions: **bandit gangs and AI settlers both rob**, from the start; they
+take **yard goods and the purse**; **all four defences**; how often **follows
+money and distance**.
+
+### Who robs
+
+- **Bandit gangs.** Two to four bandits leave a hideout out in the hills,
+  past the settled land, and walk to a target. Their strength comes from the
+  weapons they carry (Bat to Bronze Sword), as raiders' does on the road. You
+  can see them coming once that ground is explored (and lookouts see further).
+- **AI settlers.** A new action, `raid_building`, lets a settler rob a
+  building they have found, standing at it. Others can join, as with road
+  raids. A beaten raider may die, as on the road.
+- Both rob AI houses too, so the game is the same for everyone.
+
+### What is taken
+
+- **Goods in the building's yard and cash in its purse.** Win and nothing is
+  lost; lose and **30-60%** of each goes, split among the robbers. The coins
+  you carry and your home are never taken, so a raid hurts but never ends a
+  house.
+
+### The robbery takes an hour
+
+1. **Sighted.** You get a red alert the moment the gang is seen, with the
+   building on your compass and minimap. Lookouts within 1.5 km see them
+   about half an hour before they arrive; otherwise you hear when they reach
+   the door.
+2. **Looting**, one game hour, with a countdown on the alert.
+3. **Resolved** at the end of the hour, or as soon as there is a fight.
+
+The alert offers: **Ride there**, **Send guards** (with the cost and how
+long they take), or **Let it go**.
+
+### Defences
+
+- **Ride there and fight.** At the building it is the bat-and-block fight
+  (R to swing, F to block) against the gang. Win and they flee, sometimes
+  dropping their purse; lose and they take their share.
+- **Lookouts defend nearby.** Lookouts on watch at your security firm guard
+  your buildings within 1.5 km as they guard your loads: they warn you early
+  and, if you are not there, fight the gang themselves.
+- **Guard posts and catapults** on the site weaken the gang (half or three
+  quarters strength), as they weaken raiders on the road.
+- **Hired guards ride out.** From a security firm, pay guards to ride to a
+  building under attack. They arrive after a travel time set by distance and
+  fight if they arrive within the hour.
+- **When you are not there**, the fight is worked out as road raids are: the
+  gang's strength (after guard posts) against the defenders (lookouts in
+  range, guards who arrived). A ratio, so neither side is ever certain.
+
+### How often, and to whom
+
+- **Bandits follow money and distance.** The chance a building is targeted
+  grows with what is in its yard and purse, and with how far it is from your
+  other buildings and from neighbours. Lookouts in range make it much rarer.
+- Rough targets: a rich, remote farm about once every day or two; a modest
+  farm near others about once a week; one with two lookouts on watch, rarely.
+- **Protections:** never in a house's first six game hours (from day 1
+  originally; brought forward 2026-10-30 so a play session meets them); never while paused; at
+  most one robbery per house every 12 game hours; one at a time per house.
+  (Online play will need offline protection; noted for later.)
+- AI owners respond by rule, not by model: they send guards if they have a
+  firm and ride over if they are within reach, so it stays predictable.
+
+### Build order
+
+1. **Gangs, loot and the alert** (built 2026-10-30, `convoy/robbery.py`): hideouts, targeting by money and distance,
+   the hour-long robbery, worked out with guard posts and lookouts. The
+   alert in the page, and gangs seen walking in.
+2. **Ride there and fight**, reusing the camp fight at the building.
+3. **Hired guards** sent from a security firm.
+4. **AI settlers rob buildings** (`raid_building`, joining), and AI owners'
+   rules for answering.
+5. A tuning run: how often, how much, and whether compact houses fare better.
+
+### Later
+
+- Raiding a gang's hideout to get your goods back (it ties into the bounty
+  camps).
+- Danger by ring: more and stronger gangs further out.
+
 ## The game: five pillars (design, 2026-10-28)
 
 What the game is about, and what everything else serves. Five pillars, each
@@ -425,8 +510,8 @@ brake.
 
 ### Later
 
-- **Robbing buildings**, once combat is settled (see "the cost of spreading
-  out").
+- **Robbing buildings**: designed, see "Robbing buildings (design,
+  2026-10-30)".
 
 ## Later: the river rises (designer note, 2026-10-27)
 

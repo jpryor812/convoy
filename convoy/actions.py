@@ -692,7 +692,17 @@ def buy_from_business(
     )
     if tax:
         log.emit(world.sim_time, "tax_collected", actor=agent.id, kind="sales", amount=round(tax, 2))
-    return True, f"bought {qty}x{item} for {subtotal:.2f}"
+    # Bought to use (designer play-test, 2026-10-30: "I couldn't figure out how
+    # to equip the bronze dagger I bought"): a better weapon, or armour for an
+    # empty slot or a better piece, is put on at once.
+    worn = ""
+    if item in D.WEAPONS and D.WEAPONS[item].damage > D.WEAPONS.get(agent.equipped_weapon, D.WEAPONS["Bat"]).damage:
+        worn = equip(world, log, agent, item)[1]
+    elif item in D.ARMOR:
+        now = agent.equipped_armor.get(D.ARMOR[item].slot)
+        if not now or D.ARMOR[item].damage_reduction > D.ARMOR[now].damage_reduction:
+            worn = equip(world, log, agent, item)[1]
+    return True, f"bought {qty}x{item} for {subtotal:.2f}" + (f"; {worn}" if worn else "")
 
 
 def sell_to_business(
@@ -718,6 +728,12 @@ def sell_to_business(
             f"anything if you just want rid of it."
         )
 
+    if biz.is_government:
+        room = state_room(world, agent)
+        if room <= 0:
+            return False, _state_full(world)
+        qty = min(qty, room)
+        _state_took(world, agent, qty)
     unit = biz.buy_price_for(item)
     proceeds = unit * qty
     if not biz.is_government:
@@ -768,7 +784,11 @@ def start_business(
     # EVERY business stands on land now. Mines and farms are worked ground and
     # still only exist down a spur; everything else belongs on the main road.
     # What changed is that the main road is no longer exempt from land at all.
-    if type in world_map.PLOT_CONSUMING_BUSINESSES:
+    # With outposts anything goes anywhere (designer request, 2026-10-30:
+    # "remove any restrictions on where I can build things").
+    if world.outposts:
+        pass
+    elif type in world_map.PLOT_CONSUMING_BUSINESSES:
         if not D.is_spur(agent.location):
             return False, f"a {type} can only be founded down a spur road"
     elif D.is_spur(agent.location) and not world_map.is_claim(agent.location):
@@ -851,8 +871,9 @@ def start_business(
     # before they could set production or hire.
     return True, (
         f"founded {biz.name} (id {biz.id}) on {plots} plots -- room for "
-        f"{E.employee_slots(world, biz)} employees. Use {biz.id} to set its "
-        f"production, deposit into it, post jobs or hire."
+        f"{E.employee_slots(world, biz)} employees. Use {biz.id} to "
+        + ("set its production, deposit into it, post jobs or hire." if biz.spec.outputs else
+           "hire Lookouts or assign_family there: it makes nothing, it keeps a watch.")
     )
 
 
@@ -1066,7 +1087,7 @@ def upgrade_site_storage(
     biz = world.businesses.get(business_id)
     if not biz or biz.closed or biz.owner != agent.id:
         return False, "not your business"
-    if biz.type in D.STORE_BUSINESS_TYPES:
+    if biz.type in D.STORE_BUSINESS_TYPES and not world.outposts:
         return False, (
             f"a {biz.type} stores on its FLOOR, not upward -- buy and develop "
             f"more land to hold more stock"
@@ -1086,8 +1107,8 @@ def upgrade_site_storage(
         capacity=E.business_storage_capacity(world, biz),
     )
     return True, (
-        f"{biz.name} storehouse raised to tier {biz.storage_tier} -- holds "
-        f"{E.business_storage_capacity(world, biz)}"
+        f"added floor {biz.storage_tier} to {biz.name} -- it holds "
+        f"{E.business_storage_capacity(world, biz)} now"
     )
 
 
@@ -1791,11 +1812,28 @@ def buy_property(world: World, log: EventLog, agent: Agent) -> Result:
 # SURVIVAL / SUSTENANCE
 # ---------------------------------------------------------------------------
 
+FULL_STOMACH_H = 24.0          # meals add up to this many hours fed (a long bread, its own)
+
+
+def _full(agent: Agent, meal: str) -> str:
+    """Why eating `meal` now would be wasted, or "". Never when hungry."""
+    if agent.sustenance_stage != "Normal":
+        return ""
+    left = max(0.0, agent.last_meal_window - agent.hours_since_last_meal)
+    if left >= max(FULL_STOMACH_H, E.meal_window(meal)) - 0.5:
+        return f"you are full ({left:.0f}h fed): eat when you have room"
+    return ""
+
+
 def _apply_meal(world: World, log: EventLog, agent: Agent, meal: str, window: float,
                 cost: float, source: str) -> Result:
     # A meal never shortens how long you are fed: eating a small one on a full
-    # stomach keeps what was left (designer play-test, 2026-10-18).
-    window = max(window, agent.last_meal_window - agent.hours_since_last_meal)
+    # stomach keeps what was left (designer play-test, 2026-10-18). And it ADDS
+    # to what is left, up to a full stomach (designer play-test, 2026-10-30:
+    # "I had 14 hours of being fed left so I ate and it should've gone up to
+    # 24 hours but it didn't" -- a 12-hour Meal on 14 hours changed nothing).
+    left = max(0.0, agent.last_meal_window - agent.hours_since_last_meal)
+    window = max(window, min(left + window, max(FULL_STOMACH_H, window)))
     agent.hours_since_last_meal = 0.0
     agent.last_meal_window = window
     agent.sustenance_stage = "Normal"
@@ -1868,6 +1906,8 @@ def buy_meal(world: World, log: EventLog, agent: Agent, business_id: str | None 
     # not undercut the state and there was no reason to found one. The state
     # charges the marked-up NPC rate; a player charges whatever they set, down
     # to the 60% floor.
+    if _full(agent, meal):
+        return False, _full(agent, meal)
     price = tavern.price_for(meal)
     tax = E.sales_tax_on(price, world.government.sales_tax)
     if agent.denari < price:
@@ -1895,6 +1935,8 @@ def eat_meal(world: World, log: EventLog, agent: Agent, meal: str = "") -> Resul
     if meal and meal not in have:
         return False, f"you carry no {meal}"
     meal = meal or max(have, key=E.meal_window)
+    if _full(agent, meal):
+        return False, _full(agent, meal)
     agent.remove_item(meal, 1)
     return _apply_meal(world, log, agent, meal, E.meal_window(meal), 0.0, "carried")
 
@@ -2022,6 +2064,14 @@ def claim_land(world: World, log: EventLog, agent: Agent, site_id: str, purpose:
     return ok, msg
 
 
+def build_road(world: World, log: EventLog, agent: Agent, from_place: str, to_place: str = "") -> Result:
+    """Lay a dirt road from your land `from_place` to another claim
+    `to_place`, or, left empty, to the nearest road. Paid by the metre. The
+    state's convoy collects only from land with a road to the main roads."""
+    from . import claims as CL
+    return CL.build_road(world, log, agent, from_place, to=to_place)
+
+
 def eat_best_available(world: World, log: EventLog, agent: Agent) -> Result:
     """Self-prep if we're holding the ingredients, otherwise buy at a local tavern."""
     ok, msg = buy_meal(world, log, agent)
@@ -2138,7 +2188,18 @@ def say_hi(world: World, log: EventLog, agent: Agent, target_id: str, text: str 
     line = str(text or "").strip()[:200]
     log.emit(world.sim_time, "greeted", actor=agent.id, subject=other.id, location=agent.location,
              significance=Significance.MEDIUM, text=line, house=agent.house)
-    return True, f"you said hi to {other.name}" + (f": {line}" if line else "")
+    out = f"you said hi to {other.name}" + (f": {line}" if line else "")
+    # A settler greets you back, once, by rule (2026-10-30) -- the player answers for themself.
+    if other.id != world.human and not any(e.type == "greeted" and e.actor == other.id
+                                           and e.subject == agent.id for e in log.events):
+        what = sorted({world.businesses[b].type.split(" /")[0] for b in other.owned_businesses
+                       if b in world.businesses and not world.businesses[b].closed})
+        back = (f"Well met. {other.house}" + (f" -- we run a {' and a '.join(what)}." if what else ".")
+                + (" We keep to ourselves, mostly." if SO.temper(other) == "guarded" else " Ask me anything."))
+        log.emit(world.sim_time, "greeted", actor=other.id, subject=agent.id, location=other.location,
+                 significance=Significance.MEDIUM, text=back, house=other.house)
+        out += f". {other.name} answers: {back}"
+    return True, out
 
 
 def share_info(world: World, log: EventLog, agent: Agent, target_id: str, what: str) -> Result:
@@ -2170,11 +2231,101 @@ def ask_info(world: World, log: EventLog, agent: Agent, target_id: str, what: st
            for r in world.share_requests.values()):
         return False, f"you have asked {other.name} for that already"
     rid = world.new_id("Q")
-    world.share_requests[rid] = ShareRequest(id=rid, sender=agent.id, target=other.id, kind=what,
-                                             created_at=world.sim_time)
+    r = ShareRequest(id=rid, sender=agent.id, target=other.id, kind=what, created_at=world.sim_time)
+    world.share_requests[rid] = r
     log.emit(world.sim_time, "share_asked", actor=agent.id, subject=other.id, kind=what, request=rid,
              significance=Significance.MEDIUM)
-    return True, f"asked {other.name} for their {what} (request {rid})"
+    if other.id == world.human:
+        return True, f"asked {other.name} for their {what} (request {rid})"
+    # Everyone but the player answers at once, by rule (social.terms, 2026-10-30).
+    t = SO.terms(world, other, agent, what)
+    if "free" in t:
+        r.status = "accepted"
+        SO.share(world, other, agent, what)
+    else:
+        r.status = "declined" if "no" in t else "priced"
+        r.terms = t
+    log.emit(world.sim_time, "share_answered", actor=other.id, subject=agent.id, kind=what,
+             accepted="free" in t, priced="price" in t, significance=Significance.MEDIUM)
+    if "free" in t:
+        return True, f"{other.name} shared {SO.KINDS[what]} with you"
+    return True, SO.describe_terms(other, what, t)
+
+
+def offer_for_info(world: World, log: EventLog, agent: Agent, target_id: str, what: str,
+                   coins: float = 0.0, item: str = "", qty: int = 0, unit_price: float = 0.0) -> Result:
+    """Meet a settler's price for something they would not share for free
+    (ask_info names it): pay `coins`, and/or sell them `qty` of `item` at
+    `unit_price` each, below book. Worth their price, they share at once."""
+    other, why = _met(world, agent, target_id)
+    if other is None:
+        return False, why
+    if what not in SO.KINDS:
+        return False, f"one of: {', '.join(SO.KINDS)}"
+    if SO.sees(world, agent, other, what):
+        return False, f"{other.name} has shared their {what} with you already"
+    if other.id == world.human:
+        return False, f"{other.name} answers for themself: ask_info them"
+    t = SO.terms(world, other, agent, what)
+    if "free" in t:
+        SO.share(world, other, agent, what)
+        return True, f"{other.name} shared {SO.KINDS[what]} with you, for nothing"
+    if "no" in t:
+        return False, SO.describe_terms(other, what, t)
+    coins = max(0.0, round(float(coins or 0.0), 2))
+    qty = max(0, int(qty or 0))
+    unit_price = max(0.0, round(float(unit_price or 0.0), 2))
+    goods_value = 0.0
+    if item and qty:
+        if item not in D.ALL_ITEMS:
+            return False, f"no such good {item!r}"
+        if item not in SO.wants(world, other):
+            return False, f"{other.name} has no use for {item}: they would take {', '.join(SO.wants(world, other))}"
+        if SO.holding(world, agent, item) < qty:
+            return False, f"you have {SO.holding(world, agent, item)} {item}"
+        goods_value = max(0.0, (D.base_price(item) - unit_price) * qty)
+    if coins + goods_value + 1e-6 < t["price"]:
+        return False, (f"not enough: that is worth {coins + goods_value:.0f} to them. "
+                       + SO.describe_terms(other, what, t))
+    if agent.denari < coins:
+        return False, f"you have {agent.denari:.0f}"
+    cost = round(unit_price * qty, 2) if item and qty else 0.0
+    if cost and other.denari < cost:
+        return False, f"{other.name} cannot pay {cost:.0f} for the goods right now"
+    agent.denari -= coins
+    other.denari += coins
+    if cost or (item and qty):
+        left = qty
+        take = min(left, agent.inventory.get(item, 0))
+        if take:
+            agent.remove_item(item, take)
+            left -= take
+        for b in agent.owned_businesses:
+            biz = world.businesses.get(b)
+            if left <= 0 or biz is None or biz.closed:
+                continue
+            take = min(left, biz.inventory.get(item, 0))
+            if take:
+                biz.remove_item(item, take)
+                left -= take
+        dest = next((world.businesses[b] for b in other.owned_businesses
+                     if b in world.businesses and not world.businesses[b].closed
+                     and _business_can_use(world.businesses[b], item)), None)
+        if dest is not None:
+            dest.add_item(item, qty)
+        else:
+            other.add_item(item, qty)
+        other.denari -= cost
+        agent.denari += cost
+    SO.share(world, other, agent, what)
+    for r in world.share_requests.values():
+        if r.sender == agent.id and r.target == other.id and r.kind == what and r.status == "priced":
+            r.status = "accepted"
+    log.emit(world.sim_time, "info_bought", actor=agent.id, subject=other.id, kind=what,
+             coins=coins, item=item, qty=qty, unit_price=unit_price, significance=Significance.MEDIUM)
+    paid = " and ".join(x for x in ((f"{coins:.0f} coins" if coins else ""),
+                                     (f"{qty} {item} at {unit_price:.2f}" if item and qty else "")) if x)
+    return True, f"{other.name} took {paid} and shared {SO.KINDS[what]} with you"
 
 
 def answer_request(world: World, log: EventLog, agent: Agent, request_id: str, accept: bool) -> Result:
@@ -3088,6 +3239,12 @@ def post_delivery_job(
                 f"{D.VEHICLES[vehicle.type].cargo_capacity} and this load is {qty}"
             )
 
+    if dest.is_government and dest.owner != agent.id:
+        if state_room(world, agent) < qty:
+            room = state_room(world, agent)
+            return False, (_state_full(world) if room <= 0 else
+                           f"the state buys {room} more from you today (at most {STATE_DAILY_CAP} a day): send {room} or fewer")
+
     # Escrow the fee and take the goods out of the yard immediately.
     biz.cash -= fee
     biz.remove_item(item, qty)
@@ -3102,6 +3259,8 @@ def post_delivery_job(
         )
         if share is None:
             return False, structure
+    if dest.is_government and dest.owner != agent.id:
+        _state_took(world, agent, qty)
     con = Consignment(
         id=world.new_id("C"), seller_business=biz.id, buyer_business=dest.id,
         item=item, qty=qty, goods_price=0.0, courier_fee=float(fee),
@@ -3839,6 +3998,37 @@ def feed_family(world: World, log: EventLog, agent: Agent, member_id: str) -> Re
 # afford (the same test as `reflexes.restock`). `standing_bid` says what, and
 # `sell_to_bidder` takes it -- so a farmer picks the refinery that pays best.
 
+# THE STATE'S DAILY LIMIT (designer request, 2026-10-30): "selling to the
+# government is too OP right now ... a max of 100 goods per day." Per house,
+# per game day (it resets at midnight), however the goods reach it: sold over
+# its counter, to its convoy, shipped to its sites or delivered there.
+STATE_DAILY_CAP = 100
+
+
+def state_room(world: World, agent: Agent | None) -> int:
+    """How many more goods the state will buy from `agent` today."""
+    if agent is None:
+        return STATE_DAILY_CAP
+    if agent.state_sold_day != int(world.sim_time // 86400):
+        return STATE_DAILY_CAP
+    return max(0, STATE_DAILY_CAP - agent.state_sold_qty)
+
+
+def _state_took(world: World, agent: Agent | None, qty: int) -> None:
+    if agent is None or qty <= 0:
+        return
+    day = int(world.sim_time // 86400)
+    if agent.state_sold_day != day:
+        agent.state_sold_day, agent.state_sold_qty = day, 0
+    agent.state_sold_qty += qty
+
+
+def _state_full(world: World) -> str:
+    left = 24.0 - (world.sim_time % 86400) / 3600.0
+    return (f"the state buys at most {STATE_DAILY_CAP} goods a day from each house and has "
+            f"taken today's; it buys again at midnight, in {left:.0f}h. Sell to people meanwhile")
+
+
 BID_TARGET_UNITS = 8           # a buyer wants inputs for this many units of output
 BID_MARGIN = 0.85              # the most of the output's value inputs may cost
 BID_CAP = 1.25                 # never more than this times book
@@ -3898,13 +4088,25 @@ def sell_to_bidder(
     have = seller.inventory.get(item, 0)
     if have <= 0:
         return False, f"{seller.name} has no {item}"
+    if buyer.is_government and world.outposts:
+        from . import claims as CL
+        if not CL.connected(world, seller.location):
+            # BUILT ROADS (2026-10-30): the convoy comes only by road.
+            return False, (f"the state's convoy comes only by road, and {seller.location} has none to "
+                           f"the main roads: build_road from it, or carry the goods to a trading post")
     bid = standing_bid(world, buyer, item)
     if bid is None:
         return False, f"{buyer.name} is not buying {item} now"
     price, wanted = bid
+    if buyer.is_government:
+        wanted = min(wanted, state_room(world, agent))
+        if wanted <= 0:
+            return False, _state_full(world)
     take = min(have, wanted, int(qty) if qty and qty > 0 else have)
     goods = round(price * take, 2)
     seller.remove_item(item, take)
+    if buyer.is_government:
+        _state_took(world, agent, take)
     if buyer.is_government and world.outposts:
         # THE STATE'S CONVOY (2026-10-27): it comes out from the nearest anchor
         # to collect, and pays when it has the goods. The price is fixed now.
@@ -3960,14 +4162,22 @@ def build_defense(world: World, log: EventLog, agent: Agent, kind: str) -> Resul
         return False, f"choose one of {', '.join(D.DEFENSES)}"
     if agent.in_transit:
         return False, "you are on the road"
-    if world_map.plots_free(world, agent.location) < 1:
+    # On your own land (a land claim, 2026-10-30) it goes on a plot you own.
+    mine = next((q for q in world.plots.values()
+                 if q.location == agent.location and q.owner == agent.id
+                 and not q.business and not q.home and not q.structure), None)
+    if mine is None and world_map.plots_free(world, agent.location) < 1:
         return False, f"{agent.location} has no free plot left"
     if agent.denari < spec["cost"]:
         return False, f"a {kind} costs {spec['cost']:.0f}; you have {agent.denari:.0f}"
     agent.denari -= spec["cost"]
-    q = Plot(id=world.new_id("L"), location=agent.location, owner=agent.id,
-             developed=True, structure=kind)
-    world.plots[q.id] = q
+    if mine is not None:
+        q = mine
+        q.developed, q.structure = True, kind
+    else:
+        q = Plot(id=world.new_id("L"), location=agent.location, owner=agent.id,
+                 developed=True, structure=kind)
+        world.plots[q.id] = q
     log.emit(world.sim_time, "defense_built", actor=agent.id, location=agent.location,
              significance=Significance.MEDIUM, kind=kind, plot=q.id, cost=spec["cost"])
     return True, f"built a {kind} at {agent.location} (plot {q.id}). {spec['does']}"

@@ -777,9 +777,10 @@ def replay(run: Path, places: dict[str, L.Place]) -> dict:
             continue
         used[spec["place"]] = i + 1
         slot = place.slots[i]
+        b = world.businesses.get(spec["id"]) if world else None
         buildings.append({**spec, "x": slot.x, "y": slot.y,
                           "sprite": _slug(spec["type"]), "scale": 1.0,
-                          "plots": 0})
+                          "plots": 0, "floors": b.storage_tier if b else 0})
 
     flags = []
     if world:

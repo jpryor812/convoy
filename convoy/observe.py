@@ -273,8 +273,10 @@ def _static_map(city: str = M.HOME_CITY, rival: str | None = None,
     # same tokens on every call for every agent forever.
     lines.append((
         f"LAND. A business needs four plots of its own. claim_land takes four "
-        f"plots of open land (a site from OPEN LAND NEAR YOU) with a dirt road to "
-        f"them; then travel_to the claim and start_business there. The price is "
+        f"plots of open land (a site from OPEN LAND NEAR YOU), with no road: "
+        f"travel_to the claim and start_business there. build_road lays a dirt "
+        f"road from it, paid by the metre; without one, travel there is half as "
+        f"fast and the state's convoy will not come. The price is "
         f"set by how near it is to a trading post and to land people have built "
         f"on: dear close in, cheap far out. A claim is its claimant's -- nobody "
         f"else builds there -- and land counts in your net worth at what you "
@@ -794,10 +796,12 @@ def static_briefing(
             "OUTPOST says where yours is. Each city's market is a STATE TRADING "
             "POST with four sites, a Tavern, Farm, Mine and Refinery. They SELL at "
             "a fixed HIGH price (about 1.5x book; its Tavern also sells weapons, "
-            "armour and tools), HIRE anyone at a fixed wage, and BUY ANY good at "
+            "armour and tools), HIRE anyone at a fixed wage, and BUY ANY good -- "
+            "at most 100 a day from each house -- at "
             "HALF what it sold for between people over the last day "
             "(sell_to_bidder: the state's convoy collects from your yard, free, "
-            "and pays when it collects). A citizen who makes what the state "
+            "and pays when it collects -- if your land has a road; YOUR OUTPOST "
+            "says which does). A citizen who makes what the state "
             "sells and prices it under the state takes its customers.\n"
             "HOW TO START. Your grown family works any business you own for "
             "nothing (assign_family). A business needs four plots of its own: "
@@ -813,14 +817,17 @@ def static_briefing(
             "take the state's wage at a trading post first. If you borrowed to "
             "settle, YOUR OUTPOST says what you owe: it grows 2% a day and a "
             "fifth of what your businesses earn pays it down (repay_debt pays "
-            "more). Settling near others is how towns will form.\n"
+            "more). Settling near others is how towns will form. BANDIT GANGS "
+            "rob the yards and purses of rich, remote buildings (an hour's "
+            "warning): Lookouts at a security firm within 1.5 km and a guard "
+            "post on the site fight them off.\n"
         ) if outposts else (
             "\n\nTHERE IS NO GOVERNMENT, AND NO TAX -- only FOUR STATE SITES "
             "the town was started with: the state's Tavern (in the market "
             "square), Farm, Mine and Refinery. They are a backstop: they SELL "
             "at a fixed HIGH price (about 1.5x book; its Tavern also sells "
             "weapons, armour and tools), BUY ANY good at a fixed LOW price "
-            "(0.4x book; sell_to_bidder), and HIRE anyone at a fixed wage -- so nobody "
+            "(0.4x book; sell_to_bidder; at most 100 a day from each house), and HIRE anyone at a fixed wage -- so nobody "
             "starves on day one and anyone can earn a wage. Everything else -- "
             "every other shop, job, cart and weapon -- exists only because one "
             "of you made it, and a citizen who makes what the state sells and "
@@ -1471,6 +1478,11 @@ def _owned_business_view(world: World, bid: str) -> dict[str, Any]:
         ),
         "storage_capacity": E.business_storage_capacity(world, b),
         "storage_used": sum(b.inventory.values()),
+        # FLOORS (2026-10-30): built upward for more storage.
+        "floors": b.storage_tier,
+        "next_floor_cost": (D.storage_upgrade_cost(b.storage_tier)
+                            if b.storage_tier < D.MAX_STORAGE_TIER
+                            and (world.outposts or b.type not in D.STORE_BUSINESS_TYPES) else None),
         "researchers": len(b.researchers()),
         "research_tier": b.research.efficiency_tier,
         "unspent_rp": round(b.research.unspent_rp, 1),
@@ -1479,7 +1491,14 @@ def _owned_business_view(world: World, bid: str) -> dict[str, Any]:
     if payroll:
         view["payroll_per_hour"] = round(payroll, 2)
         view["hours_of_payroll_left"] = round(b.cash / payroll, 1)
-    if not b.active_production:
+    if not b.spec.outputs:
+        # A security firm makes nothing (2026-10-30): its staff keep a watch.
+        n = len(b.production_staff())
+        view["production"] = (
+            f"ON WATCH: {n} lookout{'s' if n != 1 else ''} guarding your loads within "
+            f"{D.LOOKOUT_RANGE_M / 1000:.1f} km" if n else
+            "NOBODY ON WATCH -- hire a Lookout or assign_family here; it makes nothing")
+    elif not b.active_production:
         # An idle business used to report nothing but a row of zeros, and an
         # owner reading it had no way to tell "new and doing nothing" from
         # "running fine". In the 2026-08-16 smoke an agent founded a Weaponsmith
@@ -2045,6 +2064,19 @@ def observe(
             outpost["you_owe_the_state"] = (
                 f"{agent.debt:.2f} -- grows {CL.LOAN_RATE_PER_DAY:.0%} a day; a fifth of what your "
                 f"businesses earn pays it down; repay_debt pays more")
+        # BUILT ROADS (2026-10-30): which of your land the convoy can reach.
+        for c in world.claims.values():
+            if c.owner != agent.id:
+                continue
+            if CL.connected(world, c.name):
+                state = "road to the main roads"
+            elif c.road:
+                state = f"road to {c.link}, which has none to the main roads"
+            else:
+                plan = CL.road_plan(world, c.name)
+                state = ("no road" if plan["why_not"] else
+                         f"no road -- build_road to the nearest, {plan['metres']} m, {plan['cost']:.0f}")
+            outpost.setdefault("your_land", {})[c.name] = state
         coming = [d for d in world.dispatches.values()
                   if d.agent == agent.id and d.status == "on_way"]
         for d in coming:
@@ -2052,6 +2084,14 @@ def observe(
             what = (f"{d.item} on its way to you" if d.kind == "meal"
                     else f"the state's convoy coming for {d.qty} {d.item} ({d.unit_price * d.qty:.2f})")
             outpost.setdefault("on_the_way", []).append(f"{what}, in {mins} min")
+        outpost["the_state_buys_from_you_today"] = A.state_room(world, agent)
+        from . import robbery as RB
+        gangs = RB.for_owner(world, agent)
+        if gangs:
+            outpost["BANDITS (at your buildings)"] = [
+                f"{g['bandits']} bandits {'coming, ' + str(g['arrives_in_min']) + ' min out' if g['status'] == 'coming' else 'robbing it, ' + str(g['ends_in_min']) + ' min left' if g['status'] == 'looting' else g['status']}"
+                f" at {g['place']} ({g['type'].split(' /')[0]}); your lookouts in range: {g['lookouts']}"
+                for g in gangs]
         meals = sum(q for i, q in agent.inventory.items() if i in D.MEALS)
         if meals:
             outpost["meals_you_carry"] = meals

@@ -511,7 +511,8 @@ def test_a_big_job_is_shared_out_as_a_caravan():
 def test_a_job_you_cannot_lift_sorts_last():
     """A job this courier cannot carry is not an opportunity, it is a wasted turn."""
     world, log, owner, courier, mine, gov = _full_mine()
-    A.post_delivery_job(world, log, owner, mine.id, "Copper Ore", 100, gov.id, 90.0)
+    # 96 + 4: the state takes at most 100 a day from a house (2026-10-30).
+    A.post_delivery_job(world, log, owner, mine.id, "Copper Ore", 96, gov.id, 90.0)
     A.post_delivery_job(world, log, owner, mine.id, "Copper Ore", 4, gov.id, 20.0)
     jobs = A.open_courier_jobs(world, courier)
     ok("the liftable one is offered first", jobs[0]["you_can_carry_it"], str(jobs))

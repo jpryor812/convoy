@@ -404,9 +404,10 @@ def business_storage_capacity(world, biz) -> int:
     than on stockpile, which is what makes the employee cap bite.
     """
     if biz.type in D.STORE_BUSINESS_TYPES:
-        return max(
-            developed_plots(world, biz) - D.STRUCTURE_PLOTS, 0
-        ) * D.STORE_STORAGE_PER_PLOT
+        # FLOORS (2026-10-30): with outposts a shop or tavern on its four plots
+        # builds upward too, each floor two plots' worth of shelves.
+        return (max(developed_plots(world, biz) - D.STRUCTURE_PLOTS, 0)
+                + 2 * biz.storage_tier) * D.STORE_STORAGE_PER_PLOT
     base = (
         biz.spec.startup_cost * D.STORAGE_PER_STARTUP_DENARI
         or D.FALLBACK_BASE_STORAGE

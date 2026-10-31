@@ -14,6 +14,7 @@ for an OpenRouter call behind the same interface.
 
 from __future__ import annotations
 
+import math
 import random
 import threading
 import time
@@ -25,6 +26,7 @@ from . import banditry as B
 from . import combat as CB
 from . import ground as GR
 from . import raids as R
+from . import robbery as RB
 from . import data as D
 from . import economy as E
 from . import world_map as M
@@ -148,6 +150,10 @@ class Engine:
             if hasattr(self.policy, "world_lock"):
                 self.policy.world_lock = self.world_lock
         self._rng = random.Random(self.config.banditry_seed)
+        # Gangs robbing buildings (convoy/robbery.py) roll on their own stream,
+        # so adding them shifts no other random outcome.
+        self._rob_rng = random.Random(self.config.banditry_seed + 1)
+        self._next_robbery_check = 0.0
         # A resumed world may already be past the withdrawal hour; the state is
         # gone if there is no open government business left to close.
         target = self.config.state_exits_city
@@ -330,6 +336,11 @@ class Engine:
         CB.regen(w, hours)
         GR.tick(w, hours)
         self._dispatches()
+        if w.outposts:
+            hour = w.sim_time >= self._next_robbery_check
+            if hour:
+                self._next_robbery_check = (w.sim_time // 3600.0 + 1) * 3600.0
+            RB.tick(w, self.log, self._rob_rng, hour)
         self._debt_interest(hours)
         if w.outposts and w.sim_time >= self._next_discovery:
             self._next_discovery = w.sim_time + DS.EVERY_S
@@ -582,6 +593,9 @@ class Engine:
               what: str, origin: str, destination: str) -> None:
         w, rng = self.world, self._rng
         party = B.party_for(w, agent, cargo_value)
+        watch = self._lookouts(agent, origin, destination)
+        if watch:
+            party = B.Party(party.escorts + watch, party.vehicle, party.cargo_value)
         strength = R.raid_strength(w, members, seg)
         names = [w.agents[m].name for m in members]
         common = dict(raid=raid.id, segment=seg.name, raiders=names,
@@ -659,6 +673,24 @@ class Engine:
                 if not placed:
                     left[item] = left.get(item, 0) + 1
         return left
+
+    def _lookouts(self, agent: Agent, origin: str, destination: str) -> tuple:
+        """The owner's lookouts on watch near either end of this journey:
+        one scout each, at their security firm within LOOKOUT_RANGE_M."""
+        from . import claims as CL
+        w = self.world
+        ends = [xy for xy in (CL.place_xy(w, origin), CL.place_xy(w, destination)) if xy]
+        out = []
+        for bid in agent.owned_businesses:
+            b = w.businesses.get(bid)
+            if b is None or b.closed or b.type != "Private Security Contractor":
+                continue
+            at = CL.place_xy(w, b.location)
+            if at is None or not any(math.hypot(at[0] - x, at[1] - y) <= D.LOOKOUT_RANGE_M for x, y in ends):
+                continue
+            for e in b.production_staff():
+                out.append(B.Escort(e.agent_id, "Scout", D.LOOKOUT_WEAPON, ()))
+        return tuple(out)
 
     def _raid_death(self, agent: Agent, seg) -> None:
         """Killed in a failed raid. You lose what was ON you -- cargo, stolen

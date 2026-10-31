@@ -234,11 +234,13 @@ def settle(world, log: EventLog, settings) -> str:
     if world.no_state:
         you.last_meal_window = D.START_FED_HOURS_NO_STATE
     if world.outposts:
-        # You choose your land on the map before the clock runs: no home in
-        # the square. You wait at the anchor until then. See `claims.settle`.
-        you.settled = False
+        # SETTLED FOR YOU (designer request, 2026-10-30): no choosing land.
+        # Your home is put down somewhere random on the map, off the roads and
+        # away from the trading posts: everything else you find by riding.
+        from . import claims as CL
         log.emit(world.sim_time, "arrived_in_town", actor=you.id, location=you.location,
-                 city=city, text=f"{you.name} came to the frontier near {M.CITIES[city].name}.")
+                 city=city, text=f"{you.name} came to the frontier.")
+        CL.random_home(world, log, you, random.Random(f"{world.land_seed}:{you.id}"))
         return you.id
     # YOUR HOME (2026-10-18): four plots of your town's square, yours and not
     # for sale. The page draws it with your border around it.

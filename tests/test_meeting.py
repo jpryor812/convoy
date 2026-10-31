@@ -74,8 +74,10 @@ def test_you_know_only_what_is_shared() -> None:
 
 
 def test_asking_and_answering() -> None:
+    """The player answers by hand (2026-10-30): here `b` is the player."""
     world, log = _world()
     a, b, _ = _pair(world, log)
+    world.human = b.id
     okb, msg = A.ask_info(world, log, a, b.id, "standing")
     ok("asked", okb, msg)
     rid = next(iter(world.share_requests))
@@ -164,10 +166,85 @@ def test_the_board_shows_only_who_shared_standing() -> None:
 def test_agents_are_told() -> None:
     world, log = _world()
     a, b, _ = _pair(world, log)
+    world.human = a.id                      # requests wait only for the player
     A.ask_info(world, log, b, a.id, "trade")
     text = O.render(O.observe(world, log, a, "x", record_delivery=False))
     ok("who they found, without unshared detail", b.name in text and "no contact" in text)
     ok("requests to answer", "requests_to_you" in text and "asks for your trade" in text)
+
+
+def _open_and_guarded(world):
+    people = list(world.agents.values())[1:]            # the first is "me" 
+    return (next(p for p in people if SO.temper(p) == "open"),
+            next(p for p in people if SO.temper(p) == "guarded"))
+
+
+def test_settlers_answer_at_once_by_rule() -> None:
+    """Designer request, 2026-10-30: deterministic, and sometimes a price."""
+    world, log = _world()
+    me = list(world.agents.values())[0]
+    world.human = me.id
+    op, gu = _open_and_guarded(world)
+    for o in (op, gu):
+        DS.meet(world, log, me, o, "Town")
+    okb, msg = A.ask_info(world, log, me, op.id, "standing")
+    ok("standing is free, at once", okb and SO.sees(world, me, op, "standing"), msg)
+    okb, msg = A.ask_info(world, log, me, op.id, "locations")
+    ok("locations have a price", okb and "40 coins" in msg and not SO.sees(world, me, op, "locations"), msg)
+    okb, msg = A.ask_info(world, log, me, gu.id, "holdings")
+    ok("a guarded house wants paying even for its holdings", "coins" in msg and not SO.sees(world, me, gu, "holdings"), msg)
+    t = SO.terms(world, gu, me, "locations")
+    ok("and asks more", t["price"] == 60, str(t))
+    ok("the same answer every time", SO.terms(world, gu, me, "locations") == t)
+    A.share_info(world, log, me, op.id, "locations")
+    ok("share yours, get theirs free", "free" in SO.terms(world, op, me, "locations"))
+    ok("their card shows their price", "holdings" in SO.view_of(world, me, gu)["terms"])
+
+
+def test_paying_for_information() -> None:
+    world, log = _world()
+    me = list(world.agents.values())[0]
+    world.human = me.id
+    _, gu = _open_and_guarded(world)
+    DS.meet(world, log, me, gu, "Town")
+    me.denari, gu.denari = 500.0, 500.0
+    A.ask_info(world, log, me, gu.id, "locations")
+    ok("their terms are on their card", "locations" in SO.view_of(world, me, gu)["terms"])
+    okb, msg = A.offer_for_info(world, log, me, gu.id, "locations", coins=10)
+    ok("too little is refused", not okb and not SO.sees(world, me, gu, "locations") and me.denari == 500.0, msg)
+    okb, msg = A.offer_for_info(world, log, me, gu.id, "locations", coins=60)
+    ok("their price buys it", okb and SO.sees(world, me, gu, "locations"), msg)
+    ok("and the coins change hands", me.denari == 440.0 and gu.denari == 560.0, f"{me.denari} {gu.denari}")
+    # Or in goods sold cheap: meals, which anyone will take.
+    me.add_item("Meal", 10)
+    t = SO.terms(world, gu, me, "holdings")
+    g = t["goods"]
+    ok("they name goods they would take cheap", g and g["item"] == "Meal" and g["you_have"] == 10, str(t))
+    okb, msg = A.offer_for_info(world, log, me, gu.id, "holdings", item=g["item"], qty=g["qty"],
+                                unit_price=g["unit"])
+    ok("a cheap sale buys it", okb and SO.sees(world, me, gu, "holdings"), msg)
+    ok("the goods go and are paid for", me.inventory.get("Meal", 0) == 10 - g["qty"]
+       and abs(me.denari - (440.0 + g["qty"] * g["unit"])) < 0.01, f"{me.denari}")
+
+
+def test_greeted_back_once_and_no_one_to_marry() -> None:
+    world, log = _world()
+    a, b, _ = _pair(world, log)
+    okb, msg = A.say_hi(world, log, a, b.id, "hello")
+    ok("they answer", okb and "answers" in msg, msg)
+    okb, msg = A.say_hi(world, log, a, b.id, "hello again")
+    ok("once", okb and "answers" not in msg, msg)
+    for m in b.family:
+        m.spouse, m.grown_at, m.adult = ("x" if m.role != "partner" else m.spouse), 0.0, m.adult
+    ok("nobody to marry, no family shared", "no" in SO.terms(world, b, a, "family"))
+
+
+def test_only_the_player_answers_by_hand() -> None:
+    from convoy import schemas as S
+    llm = {t["function"]["name"] for t in S.tool_schemas(outposts=True)}
+    me = {t["function"]["name"] for t in S.tool_schemas(outposts=True, player=True)}
+    ok("settlers are not given answer_request", "answer_request" not in llm and "offer_for_info" in llm)
+    ok("the player is", "answer_request" in me)
 
 
 def test_without_outposts_everyone_sees_everything() -> None:

@@ -50,10 +50,14 @@ BLOCKED_SHARE = 0.2            # what gets through a block
 KNOCKED_DOWN = 15.0            # health at which the fight is lost
 FIT_TO_FIGHT = 40.0            # health needed to go at a camp
 CRIT_CHANCE = 0.12
-AMBUSH_COOLDOWN_H = 3.0        # game hours between road ambushes
+AMBUSH_COOLDOWN_H = 2.0        # game hours between road ambushes
 AMBUSH_MAX_P = 0.08            # per check (the page asks every few seconds)
 AMBUSH_VALUE_SCALE = 4000.0    # chance per check = value carried / this
-AMBUSH_MIN_VALUE = 25.0
+# Designer request, 2026-10-30: "when I'm trading more than $50 worth of
+# goods ... I should be targeted" -- not every time. And from the third game
+# hour, not after the newcomer's whole first day, which no play-test reached.
+AMBUSH_MIN_VALUE = 50.0
+AMBUSH_GRACE_H = 3.0
 ROAD_LOSS_SHARE = 0.5          # of each good carried, on a lost road fight
 COIN_LOSS_SHARE = 0.1
 REGEN_PER_HOUR = 4.0           # health a fed citizen gets back an hour
@@ -114,7 +118,7 @@ def road_check(world: "World", log: "EventLog", agent: "Agent", last_ambush: flo
                rng: random.Random | None = None) -> Fight | None:
     """Out on the open road: are you set upon? Called by the page every few
     seconds while you are between places."""
-    if not agent.alive or agent.protected_until > world.sim_time:
+    if not agent.alive or world.sim_time < AMBUSH_GRACE_H * 3600.0:
         return None
     if world.sim_time - last_ambush < AMBUSH_COOLDOWN_H * 3600.0:
         return None

@@ -190,7 +190,7 @@ export function createTerrain({THREE, w, d, roadSegs, places, rivers, mountains,
         .replace("#include <common>", "#include <common>\nuniform sampler2D tHaze; uniform vec4 uHazeBox; uniform float uHazeOn; varying vec2 vHazeXZ;")
         .replace("#include <dithering_fragment>", `#include <dithering_fragment>
           float hz = uHazeOn * texture2D(tHaze, (vHazeXZ - uHazeBox.xy) / uHazeBox.zw).a;
-          gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.87, 0.84, 0.78), hz * 0.62);`);
+          gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.87, 0.84, 0.78), hz * 0.86);`);
     };
     return mat;
   }

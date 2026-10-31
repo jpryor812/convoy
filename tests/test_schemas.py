@@ -70,13 +70,15 @@ def test_schemas_are_stable():
 
 
 def test_every_action_is_exposed_and_described():
-    tools = S.tool_schemas(outposts=True)
+    tools = S.tool_schemas(outposts=True, player=True)
     names = {t["function"]["name"] for t in tools}
 
     check("one tool per action", len(tools), len(S.ACTIONS))
     ok("names match the action table", names == set(S.ACTIONS))
     plain = {t["function"]["name"] for t in S.tool_schemas()}
     ok("outpost-only tools are hidden elsewhere", plain == set(S.ACTIONS) - S.OUTPOSTS_ONLY)
+    models = {t["function"]["name"] for t in S.tool_schemas(outposts=True)}
+    ok("player-only tools are kept from the models", models == set(S.ACTIONS) - S.PLAYER_ONLY)
 
     for tool in tools:
         fn = tool["function"]
@@ -384,7 +386,12 @@ def test_prefix_cost_is_within_budget():
     # ask_info, answer_request, make_group, invite_to_group, post_group_chat
     # and a briefing sentence -- asked for as one of the first mechanics.
     # Measured 19,900; outposts worlds only.
-    ok("outposts prefix under 20.2k tokens", out_tok < 20200, f"~{out_tok} tokens")
+    # 20,200 -> 20,500 on 2026-10-30: build_road and the road rules (claims
+    # come bare; the convoy needs a road), offer_for_info (settlers name a
+    # price for what they will not share), and the state's 100-a-day limit.
+    # answer_request left the models' list (settlers answer by rule).
+    # Measured 20,365.
+    ok("outposts prefix under 20.5k tokens", out_tok < 20500, f"~{out_tok} tokens")
     ok("prefix is large enough to cache", prefix_tok > 1024, f"~{prefix_tok} tokens")
 
 

@@ -619,15 +619,6 @@ html,body{background:#2a2219;font-size:15px}
 #minimapbox{background:#2a1e14;border:2px solid var(--brass)!important}
 #minimapbox .cap{color:var(--hudtext);font-family:var(--head)}
 
-/* ---------- choosing your land (outposts, 2026-10-27) ---------- */
-#settle-banner{position:fixed;left:50%;top:64px;transform:translateX(-50%);z-index:40;max-width:min(560px,calc(100% - 32px));
-  background:var(--cream,#fff6e0);border:3px solid var(--ink);border-radius:14px;box-shadow:0 3px 0 var(--ink);padding:8px 14px;text-align:center}
-#settle-banner b{display:block;font:700 17px var(--head);color:var(--ink)}
-#settle-banner span{display:block;font:600 13px var(--body);color:var(--soft)}
-#settle-banner .loan{margin-top:6px;font:600 12px var(--body);color:var(--ink)}
-#settle-banner .loan button{margin-left:4px;border:2px solid var(--ink);border-radius:999px;background:#fff;color:var(--ink);font:700 12px var(--head);padding:1px 10px;cursor:pointer}
-#settle-banner .loan button.on{background:var(--gold)}
-
 /* ---------- the full map (2026-10-28) ---------- */
 #bigmap{position:fixed;inset:24px;z-index:60;display:none;flex-direction:column;background:var(--cream);border:3px solid var(--ink);
   border-radius:16px;box-shadow:0 6px 0 var(--ink);overflow:hidden}
@@ -640,3 +631,14 @@ html,body{background:#2a2219;font-size:15px}
 #bm-pop button{border:2px solid var(--ink);border-radius:999px;background:var(--gold);font:700 12px var(--head);padding:3px 10px;cursor:pointer}
 #bm-pop input{border:2px solid var(--cream3);border-radius:8px;padding:3px 6px;font:600 12px var(--body);width:120px}
 @media (max-width:640px){ #bigmap{inset:8px} #bigmap .bm-top span{display:none} }
+
+/* ---------- bandit gangs (2026-10-30) ---------- */
+#gang-banner{position:fixed;left:50%;top:64px;transform:translateX(-50%);z-index:45;max-width:min(560px,calc(100% - 32px));
+  background:#7c1d14;color:#fff3e6;border:3px solid #2a0b07;border-radius:14px;box-shadow:0 3px 0 #2a0b07;padding:8px 14px;text-align:center;
+  animation:gangpulse 1.6s ease-in-out infinite}
+#gang-banner b{display:block;font:700 16px var(--head)}
+#gang-banner span{display:block;font:600 13px var(--body);opacity:.92}
+#gang-banner .acts{margin-top:6px;display:flex;gap:8px;justify-content:center}
+#gang-banner button{border:2px solid #2a0b07;border-radius:999px;background:#fff3e6;color:#2a0b07;font:700 12px var(--head);padding:2px 12px;cursor:pointer}
+@keyframes gangpulse{0%,100%{box-shadow:0 3px 0 #2a0b07}50%{box-shadow:0 3px 0 #2a0b07,0 0 18px rgba(255,90,60,.55)}}
+.lbl-gang{font:700 12px var(--head);color:#fff;background:#7c1d14;border:2px solid #2a0b07;border-radius:999px;padding:1px 8px;white-space:nowrap}

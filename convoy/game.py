@@ -26,6 +26,7 @@ Nothing here knows about HTTP. `play.py` is the server; this is the game.
 from __future__ import annotations
 
 import json
+import math
 import random
 import threading
 import time
@@ -57,6 +58,7 @@ from . import advisor as ADV
 from . import land as LAND
 from . import claims as CL
 from . import discovery as DS
+from . import robbery as RB
 from . import social as SO
 from .state import Activity, Agent, World
 from .world_setup import new_world
@@ -197,6 +199,7 @@ class Game:
         self.log = log
         self.settings = settings
         self.human_id = human_id
+        world.human = human_id
         self.spent_before = spent_before
         self.feed: deque[dict[str, Any]] = deque(maxlen=400)
         self._feed_seq = 0
@@ -320,15 +323,17 @@ class Game:
         """What you walk into: the town as it stands when you arrive."""
         w, you = self.world, self.you
         city = w.city_of(you)
-        if w.outposts and not you.settled:
+        if w.outposts:
             n = sum(1 for a in w.agents.values() if a.id != you.id and a.home)
+            xy = CL.place_xy(w, you.home) if you.home else None
+            city, d = CL.nearest_anchor(w, *xy) if xy else (you.city, 0.0)
+            far = f", {d / 1000:.1f} km from the nearest trading post" if xy else ""
             self._push("milestone", (
-                f"There are no towns yet. {n} people have settled outposts around the state's "
-                f"{len(w.cities)} trading posts ({', '.join(M.market_of(c) for c in w.cities)}), "
-                f"which feed, hire and buy. Your first home is free, but the frontier is hazy: you "
+                f"You have settled on the frontier{far}. Your first home is free. There are no towns "
+                f"yet: {n} other people have outposts of their own around the state's "
+                f"{len(w.cities)} trading posts, which feed, hire and buy. The frontier is hazy: you "
                 f"cannot see who is out there until you find them, and you can only trade with "
-                f"people you have found. The state lends up to {CL.MAX_SETTLE_LOAN:.0f} as you settle, "
-                f"to start a business with. You have {you.denari:.0f}. The clock starts when you settle."))
+                f"people you have found. You have {you.denari:.0f}."))
             return
         mine = [b for b in w.businesses.values()
                 if not b.closed and not b.is_government and M.city_of(b.location) == city]
@@ -421,8 +426,7 @@ class Game:
                           cities=list(w.cities), no_state=w.no_state)
             self.engine._stagger_opening()
         while not self.stopped:
-            # Outposts: the clock waits while you choose your land.
-            if self.paused or not self.you.settled:
+            if self.paused:
                 time.sleep(0.2)
                 continue
             if self.spent() >= self.settings.budget:
@@ -539,7 +543,10 @@ class Game:
                     "blocked": blocked, "why": why if blocked else "", "workers": workers,
                     "owner": b.owner,
                 }
-        return {"hour": round(self.world.sim_hour, 4), "businesses": out}
+            # FLOORS (2026-10-30): how tall each building stands.
+            floors = {b.id: b.storage_tier for b in w.businesses.values()
+                      if not b.closed and b.storage_tier}
+        return {"hour": round(self.world.sim_hour, 4), "businesses": out, "floors": floors}
 
     # -- one business, everything the owner needs on one screen ---------------
 
@@ -611,7 +618,9 @@ class Game:
             rate_now = self.engine.production_rate(b) if producing else 0.0
             headroom, why = self.engine.production_headroom(b) if producing else (0, "")
             places = E.employee_slots(w, b)
-            status = ("idle" if not producing else
+            status = (("watching" if b.production_staff() else "unstaffed")
+                      if not b.spec.outputs else
+                      "idle" if not producing else
                       "stalled" if b.production_blocked or headroom < 1 else
                       "working" if rate_now > 0 else "unstaffed")
             books = ADV.business_books(w, self.log, b)
@@ -798,6 +807,8 @@ class Game:
                     bid = A.standing_bid(w, b, item)
                     if bid is None:
                         continue
+                    if b.is_government:                       # 100 a day (2026-10-30)
+                        bid = (bid[0], A.state_room(w, me))
                     rows.append({"business": b.id, "type": b.type, "place": b.location,
                                  "city": M.CITIES[M.city_of(b.location)].name, "state": b.is_government,
                                  "owner": "the state" if b.is_government else name(b.owner),
@@ -1163,6 +1174,14 @@ class Game:
             return {"name": you.name, "house": you.house, "health": round(you.health, 1),
                     "stage": you.sustenance_stage, "fed_hours": round(max(0.0, fed_left), 1),
                     "weapon": you.equipped_weapon, "armour": {k: v for k, v in you.equipped_armor.items() if v},
+                    # YOUR KIT (2026-10-30): weapons and armour you carry, to put on.
+                    "kit": [{"item": i, "qty": q, "weapon": i in D.WEAPONS,
+                             "stat": (f"{D.WEAPONS[i].damage:.0f} damage" if i in D.WEAPONS
+                                      else f"{D.ARMOR[i].slot}, -{D.ARMOR[i].damage_reduction:.0%} damage")}
+                            for i, q in sorted(you.inventory.items())
+                            if q > 0 and (i in D.WEAPONS or i in D.ARMOR)],
+                    "weapon_damage": D.WEAPONS[you.equipped_weapon].damage if you.equipped_weapon in D.WEAPONS else 0,
+                    "full_stomach": A.FULL_STOMACH_H,
                     "carried": [{"meal": m, "qty": q, "hours": E.meal_window(m)}
                                 for m, q in sorted(you.inventory.items()) if m in D.MEALS and q > 0],
                     "menu": menu, "coins": round(you.denari, 2), "on_way": on_way,
@@ -1254,6 +1273,28 @@ class Game:
         return {"ok": ok, "message": msg, "place": c.name if c else None,
                 "claim": ({"name": c.name, "x": c.x, "y": c.y, "road": c.road, "city": c.city,
                            "owner": c.owner} if c else None)}
+
+    def road(self, body: dict[str, Any]) -> dict[str, Any]:
+        """BUILT ROADS (2026-10-30): price or build a dirt road from your claim
+        `place` to the road or claim nearest (x, y), or to claim `to`."""
+        with self.engine.world_lock:
+            place = str(body.get("place", ""))
+            try:
+                x = float(body["x"]) if body.get("x") is not None else None
+                y = float(body["y"]) if body.get("y") is not None else None
+            except (TypeError, ValueError):
+                return {"ok": False, "message": "where?"}
+            to = str(body.get("to") or "")
+            c = self.world.claims.get(place)
+            if c is None or c.owner != self.you.id:
+                return {"ok": False, "message": f"{place} is not your land"}
+            if body.get("quote"):
+                return {"ok": True, **CL.road_plan(self.world, place, x, y, to),
+                        "cash": round(self.you.denari, 2)}
+            ok, msg = CL.build_road(self.world, self.log, self.you, place, x, y, to)
+        self._push("milestone" if ok else "alert", msg)
+        self._map_dirty = True
+        return {"ok": ok, "message": msg, "road": c.road if ok else None}
 
     def _haul_on_arrival(self) -> tuple[str, str | None]:
         """Walking in with a haul to do does it: load at the origin, hand over
@@ -1429,6 +1470,27 @@ class Game:
         with self.engine.world_lock:
             w, me = self.world, self.human_id
             mine = [q for q in w.plots.values() if q.owner == me and q.location == place]
+            if business_id == "structure":
+                # A defense on your own land (2026-10-30) takes a plot you
+                # already had there: move it onto the square you picked,
+                # trading places with whatever free plot of yours was there.
+                built = next((e.detail.get("plot") for e in reversed(self.log.events)
+                              if e.type == "defense_built" and e.actor == me and e.location == place), None)
+                q = w.plots.get(built or "")
+                if q is None or not cells:
+                    return {"ok": False, "claimed": 0}
+                cell, old = cells[0], self.claims.get(q.id)
+                other = next((pid for pid, c in self.claims.items() if c == cell and pid != q.id), None)
+                if other is not None:
+                    o = w.plots.get(other)
+                    if o is None or o.owner != me or o.business or o.home or o.structure:
+                        return {"ok": False, "claimed": 0}
+                    if old:
+                        self.claims[other] = old
+                    else:
+                        del self.claims[other]
+                self.claims[q.id] = cell
+                return {"ok": True, "claimed": 1}
             if business_id:
                 mine = [q for q in mine if q.business == business_id]
             else:
@@ -1550,12 +1612,15 @@ class Game:
                                      + (": pinned on your map." if d.get("kind") == "locations" else
                                         ": you can message them now." if d.get("kind") == "contact" else "."))
             if e.type == "share_answered":
+                if d.get("priced"):
+                    return "you", (f"{who} will share their {d.get('kind')} for a price: "
+                                   f"see it on their card (People).")
                 return "you", (f"{who} {'shared' if d.get('accepted') else 'declined to share'} "
                                f"their {d.get('kind')}.")
             if e.type == "group_joined":
                 return "you", f"{who} added you to the group {d.get('name')}."
         if e.actor == me and e.type in ("greeted", "shared", "share_asked", "share_answered",
-                                        "group_made", "group_joined"):
+                                        "group_made", "group_joined", "info_bought"):
             return None
         # Outposts: someone found (2026-10-28) -- the only way to trade with them.
         if e.type == "met" and me in (e.actor, e.subject):
@@ -1566,12 +1631,31 @@ class Game:
                 return "milestone", (f"You found {other.name} of {other.house}"
                                      + (f", who owns a {', a '.join(owns)}" if owns else "")
                                      + ". You can trade with them now.")
+        # BANDIT GANGS (2026-10-30, convoy/robbery.py): coming, robbing, done.
+        if e.actor == me and e.type in ("robbery_sighted", "robbery_started", "building_robbed", "robbery_beaten"):
+            biz = self.world.businesses.get(e.subject)
+            what = f"your {biz.type.split(' /')[0]} at {e.location}" if biz else e.location
+            n = d.get("bandits", 0)
+            if e.type == "robbery_sighted":
+                return "alert", (f"Your lookouts see {n} bandits heading for {what}, about "
+                                 f"{d.get('minutes', 0)} min away.")
+            if e.type == "robbery_started":
+                return "alert", (f"{n} bandits are robbing {what}! They will be gone with a share of its "
+                                 f"goods and purse in an hour unless someone stops them.")
+            if e.type == "building_robbed":
+                goods = ", ".join(f"{q} {i}" for i, q in (d.get("goods") or {}).items())
+                return "alert", (f"Bandits robbed {what}: they took "
+                                 + (goods or "no goods") + f" and {d.get('cash', 0):.0f} from its purse.")
+            return "milestone", f"Your {d.get('lookouts')} lookouts drove the bandits off from {what}."
+        if e.actor == me and e.type == "gang_set_out":
+            return None
         # Outposts: things brought to you, and what you settled (2026-10-27).
         if e.actor == me and e.type == "meal_delivered":
             return "wake", f"Your {d.get('item', 'meal')} has arrived; eat it from your card when you are hungry."
         if e.actor == me and e.type == "state_collected":
             return "milestone", f"The state's convoy collected {d.get('qty')} {d.get('item')}: +{d.get('paid', 0):.0f}."
-        if e.actor == me and e.type in ("settled", "meal_ordered", "state_convoy_called", "debt_repaid"):
+        if e.actor == me and e.type in ("settled", "meal_ordered", "state_convoy_called", "debt_repaid",
+                                        "road_built"):
             return None
         if e.actor == me and e.type == "delivered":
             return "milestone", f"Delivered {d.get('qty')} {d.get('item')}: +{d.get('paid', 0):.0f}."
@@ -1877,7 +1961,7 @@ class Game:
         gone = self.world.state_gone_at(city) is not None
         return [t["function"] for t in S.tool_schemas(state_gone=gone,
                                                       no_state=self.world.no_state,
-                                                      outposts=self.world.outposts)]
+                                                      outposts=self.world.outposts, player=True)]
 
     def arrive(self, place: str) -> dict[str, Any]:
         """The player WALKED here, in the 3D world.
@@ -2038,6 +2122,11 @@ class Game:
             "you": {"id": you.id, "name": you.name, "city": w.city_of(you),
                     "settled": you.settled, "home": you.home, "debt": round(you.debt, 2),
                     "outposts": w.outposts, "known": list(you.known) + list(you.allies),
+                    # BANDIT GANGS (2026-10-30): coming for, robbing or having robbed yours.
+                    "robberies": RB.for_owner(w, you) if w.outposts else [],
+                    # BUILT ROADS (2026-10-30): your land, and whether a road joins it up.
+                    "land": [{"name": c.name, "road": bool(c.road), "connected": CL.connected(w, c.name)}
+                             for c in w.claims.values() if c.owner == you.id] if w.outposts else [],
                     # MEETING PEOPLE (2026-10-28): whose contact you hold, who shared
                     # where their land is, requests waiting on you, your groups, pins.
                     "contacts": SO.contacts(w, you),
@@ -2124,15 +2213,19 @@ class Game:
                      for r in w.raids.values() if r.status == "waiting"]
             types = [{"name": t, "cost": spec.startup_cost,
                       "spur": t in ("Farm", "Mining Operation"),
-                      "makes": list(spec.outputs)}
+                      "makes": list(spec.outputs),
+                      **({"does": (f"Makes nothing: hire Lookouts or put your grown family there. Each "
+                                   f"on watch guards your loads on journeys within "
+                                   f"{D.LOOKOUT_RANGE_M / 1000:.1f} km of it against raiders.")}
+                         if not spec.outputs else {})}
                      for t, spec in D.BUSINESS_TYPES.items()]
             # Land anywhere: four squares of open land, with a road (2026-10-18).
             if w.outposts:
                 # Priced where you put it (convoy/claims.py): the cheapest it can be.
                 floor = CL.LAND_FLOOR * M.CLAIM_PLOTS
                 types += [{"name": "Land claim", "cost": floor, "spur": None, "claim": True, "from": True,
-                           "makes": [], "does": (f"Four squares of open land and a dirt road to them: from "
-                                                 f"{floor:.0f} far out, dearer near people. The map shows the price.")}]
+                           "makes": [], "does": (f"Four squares of open land, with no road (build one after): "
+                                                 f"from {floor:.0f} far out, dearer near people. The map shows the price.")}]
             else:
                 types += [{"name": "Land claim", "cost": D.LAND_BASE_PRICE * 4, "spur": None, "claim": True,
                            "makes": [], "does": "Buy four squares anywhere on open land; a dirt road is laid to them."}]

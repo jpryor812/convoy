@@ -715,7 +715,10 @@ BUSINESS_TYPES: dict[str, BusinessType] = {
             "Tavern / Inn", 200, STORE_MAX_EMPLOYEES, True, True, ("Store Clerk",),
             tuple(MEALS),
         ),
-        BusinessType("Private Security Contractor", 500, None, True, False, ()),
+        # A WATCH, NOT A WORKSHOP (designer request, 2026-10-30): it makes
+        # nothing. Its Lookouts -- hired, or your own grown family -- watch for
+        # raiders: see `LOOKOUT_RANGE_M` and `Engine._raid`.
+        BusinessType("Private Security Contractor", 500, None, True, False, ("Lookout",)),
     ]
 }
 
@@ -741,7 +744,14 @@ SMART_WAGES: dict[str, float] = {
     "Blacksmith": 35.555555555555557,
     "Stablehand": 20.0,
     "Researcher": 33.333333333333336,
+    "Lookout": 20.0,
 }
+
+# Lookouts on shift at a security firm guard their owner's loads on any
+# journey that starts or ends this near it, each as one more scout and pair
+# of hands in the party (2026-10-30).
+LOOKOUT_RANGE_M = 1500.0
+LOOKOUT_WEAPON = "Bat"
 
 # An NPC costs this much more than the player floor. Cut from 2.25 to 1.50 on
 # 2026-08-16: at 2.25 an NPC Refinery Worker cost 85/hr against the 75.6/hr of

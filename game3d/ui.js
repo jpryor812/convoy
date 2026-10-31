@@ -402,7 +402,13 @@ export function createUI(ctx){
     const hungry = m.stage !== "Normal";
     let out = `<div class="row"><div class="grow">Health</div><b>${Math.round(m.health)} / 100</b></div><div class="bar hp"><i style="width:${m.health}%"></i></div>`;
     out += `<div class="row"><div class="grow">Food</div><b class="${hungry ? "c-bad" : ""}">${hungry ? esc(m.stage) : `fed for ${m.fed_hours.toFixed(1)}h`}</b></div><div class="bar"><i style="width:${hungry ? 4 : Math.min(100, m.fed_hours / 24 * 100)}%"></i></div>`;
-    out += `<div class="dim">Health comes back slowly while you are fed. Hungry, you work and fight slower; starving costs health.</div>`;
+    out += `<div class="dim">Health comes back slowly while you are fed. Hungry, you work and fight slower; starving costs health. A meal adds its hours to what you have left, up to ${m.full_stomach || 24}h.</div>`;
+    // YOUR KIT (2026-10-30): what you fight with, and what you carry to put on.
+    const armour = Object.entries(m.armour || {});
+    out += `<h3>Your kit</h3><div class="row"><div class="grow">Weapon</div><b>${esc(m.weapon)}${m.weapon_damage ? ` \u00b7 ${m.weapon_damage} damage` : ""}</b></div>`
+      + (armour.length ? armour.map(([slot, a]) => `<div class="row"><div class="grow">${esc(slot)}</div><b>${esc(a)}</b></div>`).join("")
+                       : `<div class="row"><div class="grow">Armour</div><b class="dim">none</b></div>`)
+      + (m.kit || []).map(k => `<div class="row"><div class="grow"><b>${esc(k.item)}</b> <span class="dim">you carry ${k.qty} \u00b7 ${esc(k.stat)}</span></div>${B(k.weapon ? "Wield" : "Wear", "equip", {item: k.item}, true)}</div>`).join("");
     out += m.outposts
       ? `<h3>Eat</h3><div class="tip">\u{1F37A} <b>Food comes from taverns</b>, and only there -- you cannot cook. Walk in and eat, or have a meal brought to you for a fee by distance; it arrives in what you carry and you eat it from this card.</div>`
       : `<h3>Eat</h3><div class="tip">\u{1F37A} <b>Food is sold at taverns</b>, and only there -- you cannot cook. Walk into a tavern and eat there, or buy a Meal there to carry and eat later from this card.</div>`;
@@ -584,7 +590,8 @@ export function createUI(ctx){
   function ownPanel(B){
     const making = B.outputs.find(o => o.making);
     const statusText = {idle: "Idle \u2014 choose what to make", stalled: `Stalled${B.stall_reason ? ": " + B.stall_reason.split(/[.;(]/)[0] : ""}`,
-      working: `Making ${B.producing}`, unstaffed: `Making ${B.producing} \u2014 nobody on shift`}[B.status];
+      working: `Making ${B.producing}`, unstaffed: B.outputs.length ? `Making ${B.producing} \u2014 nobody on shift` : "Nobody on watch \u2014 hire a Lookout",
+      watching: `On watch: ${B.staff.length} lookout${B.staff.length === 1 ? "" : "s"}`}[B.status];
     const pct = B.storage.cap ? Math.min(100, 100 * B.storage.used / B.storage.cap) : 0;
     let out = `<div class="kpis">
       <div class="kpi-t wide ${B.status}"><span>Status</span><b>${esc(statusText)}</b></div>
@@ -632,8 +639,9 @@ export function createUI(ctx){
         + `<div class="bar airbar"><i style="width:${foul}%"></i></div>`
         + `<div class="dim">Refineries foul the air most, and anything run fast smokes more. It slows crops most, then miners and refinery hands, within about 600 m. A Tall chimney carries smoke off; Hedgerows shelter a farm.</div></div>`;
     }
-    // What to make.
-    out += `<h3>What to make</h3><table class="grid"><tr><th>Good</th><th>Rate</th><th>Price</th><th>Worth /h</th><th></th></tr>`
+    // What to make -- or, at a security firm, what its lookouts do (2026-10-30).
+    if (!B.outputs.length) out += `<h3>The watch</h3><div class="tip">It makes nothing. Hire Lookouts below, or put your grown family here: each one on watch rides with your loads, as a scout, on any journey that starts or ends within 1.5 km of it, and helps spot and fight off raiders.</div>`;
+    else out += `<h3>What to make</h3><table class="grid"><tr><th>Good</th><th>Rate</th><th>Price</th><th>Worth /h</th><th></th></tr>`
       + B.outputs.map(o => `<tr class="${o.making ? "on" : ""}"><td><b>${esc(o.item)}</b>${o.land_bonus ? ` <span class="rich">+${Math.round(o.land_bonus * 100)}%</span>` : ""}`
         + `${Object.keys(o.inputs).length ? `<small>needs ${esc(Object.entries(o.inputs).map(([i, q]) => `${q} ${i}`).join(" + "))}</small>` : ""}</td>`
         + `<td>${num(o.rate)}/h</td><td>${money2(o.price)}</td><td class="${o.value_per_hour > 0 ? "good" : "warn"}">${num(o.value_per_hour, 0)}</td>`
@@ -657,10 +665,11 @@ export function createUI(ctx){
     const meOn = B.staff.some(st => st.id === G.you && st.on_shift);
     out += `<div class="acts">` + (meOn ? `<span class="good">You are on shift here.</span>` + B_("Stop work", "end_shift")
       : `<button class="btn go" id="work-me">${B.you_work_here ? "Start a 4h shift" : "Work here myself (4h)"}</button>`) + `</div>`;
-    if (ref){
+    if (ref || (B.roles || []).length){
       const r0 = B.roles[0] || {role: "", suggested: 0, floor: 0};
-      out += `<div class="hire">
-        <div class="gain">+${num(ref.extra_worker_rate)}/h ${esc(ref.item)} <span>\u2248 +${num(ref.extra_worker_value, 0)}/h of goods for ${B.staff.length ? "one more worker" : "a first worker"}</span></div>`;
+      out += `<div class="hire">` + (ref
+        ? `<div class="gain">+${num(ref.extra_worker_rate)}/h ${esc(ref.item)} <span>\u2248 +${num(ref.extra_worker_value, 0)}/h of goods for ${B.staff.length ? "one more worker" : "a first worker"}</span></div>`
+        : `<div class="gain">Hire a ${esc(r0.role)} <span>one more on watch for your loads</span></div>`);
       if (B.places_free <= 0) out += `<div class="tip warn">No room for another worker: every place is taken. Buy and build on a plot to add one.</div>`;
       else {
         const shift = r0.suggested * 4;
@@ -696,8 +705,31 @@ export function createUI(ctx){
     out += `<h3>Stock & prices</h3>` + (B.stock.length ? `<table class="grid"><tr><th>Good</th><th>Have</th><th>Worth</th><th>Your price</th><th></th></tr>`
       + B.stock.map(st => `<tr><td><b>${esc(st.item)}</b></td><td>${st.qty}</td><td>${money2(st.value)}</td>`
         + `<td><input class="price" data-item="${esc(st.item)}" type="number" min="0" step="0.1" placeholder="${money2(st.market)}" value="${st.retail != null ? st.retail : ""}"></td>`
-        + `<td><button class="btn" data-setprice="${esc(st.item)}">Set</button> ${B_("Take out", "collect_business_inventory", {business_id: B.id, item: st.item, qty: st.qty})}</td></tr>`).join("") + `</table>`
+        + `<td><button class="btn" data-setprice="${esc(st.item)}">Set</button> ${B_("Take out", "collect_business_inventory", {business_id: B.id, item: st.item, qty: st.qty})}`
+        + ((S.OBS && S.OBS.you.businesses) || []).filter(o => o.id !== B.id && ((((S.BOARD || {}).biz_items || {})[o.id] || {}).uses || []).includes(st.item))
+            .map(o => ` <button class="btn go" data-haul='${esc(JSON.stringify({from: B.id, to: o.id, item: st.item, qty: st.qty}))}'>To your ${esc(o.type.split(" /")[0])}</button>`).join("")
+        + `</td></tr>`).join("") + `</table>`
       : `<div class="empty">Nothing in stock.</div>`);
+    // BRINGING GOODS IN (designer play-test, 2026-10-30: "I am able to take
+    // stuff out, but I'm not able to put it in my refinery"). What it uses that
+    // you carry, to put in; and what your other businesses hold of it, to fetch.
+    const uses = new Set((((S.BOARD || {}).biz_items || {})[B.id] || {}).uses || []);
+    if (uses.size){
+      const y = (S.OBS && S.OBS.you) || {}, here = y.location === B.location;
+      const carried = Object.entries(y.carrying || {}).filter(([i, n]) => n > 0 && uses.has(i));
+      const elsewhere = (y.businesses || []).filter(o => o.id !== B.id)
+        .flatMap(o => Object.entries(o.stock || {}).filter(([i, n]) => n > 0 && uses.has(i)).map(([i, n]) => ({from: o, item: i, qty: n})));
+      out += `<h3>Bring goods in</h3><div class="dim">It uses ${[...uses].map(esc).join(", ")}.</div>`;
+      out += carried.map(([i, n]) => `<div class="row"><div class="grow"><b>${n} ${esc(i)}</b> <span class="dim">you carry</span></div>`
+        + (here ? B_(`Put in ${n}`, "stock_business_inventory", {business_id: B.id, item: i, qty: n}, true)
+                : `<button class="btn go" data-bring='${esc(JSON.stringify({to: B.id, item: i}))}'>Walk here and put in</button>`) + `</div>`).join("");
+      out += elsewhere.map(e => `<div class="row"><div class="grow"><b>${e.qty} ${esc(e.item)}</b> <span class="dim">at your ${esc(e.from.type.split(" /")[0])}, ${esc(e.from.location)}</span></div>`
+        + `<button class="btn go" data-haul='${esc(JSON.stringify({from: e.from.id, to: B.id, item: e.item, qty: e.qty}))}'>Fetch and bring here</button></div>`).join("");
+      if (!carried.length && !elsewhere.length)
+        out += `<div class="empty">You have none of it. Make it at a farm or mine, or buy it; then <b>Take out</b> there and <b>Put in</b> here.</div>`;
+      else if (elsewhere.length)
+        out += `<div class="dim">Fetch walks you there, loads what you can carry (${(S.BOARD && S.BOARD.carry_room) || 0} more now), brings it here and puts it in.</div>`;
+    }
     // Money and supplies.
     out += `<h3>Money</h3><div class="hire-row"><input id="m-amt" type="number" min="0" step="1" placeholder="amount">`
       + `<button class="btn" id="m-dep">Deposit</button><button class="btn" id="m-wd">Withdraw</button>`
@@ -711,7 +743,32 @@ export function createUI(ctx){
     if (r.best_advert != null) bits.push(`best rival advert ${money2(r.best_advert)}`);
     return `Suggested pitch ${money2(r.suggested)}/h \u2014 ${bits.join(" \u00b7 ")}.`;
   }
+  /* Walk to your business, load an item, walk to another of yours and put
+     it in (2026-10-30). Both stops wait a moment on arrival, as the server
+     moves you there. */
+  function haulTo(fromId, toId, item, qty){
+    close();
+    const then = (ms, fn) => setTimeout(fn, ms);
+    const deliver = () => walkToBuilding(toId, () => then(1200, async () => {
+      const r = await act("stock_business_inventory", {business_id: toId, item, qty: 99999});
+      if (r.ok) openBuilding(toId);
+    }));
+    if (!fromId){ toast(`Taking your ${item} there: follow the compass`); deliver(); return; }
+    toast(`Fetching ${item}: walking to your business`);
+    walkToBuilding(fromId, () => then(1200, async () => {
+      const r = await act("collect_business_inventory", {business_id: fromId, item, qty});
+      if (!r.ok) return;
+      toast(`Carrying ${item} back: follow the compass`);
+      deliver();
+    }));
+  }
   function wireOwn(B){
+    $("pbody").querySelectorAll("[data-haul]").forEach(b => b.onclick = () => {
+      const h = JSON.parse(b.dataset.haul); haulTo(h.from, h.to, h.item, h.qty);
+    });
+    $("pbody").querySelectorAll("[data-bring]").forEach(b => b.onclick = () => {
+      const h = JSON.parse(b.dataset.bring); haulTo(null, h.to, h.item, 0);
+    });
     const work = $("work-me");
     // The server starts the shift too (Game.act); one call either way.
     if (work) work.onclick = () => act("apply_for_job", {business_id: B.id});
@@ -826,9 +883,10 @@ export function createUI(ctx){
           + M.bids[item].map(b => {
             const n = g ? Math.min(g.qty, b.qty) : 0;
             const convoy = b.state && S.ST && S.ST.you.outposts;
-            const btn = n > 0 ? `<button class="btn go" data-act="sell_to_bidder" data-args='${esc(JSON.stringify({business_id: g.business, buyer_business_id: b.business, item, qty: n}))}'>${convoy ? `State's convoy: ${n} for ${money2(n * b.price)}` : `Sell ${n} \u00b7 ${money2(n * b.price)}`}</button>` : `<span class="dim">make some first</span>`;
+            const btn = n > 0 ? `<button class="btn go" data-act="sell_to_bidder" data-args='${esc(JSON.stringify({business_id: g.business, buyer_business_id: b.business, item, qty: n}))}'>${convoy ? `State's convoy: ${n} for ${money2(n * b.price)}` : `Sell ${n} \u00b7 ${money2(n * b.price)}`}</button>`
+              : b.state && g && b.qty <= 0 ? `<span class="dim">it has bought its 100 from you today</span>` : `<span class="dim">make some first</span>`;
             return `<div class="mk-row"><div class="mk-who"><b>${money2(b.price)}</b> each \u2014 ${b.state ? "the state's" : esc(short(b.owner)) + "'s"} ${esc(b.type.split(" /")[0])}, ${esc(b.place)} <span class="dim">(${esc(b.city)})</span>`
-              + `<small>${convoy ? "half what it sold for between people today; its convoy comes to your yard, free, and pays when it collects" : b.state ? "fixed low price; its cart collects at once" : `wants ${b.qty}; pays now, sends a courier to fetch it`}</small></div><div class="mk-act">${btn}</div></div>`;
+              + `<small>${convoy ? `half what it sold for between people today; its convoy comes to your yard, free, and pays when it collects \u00b7 buys ${b.qty} more from you today (100 a day)` : b.state ? `fixed low price; its cart collects at once \u00b7 buys ${b.qty} more from you today (100 a day)` : `wants ${b.qty}; pays now, sends a courier to fetch it`}</small></div><div class="mk-act">${btn}</div></div>`;
           }).join("") + `</div>`;
       }).join("") : `<div class="empty">Found a farm or a mine and the refineries bidding for its goods appear here, best price first.</div>`);
       out += `<h3>Buyers waiting</h3>` + (M.wanted.length ? M.wanted.map(o => {
@@ -990,7 +1048,7 @@ export function createUI(ctx){
      time you play a game; "?" in the top bar brings it back. */
   const OB = [
     {icon: "\u{1F3E0}", title: "Welcome to your house", body: h => S.ST && S.ST.you.outposts
-      ? `You head <b>${esc(h.house)}</b>. There are no towns yet: everyone lives at an outpost of their own around the state's trading posts, which feed, hire and buy. Choose your land, build out from it, and settle near others when it pays. Your goal is the richest, largest house in the valley.`
+      ? `You head <b>${esc(h.house)}</b>. There are no towns yet: everyone lives at an outpost of their own around the state's trading posts, which feed, hire and buy. Your outpost is out on open land: build out from it, explore to find your neighbours, and settle near others when it pays. Your goal is the richest, largest house in the valley.`
       : `You head <b>${esc(h.house)}</b>. Your home stands in your town's square, and the gold squares around it are your border. Next door, two towns full of citizens are already trading. Your goal is the richest, largest house in the valley.`},
     {icon: "\u{1F46A}", title: "Your family is your first workforce", body: h => `Your partner works any business you own for nothing, always on shift. Your son and daughter come of age in a day or two; then they can work too, or marry into another house. A couple has a child every game month; feeding a child a Meal brings it a day sooner.`, tab: "house", label: "See your house"},
     {icon: "\u26CF", title: "Found a farm or a mine", body: () => `Pick <b>Farm</b> or <b>Mine</b> in the Build menu on the left and place it on a spur road. Then send your partner to work it from your house page, and choose what it makes. Rich ground shows itself at the first harvest.`},
@@ -1200,11 +1258,29 @@ export function createUI(ctx){
     let out = `<div class="card"><div class="t">${esc(short(c.name))} <span class="dim">of ${esc(v.house)}</span></div>
       <div class="m">${esc(c.doing || "")}${c.at ? ` at ${esc(c.at)}` : ""}</div></div>`;
     out += `<div class="acts">${F("Say hi", "say_hi", {target_id: id}, `Say hi to ${short(c.name)}`)}</div>`;
-    out += `<h3>What you know</h3>` + Object.keys(KIND_LABEL).map(k => {
-      const known = showKind(k);
+    // THEIR TERMS (2026-10-30): settlers answer at once. Some things they give
+    // freely; some not at all; for some they name a price -- coins, or goods
+    // they need sold to them cheap -- and you can meet it here.
+    const terms = v.terms || {};
+    const termsRow = (k, t) => {
+      if (t.no) return `<div class="tip">They will not share it: ${esc(t.no)}.</div>`;
+      if (t.price == null) return "";
+      const g = t.goods, canGoods = g && g.you_have >= g.qty;
+      return `<div class="tip">Their price: <b>${money(t.price)}</b> coins`
+        + (g ? `, or sell them <b>${g.qty} ${esc(g.item)}</b> at ${money2(g.unit)} each (book ${money2(g.book)}; you have ${g.you_have})` : "")
+        + ` \u2014 ${esc(t.why)}.</div><div class="acts">`
+        + B(`Pay ${money(t.price)}`, "offer_for_info", {target_id: id, what: k, coins: t.price})
+        + (canGoods ? B(`Sell ${g.qty} ${g.item} cheap`, "offer_for_info", {target_id: id, what: k, item: g.item, qty: g.qty, unit_price: g.unit}) : "")
+        + F("Make an offer", "offer_for_info", {target_id: id, what: k}, `Offer ${short(c.name)} something for their ${KIND_LABEL[k].toLowerCase()}`)
+        + `</div>`;
+    };
+    out += `<h3>What you know</h3>` + (v.temper === "guarded" ? `<div class="tip">${esc(short(c.name))} keeps to themselves: expect to pay for more.</div>` : "")
+      + Object.keys(KIND_LABEL).map(k => {
+      const known = showKind(k), t = terms[k];
       return `<div class="row"><div class="grow"><b>${KIND_LABEL[k]}</b><br><span class="${known ? "" : "dim"}">${known || "not shared with you"}</span></div>`
-        + (known ? "" : B("Ask", "ask_info", {target_id: id, what: k}))
-        + (mine.has(k) ? `<span class="dim">yours shared</span>` : B("Share mine", "share_info", {target_id: id, what: k}, true)) + `</div>`;
+        + (known || t ? "" : B("Ask", "ask_info", {target_id: id, what: k}))
+        + (mine.has(k) ? `<span class="dim">yours shared</span>` : B("Share mine", "share_info", {target_id: id, what: k}, true)) + `</div>`
+        + (!known && t ? termsRow(k, t) : "");
     }).join("");
     const groups = (S.ST && S.ST.you.groups) || [];
     out += `<h3>Deal with them</h3><div class="acts">`
@@ -1238,6 +1314,7 @@ export function createUI(ctx){
       <div class="m">Purse <b>${money2(b.cash)}</b> <span class="dim">(sales go to your coins)</span> · staff ${esc(b.workers)}/${esc(b.employee_places)} · storage ${esc(b.storage_used)}/${esc(b.storage_capacity)}</div>
       ${b.production ? `<div class="${stalled ? "warn" : "good"}">${esc(b.production)}</div>` : ""}
       <div class="m">Stock: ${esc(stock)}</div>
+      ${b.next_floor_cost != null ? `<div class="acts">${B(`Add a floor (${money(b.next_floor_cost)})`, "upgrade_site_storage", id, true)}<span class="dim">${b.floors ? `${b.floors} floor${b.floors > 1 ? "s" : ""} added \u00b7 ` : ""}more storage, same land</span></div>` : ""}
       <div class="acts">${B("Work here myself (4h)", "apply_for_job", id, true)}${F("Set production", "set_production", id)}${F("Set a price", "set_retail_price", id)}${F("Order supplies", "order_from_business", {my_business_id: b.id}, "Order supplies")}</div>
       <div class="acts">${F("Deposit", "deposit", id)}${F("Withdraw", "withdraw", id)}${F("Advertise a job", "post_job", id)}${F("Offer a job", "offer_job", id)}${F("Take stock out", "collect_business_inventory", id)}${F("Hire a courier", "post_delivery_job", id)}${inline ? "" : `<button class="btn" data-gobiz="${esc(b.id)}">Go there</button>`}</div></div>`;
   }
@@ -1634,7 +1711,7 @@ export function createUI(ctx){
     for (const o of (S.cellOwner ? S.cellOwner.values() : [])) if (o.structure && o.owner === G.you) owned[o.structure] = (owned[o.structure] || 0) + 1;
     const html = S.BOARD.business_types.map(t => {
       const can = cash >= t.cost;
-      const tip = t.defense ? `${t.name}: one square, anywhere. ${t.does}` : t.claim ? `${t.name}: ${t.does}`
+      const tip = t.defense ? `${t.name}: one square, anywhere. ${t.does}` : t.claim || !t.makes.length ? `${t.name}: ${t.does}`
         : `${t.name}: makes ${t.makes.slice(0, 5).join(", ")}. ${S.ST && S.ST.you.outposts ? "On open land you claim as you build: the land is extra, priced on the map." : t.spur ? "Spur land (farms and mines)." : "Main road."}`;
       return `<button class="bb${can ? "" : " poor"}${placingType === t.name ? " on" : ""}${t.defense ? " def" : ""}" data-build="${esc(t.name)}"
         title="${esc(tip)}">
@@ -1642,7 +1719,14 @@ export function createUI(ctx){
         <span class="nm">${esc(t.name.split(" /")[0].replace("Mining/Farming Equipment Store", "Equipment").replace("Private Security Contractor", "Security firm").replace("Home Improvement Store", "Builder").replace("Mining Operation", "Mine"))}</span>
         <span class="cost">${t.from ? "from " : ""}${money(t.cost)}</span>${owned[t.name] ? `<i class="own">${owned[t.name]}</i>` : ""}
       </button>`;
-    }).join("");
+    }).join("") + (S.ST && S.ST.you.outposts ? (() => {
+      // BUILT ROADS (2026-10-30): a dirt road from your land, by the metre.
+      const bare = (S.ST.you.land || []).filter(l => !l.road).length;
+      return `<button class="bb${bare ? "" : " poor"}${placingType === "Road" ? " on" : ""}" data-build="Road"
+        title="Road: a dirt road from your land to a road or another claim, paid by the metre. Travel there is twice as fast, and the state's convoy collects only by road.">
+        <span class="ic">\u{1F6E4}\uFE0F</span><span class="nm">Road</span><span class="cost">${money(0.12 * 100)}/100m</span>
+      </button>`;
+    })() : "");
     const box = $("bb-items");
     if (box.dataset.html === html) return;
     box.dataset.html = html; box.innerHTML = html;

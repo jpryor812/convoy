@@ -391,6 +391,7 @@ export function createLife(ctx){
         line = `${p.item} ${secs == null ? "" : secs < 60 ? Math.ceil(secs) + "s" : Math.ceil(secs / 60) + "m"}`;
       } else if (p && p.blocked) line = `${p.item}: stalled`;
       else if (card.producing) line = `${card.producing}: nobody working`;
+      else if (v.b.type === "Private Security Contractor") line = (card.staff || []).length ? "on watch" : "nobody on watch";
       const health = mk.health || "idle";
       return `<button class="hold ${health}" data-hold="${esc(v.b.id)}" title="${esc(v.b.type)} at ${esc(v.b.place)}">
         <span class="ico">${TYPE_ICON[v.b.type] || "\u{1F3E0}"}</span>

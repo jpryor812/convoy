@@ -40,13 +40,17 @@ Then open http://localhost:8800. The start screen sets up a game:
 - **Outposts** (on by default, 2026-10-27): no towns at the start. Every
   agent settles an outpost on open land around the ticked cities' markets,
   which are now the state's **trading posts** (its Tavern, Farm, Mine and
-  Refinery: they feed, hire at a fixed wage and buy). The game opens on
-  **Choose your land**: move your home over open grass and click. **Your
-  first home is free.** The frontier is **hazy**: you see the state's
-  trading posts, but not who has settled out there. The banner lets you
-  **borrow** up to 400 from the state as you settle, to start a business
-  with (2% a game day; a fifth of what your businesses earn pays it down).
-  The clock waits until you settle. See "Outposts" below and GAME_MODES.md.
+  Refinery: they feed, hire at a fixed wage and buy). **You are settled for
+  you** (2026-10-30): your first home, free, somewhere random on the map --
+  well away from the trading posts and a few hundred metres off the nearest
+  road, out of sight. The frontier is **hazy**: only a few squares round your
+  home are clear; ground, roads and people elsewhere show only once you have
+  ridden there, and the air closes in beyond a few hundred metres. See
+  "Outposts" below and GAME_MODES.md.
+- **Graphics** (top bar, 2026-10-30): *Balanced* (default) draws 30 frames a
+  second at 1.25x with smaller shadows; *Battery saver* drops shadows and the
+  colour grade too, for a cooler laptop; *Sharp* is 60 frames at full
+  Retina. A tab in the background redraws once a second.
 - The last settings you used are remembered.
 
 Saved games are listed under the form. A game saves every game hour and when
@@ -70,7 +74,7 @@ rise back up.
   look there.
 - **Fighting.** Everyone starts with a **Bat**. Bandits come at you at the
   bounty mission's camp (walk up to the tents) and, now and then, on the open
-  road when you are carrying goods -- never in your first day. They close in,
+  road when you are carrying goods -- not in the first three game hours. They close in,
   wind up (a red **!** over the head) and swing: hold **F** facing them to
   stop most of the blow, and press **R** to hit back. On the road you can also
   run for it. Knocked down, you lose a share of what you carry (at a camp, you
@@ -288,23 +292,80 @@ rise back up.
   **contact** -- which lets you message them and add them to group chats.
   Requests to you wait on the People page. Public chat is heard only by
   people near you; the leaderboard shows only those who shared standing.
+- **Settlers answer at once, by rule** (2026-10-30), not by the AI: they
+  greet you back, and share standing and trade freely; contact and holdings
+  too unless they are one of the **guarded** houses (about one in four);
+  family only if they have someone of an age to marry. **Locations** -- and
+  whatever a guarded house holds back -- have a **price**: 40 coins
+  (60 from a guarded house, half for a trading partner), or goods they need
+  sold to them at half of book. Their card shows it, with **Pay**, **Sell ...
+  cheap** and **Make an offer**. Share yours first and they share theirs
+  for free. The AIs still decide what to build, sell and say; they can pay
+  for information too (`offer_for_info`).
+- **Meals add up** (2026-10-30): a meal adds its hours to what you have
+  left, up to 24 (a longer bread, its own length). Full, you are not served
+  and a meal you carry is kept.
+- **Your kit** (2026-10-30): a weapon better than yours, or armour for an
+  empty slot or a better piece, is put on when you buy it. Your card
+  (portrait) shows your weapon and armour, with **Wield** / **Wear** for
+  anything else you carry.
+- **Add a floor** (2026-10-30): any of your buildings' cards has **Add a
+  floor** -- more storage on the same land (production sites half their
+  base again per floor; shops and taverns two plots' worth), up to six.
+  Each floor stands as a timber storey under the building.
+- **Bringing goods in** (2026-10-30): your business's card has **Bring goods
+  in** -- what it uses that you carry (**Put in**), and what your other
+  businesses hold of it (**Fetch and bring here**: you walk there, load, walk
+  back and put it in). A farm's stock rows also have **To your Refinery**.
+- **Build anywhere** (2026-10-30): with outposts there is no rule on where --
+  mountainside, near a trading post, far from a road, farms on the main road
+  or shops down a spur. Only river, road, the map's edge and other people's
+  land stop you. Your own land claim takes anything, a guard post included.
+- **The security firm keeps a watch** (2026-10-30): it makes nothing. Hire
+  **Lookouts** (20/h) or put your grown family there; each one on watch rides
+  with your loads, as a scout, on any journey starting or ending within 1.5 km
+  of it, and helps spot and fight off raiders.
+- **Bandit gangs rob buildings** (2026-10-30, `convoy/robbery.py`): from game
+  hour 6, gangs of 2-4 walk in from the hills to rich, remote
+  buildings -- the more in a yard and purse and the further from anyone, the
+  likelier; lookouts in range make it much rarer. A red banner warns you (half
+  an hour early if lookouts see them; otherwise when they reach the door),
+  the gang loots for an hour, then takes 30-60% of the yard and the purse --
+  unless your lookouts within 1.5 km drive them off; a guard post on the site
+  halves their strength. Never your pocket or your home; at most once per
+  house every 12 game hours. Riding over to fight them comes next.
+- **Ambushes on the road**: from the third game hour, carrying goods worth 50
+  or more out between places, bandits may set on you (not every time; the
+  more you carry, the likelier). R to swing, F to block, or run. AI settlers
+  also plan raids on stretches of main road.
+- **The state buys at most 100 goods a day** from each house (2026-10-30),
+  however they reach it -- its counter, its convoy, shipments or deliveries.
+  It buys again at midnight; the market shows how many more it will take.
 - **The view and the map**: the game opens over your character's shoulder
-  once you have settled (Tab for the overview). **M**, the minimap or MAP
+  (Tab for the overview). **M**, the minimap or MAP
   opens the full map of what you have discovered: drag, zoom, and click a
   spot to set a waypoint the compass points to, or to drop a pin (saved
   with the game).
 - **Your outpost** is the claim your home stands on. Later claims cost land
-  (priced by what is built near it) and road. A business needs four
-  plots of its own: place one on open land and you claim the land as you
-  build (land price + road + the business). Nobody else can build on your
-  claim.
+  (priced by what is built near it). A business needs four plots of its
+  own: place one on open land and you claim the land as you build (land
+  price + the business). Nobody else can build on your claim.
+- **Roads are built by hand** (2026-10-30). Claims, your home included, come
+  with no road. Build menu, **Road**: click your land, then a road or another
+  claim; the line shows its length and cost (0.12 a metre) before you click
+  again to build. Without a road, travel there is half as fast and **the
+  state's convoy will not come** -- sell to people, or carry the goods to a
+  trading post yourself. A road to another claim counts once that claim has
+  one to the main roads. Agents have `build_road` and see which of their
+  land has a road. Roads are hidden under the haze until you have been there;
+  your own you always see.
 - **Food** comes from taverns only. Walk in and eat, or tap Food and **Have
   it brought**: the meal's price plus about 2 a kilometre, arriving in what
   you carry. Agents order theirs when they get hungry.
 - **Selling to the state**: Market, Sell, the state's row calls **the state's
   convoy**. It pays half what the good sold for between players over the last
-  game day (half of book if nobody traded it), comes to your yard for free,
-  and pays when it collects. Citizens and delivery runs pay better.
+  game day (half of book if nobody traded it), comes to your yard for free
+  -- if the yard has a road -- and pays when it collects. Citizens and delivery runs pay better.
 - **Agents** see the open land near them with its price and what the ground
   is good for, and can claim it (`claim_land`), order meals (`order_meal`)
   and repay what they owe (`repay_debt`).

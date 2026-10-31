@@ -580,11 +580,18 @@ def test_a_bat_against_bandits() -> None:
         # The road: carrying goods, out between places.
         you.protected_until = 0.0
         you.inventory["Iron"] = 20
+        early = w.sim_time
+        w.sim_time = 0.5 * 3600.0
+        ok("not in the first three hours (2026-10-30)",
+           CB.road_check(w, game.log, you, -1e12, rng=type("R", (), {"random": lambda self: 0.0})()) is None)
+        w.sim_time = max(early, (CB.AMBUSH_GRACE_H + 1) * 3600.0)
         got = CB.road_check(w, game.log, you, -1e12, rng=type("R", (), {"random": lambda self: 0.0})())
         ok("bandits on the road go for a laden rider", got is not None and got.kind == "ambush")
-        you.protected_until = w.sim_time + 3600
-        ok("never a newcomer", CB.road_check(w, game.log, you, -1e12, rng=type("R", (), {"random": lambda self: 0.0})()) is None)
-        you.protected_until = 0.0
+        you.inventory["Iron"] = 0
+        you.inventory["Wheat"] = 1
+        ok("but not for a load under 50", CB.road_check(w, game.log, you, -1e12, rng=type("R", (), {"random": lambda self: 0.0})()) is None)
+        you.inventory["Wheat"] = 0
+        you.inventory["Iron"] = 20
         game.fight, game.last_ambush = got, w.sim_time
         you.health = CB.KNOCKED_DOWN + 1
         r = game.fight_op({"op": "struck", "foe": got.foes[0].id, "blocked": False})

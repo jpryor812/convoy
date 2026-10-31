@@ -46,7 +46,7 @@ _NOT_ACTIONS = frozenset({
     # Helpers, not actions -- and their signatures would have been handed
     # (world, log, agent) by the dispatcher. Introspection exposes every public
     # function in the module, so anything that is not a real action must say so.
-    "employee_cap", "is_staffed", "open_courier_jobs", "standing_bid",
+    "employee_cap", "is_staffed", "open_courier_jobs", "standing_bid", "state_room",
     # The player's own, from the character card; kept off the agents' tool list
     # to hold their prompt budget (agents eat at the tavern where they stand).
     "eat_meal",
@@ -133,7 +133,7 @@ DESCRIPTIONS: dict[str, str] = {
     "list_land": "Offer a plot you own for sale at your price.",
     "buy_listed_land": "Buy a plot another agent listed, at their price.",
     "upgrade_site_storage": (
-        "Raise a production site's storehouse: more stock, no more land."
+        "Add a floor to your building: it stores more, on no more land."
     ),
     "set_production": "Choose which item your business produces.",
     "set_wage": "Set the hourly wage your business offers for a role. Higher wages attract workers.",
@@ -223,8 +223,12 @@ DESCRIPTIONS: dict[str, str] = {
     ),
     "repay_debt": "Pay down what you owe the state for settling, from your pocket. It grows 2% a day.",
     "claim_land": (
-        "Claim a site from OPEN LAND NEAR YOU: four plots of your own and a road "
-        "to them, at its listed cost. Found a business there next."
+        "Claim a site from OPEN LAND NEAR YOU: four plots of your own, at its "
+        "listed cost, with no road. Found a business there next."
+    ),
+    "build_road": (
+        "Lay a dirt road from your land to another claim, or (to_place empty) the "
+        "nearest road; paid by the metre. The state's convoy collects only by road."
     ),
     "say_hi": "Greet a settler you have found, with a short line. Works without their contact.",
     "share_info": (
@@ -232,7 +236,14 @@ DESCRIPTIONS: dict[str, str] = {
         "rank), holdings, locations, trade (what you sell and buy), family, or "
         "contact (lets them message you and add you to group chats)."
     ),
-    "ask_info": "Ask a settler you have found to share one of those things with you.",
+    "ask_info": (
+        "Ask a settler you have found to share one of those things. They answer at "
+        "once: yes, no, or their price."
+    ),
+    "offer_for_info": (
+        "Meet a settler's price for something they would not share free: pay coins, "
+        "and/or sell them goods (item, qty, unit_price) below book."
+    ),
     "answer_request": "Answer a request in REQUESTS TO YOU: accept shares it.",
     "make_group": "Start a group chat; members are comma-separated ids of people whose contact you have.",
     "invite_to_group": "Add someone whose contact you have to your group chat.",
@@ -524,9 +535,12 @@ DESCRIPTIONS_AFTER_WITHDRAWAL: dict[str, str] = {
 # refused 23 times in 29, agents trying it on somebody else's tavern.
 # Only make sense when nobody starts in a town; kept off every other run's
 # prompt, which has no budget to spare for them.
-OUTPOSTS_ONLY: frozenset = frozenset({"claim_land", "order_meal", "repay_debt",
-                                      "say_hi", "share_info", "ask_info", "answer_request",
+OUTPOSTS_ONLY: frozenset = frozenset({"claim_land", "build_road", "order_meal", "repay_debt",
+                                      "say_hi", "share_info", "ask_info", "answer_request", "offer_for_info",
                                       "make_group", "invite_to_group", "post_group_chat"})
+# Only the player answers share requests by hand; every settler answers by
+# rule, at once (social.terms, 2026-10-30), so the models never see it.
+PLAYER_ONLY: frozenset = frozenset({"answer_request"})
 NO_STATE_HIDDEN: frozenset = frozenset()     # NPC hands came back, slower, 2026-10-18
 DESCRIPTIONS_NO_STATE: dict[str, str] = {
     "apply_for_job": (
@@ -541,7 +555,7 @@ DESCRIPTIONS_NO_STATE: dict[str, str] = {
 
 
 def tool_schemas(state_gone: bool = False, no_state: bool = False,
-                 outposts: bool = False) -> list[dict[str, Any]]:
+                 outposts: bool = False, player: bool = False) -> list[dict[str, Any]]:
     """OpenAI-style tool definitions for every callable action.
 
     Part of the cached prefix, so this must not vary between calls or between
@@ -555,6 +569,8 @@ def tool_schemas(state_gone: bool = False, no_state: bool = False,
         if no_state and name in NO_STATE_HIDDEN:
             continue
         if not outposts and name in OUTPOSTS_ONLY:
+            continue
+        if not player and name in PLAYER_ONLY:
             continue
         sig = inspect.signature(fn)
         properties: dict[str, Any] = {}

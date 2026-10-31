@@ -114,6 +114,10 @@ def take(world: "World", log: "EventLog", agent: "Agent", business_id: str,
     if have <= 0:
         return False, f"your {src.type.split(' /')[0]} has no {item} yet: make some first"
     room = agent.carry_capacity(world) - agent.carried_units()
+    if match["state"]:
+        if A.state_room(world, agent) <= 0:
+            return False, A._state_full(world)
+        room = min(room, A.state_room(world, agent))
     want = min(int(qty) if qty and qty > 0 else match["qty"], match["qty"], room, have)
     if want <= 0:
         return False, f"you have no room: you carry {agent.carried_units()} of {agent.carry_capacity(world)}"
@@ -165,6 +169,12 @@ def complete(world: "World", log: "EventLog", agent: "Agent") -> str:
     if n <= 0:
         agent.delivery = None
         return "You no longer have the goods: the delivery is off."
+    if buyer.is_government:
+        n = min(n, A.state_room(world, agent))
+        if n <= 0:
+            agent.delivery = None
+            return f"{A._state_full(world)[0].upper()}{A._state_full(world)[1:]}; the goods are still yours."
+        A._state_took(world, agent, n)
     total = round(d["unit"] * n, 2)
     if buyer.is_government:
         world.government.treasury -= total

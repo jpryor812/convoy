@@ -16,6 +16,7 @@ from typing import Any
 from . import state as _state
 from .state import (
     Raid,
+    Robbery,
     BuyOrder,
     Claim,
     FamilyMember,
@@ -56,7 +57,7 @@ _CLASSES = {
     for c in (
         Activity, Agent, Bounty, BuyOrder, Business, Claim, FamilyMember, MarriageOffer, ChatMessage, Consignment, Convoy, Dispatch, ShareRequest, ChatGroup,
         ConvoyMember, Employment, EscortPosting, Government, Guild, JobPosting,
-        Market, Plot, Property, Raid,
+        Market, Plot, Property, Raid, Robbery,
         Proposal, Reasoning, Recommendation, ResearchState, Snapshot, StolenStack,
         TradeOffer, Transaction, VehicleInstance, World,
     )
