@@ -391,7 +391,10 @@ def test_prefix_cost_is_within_budget():
     # price for what they will not share), and the state's 100-a-day limit.
     # answer_request left the models' list (settlers answer by rule).
     # Measured 20,365.
-    ok("outposts prefix under 20.5k tokens", out_tok < 20500, f"~{out_tok} tokens")
+    # 20,500 -> 21,200 on 2026-10-31: the MARKET BOARD at the trading posts
+    # (board_post, board_take, board_cancel and a briefing sentence) and the
+    # bandit gangs' sentence. Measured 21,041.
+    ok("outposts prefix under 21.2k tokens", out_tok < 21200, f"~{out_tok} tokens")
     ok("prefix is large enough to cache", prefix_tok > 1024, f"~{prefix_tok} tokens")
 
 

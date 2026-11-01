@@ -39,6 +39,17 @@ KINDS: dict[str, str] = {
 }
 
 
+# The same, said of your own (2026-10-31: "shared your your contact").
+YOUR_KINDS: dict[str, str] = {
+    "standing": "your net worth and rank",
+    "holdings": "what you own",
+    "locations": "where your land and buildings are",
+    "trade": "what you are selling and buying now",
+    "family": "your children, and who is of age to marry",
+    "contact": "your contact",
+}
+
+
 def sees(world: "World", viewer: "Agent", other: "Agent", kind: str) -> bool:
     """Whether `viewer` may see `kind` about `other`."""
     if not world.outposts or viewer.id == other.id:

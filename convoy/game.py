@@ -1274,6 +1274,39 @@ class Game:
                 "claim": ({"name": c.name, "x": c.x, "y": c.y, "road": c.road, "city": c.city,
                            "owner": c.owner} if c else None)}
 
+    def call_vehicle(self, body: dict[str, Any]) -> dict[str, Any]:
+        """WHISTLE (2026-10-31): your animal comes to you -- in the world, to
+        where you stand, so you can mount it there."""
+        with self.engine.world_lock:
+            v = self.world.vehicles.get(str(body.get("vehicle_id", "")))
+            if v is None or v.owner != self.you.id:
+                return {"ok": False, "message": "not your animal"}
+            if v.mounted_by:
+                return {"ok": True, "message": "you are riding it"}
+            v.location = self.you.location
+            return {"ok": True, "message": f"your {v.type} is at {v.location}"}
+
+    def market_board(self) -> dict[str, Any]:
+        """The trading posts' market board, recent deals and prices (2026-10-31)."""
+        from . import board as BD
+        with self.engine.world_lock:
+            out = BD.view(self.world, self.you)
+            you = self.you
+            held: dict[str, int] = dict((i, q) for i, q in you.inventory.items() if q > 0)
+            for b in you.owned_businesses:
+                biz = self.world.businesses.get(b)
+                if biz is not None and not biz.closed:
+                    for i, q in biz.inventory.items():
+                        if q > 0:
+                            held[i] = held.get(i, 0) + q
+            out["holdings"] = {i: q for i, q in sorted(held.items()) if i in D.ALL_ITEMS and i != "On Foot"}
+            out["cash"] = round(you.denari, 2)
+            out["items"] = [i for i in D.ALL_ITEMS if i != "On Foot"]
+            for i in set(out["holdings"]) - set(out["prices"]):
+                out["prices"][i] = {"going": BD.going_price(self.world, i), "state": E.state_price(self.world, i),
+                                    "book": round(D.base_price(i), 2), "history": BD.history(self.world, i)}
+            return out
+
     def road(self, body: dict[str, Any]) -> dict[str, Any]:
         """BUILT ROADS (2026-10-30): price or build a dirt road from your claim
         `place` to the road or claim nearest (x, y), or to claim `to`."""
@@ -1631,6 +1664,23 @@ class Game:
                 return "milestone", (f"You found {other.name} of {other.house}"
                                      + (f", who owns a {', a '.join(owns)}" if owns else "")
                                      + ". You can trade with them now.")
+        # THE MARKET BOARD (2026-10-31, convoy/board.py).
+        if e.type == "board_traded" and e.subject == me and e.actor != me:
+            who = self._name(e.actor)
+            if d.get("side") == "sell":
+                return "milestone", (f"{who} bought {d.get('qty')} of your {d.get('item')} on the board at "
+                                     f"{d.get('price', 0):.2f}: +{d.get('qty', 0) * d.get('price', 0) * 0.98:.0f}.")
+            return "milestone", (f"{who} filled your wanted: {d.get('qty')} {d.get('item')} at "
+                                 f"{d.get('price', 0):.2f}, on its way to you.")
+        if e.actor == me and e.type == "board_delivered":
+            biz = self.world.businesses.get(e.subject or "")
+            return "you", (f"Porters brought {d.get('qty')} {d.get('item')} to "
+                           + (f"your {biz.type.split(' /')[0]}." if biz else "you."))
+        if e.actor == me and e.type == "board_closed" and d.get("status") == "expired":
+            return "you", (f"Your board post for {d.get('item')} came down after a day"
+                           + (f": {d.get('left')} back to you." if d.get("left") else "."))
+        if e.actor == me and e.type in ("board_posted", "board_traded", "board_closed"):
+            return None
         # BANDIT GANGS (2026-10-30, convoy/robbery.py): coming, robbing, done.
         if e.actor == me and e.type in ("robbery_sighted", "robbery_started", "building_robbed", "robbery_beaten"):
             biz = self.world.businesses.get(e.subject)

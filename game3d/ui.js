@@ -255,7 +255,7 @@ export function createUI(ctx){
     renderHUD();
   }
   function openMarket(tab, item){
-    mkTab = tab || "buy"; mkItem = item || ""; mkCity = "";
+    mkTab = tab || "board"; mkItem = item || ""; mkCity = "";
     if (view && view.kind === "tab" && view.ref === "market") renderView(true);
     else { view = null; openTab("market"); }
   }
@@ -280,13 +280,14 @@ export function createUI(ctx){
     if (!view || !S.OBS || !S.BOARD) return;
     const top = $("pbody").scrollTop;
     if (view.kind === "tab"){
-      if (view.ref === "chat" && !force){ updateChat(); return; }
+      if (view.ref === "chat" && !force){ updateChat(); if (chatFill && $("say-to")) chatFill(); return; }
       if (view.ref === "market"){
         const data = await api.get("/api/market");
+        const bd = mkTab === "board" ? await api.get("/api/marketboard") : null;
         if (!view || view.ref !== "market") return;
         if (!force && $("pbody").contains(document.activeElement) && /INPUT|SELECT/.test(document.activeElement.tagName)) return;
-        show(TITLES.market, marketPanel(data));
-        wireMarket(data);
+        show(TITLES.market, marketPanel(data, bd));
+        wireMarket(data, bd);
         if (!force) $("pbody").scrollTop = top;
         return;
       }
@@ -801,12 +802,85 @@ export function createUI(ctx){
      price box each, and what everything is fetching. A good is for sale when a
      business holds it at a price; finished goods are bought over the counter
      in person, feedstock is ordered and delivered to a business that uses it. */
-  let mkTab = "buy", mkItem = "", mkCity = "";
+  let mkTab = "board", mkItem = "", mkCity = "";
+  /* THE MARKET BOARD (designer request, 2026-10-31): "make the market look
+     more interactive ... showing previous deals and posts about what people
+     are buying and selling? More images too?" Each trading post's board, open
+     to everyone (convoy/board.py): recent deals, prices with a day's chart,
+     what is for sale and wanted, and a form to post your own. */
+  let bdPost = "", bdSide = "sell", bdDraft = {};
+  const slug = i => String(i).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const icon = (i, big) => `<img class="ico-item${big ? " big" : ""}" src="/items/${slug(i)}.svg" alt="" onerror="this.style.visibility='hidden'">`;
+  function spark(h){
+    const pts = [], vals = (h || []).filter(v => v != null);
+    if (vals.length < 2) return `<span class="dim spark-none">${vals.length ? "one deal" : "no deals yet"}</span>`;
+    const lo = Math.min(...vals), hi = Math.max(...vals), span = hi - lo || 1;
+    let last = null;
+    h.forEach((v, k) => { if (v == null) v = last; if (v == null) return; last = v; pts.push(`${(k / (h.length - 1) * 88 + 1).toFixed(1)},${(23 - (v - lo) / span * 20).toFixed(1)}`); });
+    const up = vals[vals.length - 1] >= vals[0];
+    return `<svg class="spark" viewBox="0 0 90 26"><polyline points="${pts.join(" ")}" fill="none" stroke="${up ? "#4f8a3a" : "#b4442e"}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+  }
+  function ago(hour){
+    const m = Math.max(0, Math.round(((S.ST && S.ST.hour) || hour) * 60 - hour * 60));
+    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.floor(m / 60)}h ago`;
+  }
+  function boardPanel(Bd){
+    const posts = Bd.posts.filter(p => !bdPost || p.post === bdPost);
+    let out = `<div class="howto"><b>The market board.</b> Every trading post has one, open to everyone &mdash; no need to have met the seller. <b>For sale</b> posts hold the goods; <b>Wanted</b> posts hold the money. Take one and the post's porters carry the goods (it keeps ${Math.round(Bd.fee * 100)}%).</div>`;
+    out += `<div class="chips">` + ["", ...Bd.trading_posts].map(p => `<button class="chip${bdPost === p ? " on" : ""}" data-bdpost="${esc(p)}">${p ? esc(p) + (p === Bd.home_post ? " \u2605" : "") : "All posts"}</button>`).join("") + `</div>`;
+    // Recent deals.
+    out += `<h3>Recent deals</h3><div class="deals">` + (Bd.deals.length ? Bd.deals.slice(0, 10).map(d =>
+      `<div class="deal${d.state ? " state" : ""}${d.seller_id === G.you || d.buyer_id === G.you ? " mine" : ""}">${icon(d.item)}<div class="grow"><b>${esc(short(d.seller))}</b> sold <b>${d.qty} ${esc(d.item)}</b> to <b>${esc(short(d.buyer))}</b></div><span class="px">${money2(d.price)}</span><span class="dim">${ago(d.hour)}</span></div>`).join("")
+      : `<div class="empty">No deals yet. Be the first: post below.</div>`) + `</div>`;
+    // For sale and wanted.
+    const card = p => {
+      const pr = Bd.prices[p.item] || {}, total = q => money2(q * p.price);
+      let act;
+      if (p.mine) act = `<span class="yours">your post</span>${B("Take down", "board_cancel", {post_id: p.id})}`;
+      else if (p.side === "sell"){
+        const q = Math.max(1, Math.min(p.qty, Math.floor(Bd.cash / p.price) || 1));
+        act = `<input class="price qty" type="number" min="1" max="${p.qty}" value="${q}" data-bdq="${esc(p.id)}" data-px="${p.price}"><button class="btn go" data-btake="${esc(p.id)}">Buy \u00b7 <span data-bdt="${esc(p.id)}">${total(q)}</span></button>`;
+      } else if (p.you_have > 0){
+        const q = Math.min(p.qty, p.you_have);
+        act = `<input class="price qty" type="number" min="1" max="${q}" value="${q}" data-bdq="${esc(p.id)}" data-px="${p.price}"><button class="btn go" data-btake="${esc(p.id)}">Sell \u00b7 <span data-bdt="${esc(p.id)}">${total(q)}</span></button>`;
+      } else act = `<span class="dim">you have none</span>`;
+      const vs = pr.going ? (p.price < pr.going * 0.97 ? `<span class="good">below the going ${money2(pr.going)}</span>` : p.price > pr.going * 1.03 ? `<span class="warn">above the going ${money2(pr.going)}</span>` : `at the going price`) : "";
+      return `<div class="post ${p.side}">${icon(p.item, true)}<div class="grow"><b>${p.qty} ${esc(p.item)}</b> at <b>${money2(p.price)}</b> each<small>${p.mine ? "you" : esc(short(p.owner))} \u00b7 ${esc(p.post)} \u00b7 ${vs} \u00b7 ${p.hours_left}h left</small></div><div class="mk-act">${act}</div></div>`;
+    };
+    const sells = posts.filter(p => p.side === "sell"), buys = posts.filter(p => p.side === "buy");
+    out += `<div class="board-cols"><div><h3>For sale <span class="dim">(${sells.length})</span></h3>` + (sells.length ? sells.map(card).join("") : `<div class="empty">Nothing for sale here yet.</div>`)
+      + `</div><div><h3>Wanted <span class="dim">(${buys.length})</span></h3>` + (buys.length ? buys.map(card).join("") : `<div class="empty">Nobody is asking yet.</div>`) + `</div></div>`;
+    // Prices.
+    const items = Object.keys(Bd.prices).sort((a, b) => (Bd.prices[b].history || []).filter(v => v != null).length - (Bd.prices[a].history || []).filter(v => v != null).length);
+    out += `<h3>Prices <span class="dim">(between people, last game day)</span></h3><div class="prices">` + items.slice(0, 12).map(i => {
+      const pr = Bd.prices[i];
+      return `<div class="pcard">${icon(i)}<div class="grow"><b>${esc(i)}</b><small>going <b>${money2(pr.going)}</b> \u00b7 state ${money2(pr.state)}</small></div>${spark(pr.history)}</div>`;
+    }).join("") + `</div>`;
+    // Post your own.
+    const held = Object.keys(Bd.holdings);
+    const pickable = bdSide === "sell" ? held : Bd.items;
+    const item = pickable.includes(bdDraft.item) ? bdDraft.item : pickable[0];
+    const pr = (item && Bd.prices[item]) || {going: 0, state: 0, book: 0};
+    const qty = bdDraft.qty || (bdSide === "sell" && item ? Math.min(Bd.holdings[item] || 1, 50) : 10);
+    const price = bdDraft.price || (bdSide === "sell" ? pr.going * 1.05 : pr.going * 0.95) || pr.book;
+    out += `<h3>Post on the board</h3><div class="postform">`
+      + `<div class="seg">${["sell", "buy"].map(s => `<button class="seg-b${bdSide === s ? " on" : ""}" data-bdside="${s}">${s === "sell" ? "For sale" : "Wanted"}</button>`).join("")}</div>`
+      + (bdSide === "sell" && !held.length ? `<div class="empty">You have nothing to sell yet: make some goods first.</div>`
+        : `<div class="hire-row">${item ? icon(item, true) : ""}<select id="bp-item">${pickable.map(i => `<option${i === item ? " selected" : ""}>${esc(i)}</option>`).join("")}</select>`
+          + `<input id="bp-qty" type="number" min="1" max="500" value="${qty}" title="How many"><input id="bp-price" type="number" min="0.01" step="0.01" value="${Number(price).toFixed(2)}" title="Price each">`
+          + `<select id="bp-post">${Bd.trading_posts.map(p => `<option${p === (bdPost || Bd.home_post) ? " selected" : ""}>${esc(p)}</option>`).join("")}</select>`
+          + `<button class="btn go" id="bp-go">${bdSide === "sell" ? "Put up for sale" : "Post wanted"}</button></div>`
+          + `<div class="tip">${item ? `${esc(item)}: going <b>${money2(pr.going)}</b> between people \u00b7 the state pays ${money2(pr.state)} \u00b7 book ${money2(pr.book)}.` : ""} ${bdSide === "sell" ? `You hold ${Bd.holdings[item] || 0}; the goods are held at the post until bought.` : `The money (${money2(qty * price)}) is held until it is filled.`}</div>`)
+      + `</div>`;
+    return out;
+  }
+
   const mkDraft = {};                           // prices you typed but have not posted, by business|item
-  function marketPanel(M){
+  function marketPanel(M, Bd){
     const hauls = (S.BOARD.hauls || []).filter(h => h.mine_to_receive || h.mine_to_carry);
-    const seg = ["buy", "sell", "deliveries", "prices"].map(t => `<button class="seg-b${mkTab === t ? " on" : ""}" data-mk="${t}">${{buy: "Buy", sell: "Sell", deliveries: `Deliveries${hauls.length ? ` (${hauls.length})` : ""}`, prices: "Prices"}[t]}</button>`).join("");
+    const seg = ["board", "buy", "sell", "deliveries", "prices"].map(t => `<button class="seg-b${mkTab === t ? " on" : ""}" data-mk="${t}">${{board: "Board", buy: "Buy", sell: "Sell", deliveries: `Deliveries${hauls.length ? ` (${hauls.length})` : ""}`, prices: "Prices"}[t]}</button>`).join("");
     let out = `<div class="seg">${seg}</div>`;
+    if (mkTab === "board" && Bd) return out + boardPanel(Bd);
     const suggest = g => g.avg != null ? g.avg : g.cheapest != null ? Math.max(g.floor, g.cheapest - 0.1) : g.book;
     if (mkTab === "buy"){
       out += `<div class="howto"><b>How buying works.</b> Find the good below and press its button. <b>Feedstock</b> (Wheat, ore, hides&hellip;) is paid for now and waits at the seller's: you walk over, it loads, and you carry it to your business &mdash; or pay a courier. <b>Shop goods</b> (Meals, tools, weapons) are bought at the counter: the button walks you there and buys on arrival.</div>`;
@@ -966,7 +1040,29 @@ export function createUI(ctx){
       renderView(true);
     };
   }
-  function wireMarket(M){
+  function wireMarket(M, Bd){
+    if (Bd){
+      const pb = $("pbody");
+      pb.querySelectorAll("[data-bdpost]").forEach(b => b.onclick = () => { bdPost = b.dataset.bdpost; renderView(true); });
+      pb.querySelectorAll("[data-bdside]").forEach(b => b.onclick = () => { bdSide = b.dataset.bdside; bdDraft = {}; renderView(true); });
+      pb.querySelectorAll("[data-bdq]").forEach(inp => inp.oninput = () => {
+        const t = pb.querySelector(`[data-bdt="${inp.dataset.bdq}"]`); if (t) t.textContent = money2((+inp.value || 0) * +inp.dataset.px);
+      });
+      pb.querySelectorAll("[data-btake]").forEach(b => b.onclick = async () => {
+        const inp = pb.querySelector(`[data-bdq="${b.dataset.btake}"]`);
+        await act("board_take", {post_id: b.dataset.btake, qty: Math.max(1, Math.floor(+inp.value || 1))});
+        renderView(true);
+      });
+      const it = $("bp-item"), go = $("bp-go");
+      if (it) it.onchange = () => { bdDraft = {item: it.value}; renderView(true); };
+      for (const id of ["bp-qty", "bp-price"]) if ($(id)) $(id).oninput = () => { bdDraft = {item: it && it.value, qty: +$("bp-qty").value, price: +$("bp-price").value}; };
+      if (go) go.onclick = async () => {
+        const r = await act("board_post", {side: bdSide, item: it.value, qty: Math.floor(+$("bp-qty").value || 0),
+                                            price: +$("bp-price").value || 0, trading_post: $("bp-post").value});
+        if (r && r.ok) bdDraft = {};
+        renderView(true);
+      };
+    }
     wireBid(M);
     $("pbody").querySelectorAll("[data-mk]").forEach(b => b.onclick = () => { mkTab = b.dataset.mk; renderView(true); });
     const it = $("mk-item"), ct = $("mk-city");
@@ -1462,20 +1558,35 @@ export function createUI(ctx){
     if (atBottom) log.scrollTop = 1e6;
     seen.chat = lines.length; badges();
   }
+  let chatFill = null;                    // rebuilds the To list (wireChat)
   function wireChat(){
     const to = $("say-to"), you = S.ST && S.ST.you;
     if (you && you.outposts){
       // Outposts: public chat reaches only those near you; groups and
       // messages need contacts (2026-10-28).
       const name = id => (S.BOARD.agents.find(a => a.id === id) || {name: id}).name;
-      to.innerHTML = `<option value="">Nearby (whoever can hear you)</option>`
-        + (you.groups || []).map(g => `<option value="group:${esc(g.id)}">Group: ${esc(g.name)}</option>`).join("")
-        + (you.contacts || []).map(id => `<option value="${esc(id)}">${esc(short(name(id)))}</option>`).join("");
+      // Built from the latest status each time (2026-10-31: a group made a
+      // moment ago never appeared here, so messages kept going to Nearby).
+      const fill = pick => {
+        const st = (S.ST && S.ST.you) || you, keep = pick || to.value;
+        to.innerHTML = `<option value="">Nearby (within 400 m)</option>`
+          + (st.groups || []).map(g => `<option value="group:${esc(g.id)}">Group: ${esc(g.name)} (${g.members.length - 1})</option>`).join("")
+          + (st.contacts || []).map(id => `<option value="${esc(id)}">${esc(short(name(id)))}</option>`).join("");
+        if ([...to.options].some(o => o.value === keep)) to.value = keep;
+      };
+      fill((you.groups || []).length ? `group:${you.groups[you.groups.length - 1].id}` : "");
+      chatFill = fill;
       const mk = $("grp-make");
       if (mk) mk.onclick = async () => {
         const n = $("grp-name").value.trim(); if (!n) return;
         const r = await act("make_group", {name: n, members: (you.contacts || []).join(",")});
-        if (r.ok) $("grp-name").value = "";
+        if (r.ok){
+          $("grp-name").value = "";
+          const gid = (/\((K\d+)\)/.exec(r.message || "") || [])[1];
+          await pollStatus();
+          fill(gid ? `group:${gid}` : "");
+          toast(`Group made: messages go to it now (the To list)`);
+        }
       };
     } else
     to.innerHTML = `<option value="">Everyone</option>` + S.BOARD.agents.map(a => `<option value="${esc(a.id)}">${esc(short(a.name))}</option>`).join("");

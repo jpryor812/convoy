@@ -2064,6 +2064,27 @@ def claim_land(world: World, log: EventLog, agent: Agent, site_id: str, purpose:
     return ok, msg
 
 
+def board_post(world: World, log: EventLog, agent: Agent, side: str, item: str, qty: int,
+               price: float, trading_post: str = "") -> Result:
+    """Pin a post on a trading post's market board, open to everyone: side
+    "sell" puts up goods you carry or hold in your businesses; "buy" posts a
+    wanted, holding the money. trading_post defaults to your nearest."""
+    from . import board as BD
+    return BD.post(world, log, agent, side, item, qty, price, trading_post)
+
+
+def board_take(world: World, log: EventLog, agent: Agent, post_id: str, qty: int = 0) -> Result:
+    """Take a board post: buy from a for-sale post, or sell into a wanted one."""
+    from . import board as BD
+    return BD.take(world, log, agent, post_id, qty)
+
+
+def board_cancel(world: World, log: EventLog, agent: Agent, post_id: str) -> Result:
+    """Take down a post of yours; goods or money held come back."""
+    from . import board as BD
+    return BD.cancel(world, log, agent, post_id)
+
+
 def build_road(world: World, log: EventLog, agent: Agent, from_place: str, to_place: str = "") -> Result:
     """Lay a dirt road from your land `from_place` to another claim
     `to_place`, or, left empty, to the nearest road. Paid by the metre. The
@@ -2147,6 +2168,9 @@ def post_world_chat(world: World, log: EventLog, agent: Agent, text: str) -> Res
     if world.outposts:
         near = SO.hearers(world, agent)
         ok, msg = _post(world, log, agent, "world", text, heard_by=near)
+        if ok and not near:
+            return ok, (f"{msg}, but nobody is within {DS.SIGHT_M:.0f} m to hear you: message the "
+                        f"people you have met (their contact), or a group of them")
         return ok, (f"{msg}; {len(near)} people near you heard it" if ok else msg)
     return _post(world, log, agent, "world", text)
 
@@ -2214,7 +2238,7 @@ def share_info(world: World, log: EventLog, agent: Agent, target_id: str, what: 
         return False, f"{other.name} already has your {what}"
     log.emit(world.sim_time, "shared", actor=agent.id, subject=other.id, kind=what,
              significance=Significance.MEDIUM)
-    return True, f"shared your {SO.KINDS[what].replace('their', 'your')} with {other.name}"
+    return True, f"shared {SO.YOUR_KINDS[what]} with {other.name}"
 
 
 def ask_info(world: World, log: EventLog, agent: Agent, target_id: str, what: str) -> Result:

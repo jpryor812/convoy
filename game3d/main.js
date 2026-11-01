@@ -25,6 +25,7 @@ import { createLife } from "./life.js";
 import { createFight } from "./fight.js";
 import { createTerrain } from "./terrain.js";
 import { createFlora } from "./flora.js";
+import { TUNE, readIntent, createWalker, createRider } from "./move.js";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
@@ -1411,11 +1412,12 @@ const S_MIN = 14, S_MAX = 520, THIRD_OUT = 24;
 function focusPoint(){ return camMode === "strategy" ? focus : (S.player ? S.player.root.position : focus); }
 function enterThird(){
   if (!S.player) return;
-  camMode = "third"; dist = 8; pitch = 0.22;
+  camMode = "third"; dist = 3.6; pitch = 0.12;
   yaw = Math.atan2(camera.position.x - S.player.root.position.x, camera.position.z - S.player.root.position.z);
   modeChanged();
 }
 function enterStrategy(at){
+  freeMouse();
   camMode = "strategy";
   focusGoal.copy(at || (S.player ? S.player.root.position : focus)); focus.copy(focusGoal);
   sDist = Math.max(sDist, 40);
@@ -1429,7 +1431,9 @@ function flyTo(v, d){
 function modeChanged(){
   $("keys").innerHTML = camMode === "strategy"
     ? "<b>WASD</b>/<b>drag</b> pan &middot; <b>arrows</b> turn &middot; <b>scroll</b> zoom &middot; <b>click</b> to walk or open &middot; <b>Tab</b> take control &middot; <b>C</b> find me"
-    : "<b>WASD</b> move &middot; <b>arrows</b> camera &middot; <b>Shift</b> run &middot; <b>R</b> swing &middot; hold <b>F</b> block &middot; <b>E</b> open &middot; <b>Tab</b> overview &middot; <b>C</b> behind me";
+    : riding()
+      ? "<b>W</b> walk on &middot; tap <b>Shift</b> to spur (hold to keep the pace) &middot; <b>S</b> rein in &middot; <b>A/D</b> steer &middot; <b>E</b> get down &middot; " + (mouseLook ? "<b>Esc</b> free the mouse" : LOCK_OK ? "<b>click</b> to look" : "<b>drag</b> to look") + " &middot; <b>Tab</b> overview"
+      : "<b>WASD</b> move &middot; " + (mouseLook ? "<b>mouse</b> look &middot; <b>LMB</b> swing &middot; <b>RMB</b> aim &middot; <b>Esc</b> free the mouse" : LOCK_OK ? "<b>click</b> to look" : "<b>drag</b> to look &middot; <b>RMB</b> aim") + " &middot; <b>Shift</b> sprint &middot; <b>Space</b> jump &middot; <b>C</b> slide &middot; <b>R</b> swing &middot; hold <b>F</b> block &middot; <b>E</b> use / ride &middot; <b>H</b> whistle &middot; <b>Tab</b> overview";
   if (window.convoyUI) window.convoyUI.cameraChanged(camMode);
 }
 let autoTarget = null, autoOnArrive = null;
@@ -1465,93 +1469,190 @@ function nearestPlace(v){
   return best;
 }
 
+/* MOVEMENT (2026-10-31): Fortnite on foot, Red Dead on a donkey -- the rules
+   are in move.js (input -> intent -> state machine -> physics); this applies
+   them to the scene: collisions, facing, animation and the arrival news. */
+const WALKER = createWalker(), RIDER = createRider();
+const pressed = new Set();                  // pressed since the last frame
+let lastLook = 0;                           // when the mouse last turned the camera
+function riding(){ return !!(S.ST && RIDEABLE.has(S.ST.vehicle) && DONKEY.root); }
+/* What is solid: steep ground, mountain cones, tree trunks, buildings. Moves
+   `pos` out of them; true if anything was hit. */
+function collide(pos, last, maxGrade = 0.9){
+  let hit = false;
+  // Too steep to climb: people scramble up to ~42 degrees, animals ~30.
+  if (last){
+    const dh = groundAt(pos.x, pos.z) - groundAt(last.x, last.z);
+    const run = Math.hypot(pos.x - last.x, pos.z - last.z);
+    if (run > 0.001 && dh / run > maxGrade){ pos.x = last.x; pos.z = last.z; hit = true; }
+  }
+  for (const m of (LAND ? [] : S.mountains || [])){
+    const dx = pos.x - m.x, dz = pos.z - m.z, d = Math.hypot(dx, dz), r = m.r * 0.72;
+    if (d < r && d > 0.001){ pos.x = m.x + dx / d * r; pos.z = m.z + dz / d * r; hit = true; }
+  }
+  for (const [x, z, k] of treesNear(pos.x, pos.z)){
+    const dx = pos.x - x, dz = pos.z - z, d = Math.hypot(dx, dz), r = 0.55 * k + 0.35;
+    if (d < r && d > 0.001){ pos.x = x + dx / d * r; pos.z = z + dz / d * r; hit = true; }
+  }
+  for (const c of colliders){
+    const dx = pos.x - c.x, dz = pos.z - c.z, d = Math.hypot(dx, dz);
+    if (d < c.r && d > 0.001){ pos.x = c.x + dx / d * c.r; pos.z = c.z + dz / d * c.r; hit = true; }
+  }
+  return hit;
+}
+WALKER.on("OnLand", () => { if (S.player) S.player.pose && (S.player.pose.squash = 0.84); });
+WALKER.on("OnSwingHit", () => FIGHT.swing());
+
 function updatePlayer(dt){
   const P = S.player; if (!P) return;
   const busyTravel = S.ST && /^Travelling/.test(S.ST.activity || "");
-  const fwd = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
-  const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
-  const mv = new THREE.Vector3();
   if (camMode === "third" && orbiting()) orbitKeys(dt);
-  else {
-    // KEYS (designer request, 2026-10-18): WASD moves, the arrows are the camera.
-    if (camMode === "third") arrowCamera(dt);
-    if (!busyTravel && !S.travelling && camMode === "third"){
-      if (keys.has("w")) mv.add(fwd);
-      if (keys.has("s")) mv.sub(fwd);
-      if (keys.has("a")) mv.sub(right);
-      if (keys.has("d")) mv.add(right);
-    }
-  }
-  const run = keys.has("shift");
-  if (mv.lengthSq() > 0){ autoTarget = null; autoOnArrive = null; marker.visible = false; }
+  else if (camMode === "third") arrowCamera(dt);
+  // INPUT -> INTENT. In the overview WASD pans the map, not you.
+  const control = camMode === "third" && !orbiting();
+  let it = readIntent({held: control ? keys : new Set(), pressed: control ? pressed : new Set()}, yaw);
+  pressed.clear();
+  if (it.moving){ autoTarget = null; autoOnArrive = null; marker.visible = false; }
   else if (autoTarget && !busyTravel){
-    const to = autoTarget.clone().sub(P.root.position).setY(0);
-    if (to.length() < 1.2){
+    const to = autoTarget.clone().sub(P.root.position).setY(0), d = to.length();
+    if (d < 1.2){
       autoTarget = null; marker.visible = false;
       const cb = autoOnArrive; autoOnArrive = null; if (cb) cb();
-    } else mv.copy(to);
+    } else {
+      to.normalize();
+      // Walking somewhere for you: forward along the way, the camera's frame aside.
+      it = {...it, moving: true, moveX: to.x, moveZ: to.z, ax: 0, ay: 1, sprint: d > 40, auto: true};
+    }
   }
-  // WEIGHT (2026-10-19): you ease into a run and out of it, and turn through
-  // an arc, instead of snapping to full speed and facing the new way at once.
-  let want = 0;
-  if (mv.lengthSq() > 0){
-    mv.normalize();
-    want = run || (autoTarget && autoTarget.distanceTo(P.root.position) > 40) ? RUN : WALK;
-    // Mounted, you go at your vehicle's pace (a 4-horse chariot is 4x a walk).
-    if (S.ST && S.ST.vehicle) want *= S.ST.speed || 1;
-    if (FIGHT.blocking) want *= 0.4;                   // guard up: a shuffle
-  }
-  P.vel = P.vel || new THREE.Vector3();
-  const goal = mv.clone().multiplyScalar(want);
-  P.vel.lerp(goal, 1 - Math.exp(-dt * (want > P.vel.length() ? 7 : 10)));
-  if (P.vel.lengthSq() < 0.01 && !want) P.vel.set(0, 0, 0);
-  let speed = P.vel.length();
-  if (speed > 0){
-    P.root.position.addScaledVector(P.vel, dt);
-    const face = Math.atan2(P.vel.x, P.vel.z);
-    let dh = face - P.heading; dh = Math.atan2(Math.sin(dh), Math.cos(dh));
-    P.heading += dh * Math.min(1, dt * 9);
-    P.root.rotation.y = P.heading;
-  }
-  if (speed < 0.35) speed = 0;
-  // Too steep to climb: a step that rises faster than you could scramble is
-  // refused, so cliffs and peaks turn you aside.
-  if (P.lastXZ){
-    const dh = groundAt(P.root.position.x, P.root.position.z) - groundAt(P.lastXZ.x, P.lastXZ.z);
-    const run = Math.hypot(P.root.position.x - P.lastXZ.x, P.root.position.z - P.lastXZ.z);
-    if (run > 0.001 && dh / run > 1.1){ P.root.position.x = P.lastXZ.x; P.root.position.z = P.lastXZ.z; P.vel.multiplyScalar(0.3); }
-  }
-  // Mountain cones (the painted look) are solid: you walk round them.
-  for (const m of (LAND ? [] : S.mountains || [])){
-    const dx = P.root.position.x - m.x, dz = P.root.position.z - m.z, d = Math.hypot(dx, dz), r = m.r * 0.72;
-    if (d < r && d > 0.001){ P.root.position.x = m.x + dx / d * r; P.root.position.z = m.z + dz / d * r; P.vel.multiplyScalar(0.5); }
-  }
-  // Trunks are solid.
-  for (const [x, z, k] of treesNear(P.root.position.x, P.root.position.z)){
-    const dx = P.root.position.x - x, dz = P.root.position.z - z, d = Math.hypot(dx, dz), r = 0.55 * k + 0.35;
-    if (d < r && d > 0.001){ P.root.position.x = x + dx / d * r; P.root.position.z = z + dz / d * r; }
-  }
-  // Buildings are solid.
-  for (const c of colliders){
-    const dx = P.root.position.x - c.x, dz = P.root.position.z - c.z, d = Math.hypot(dx, dz);
-    if (d < c.r && d > 0.001){ P.root.position.x = c.x + dx / d * c.r; P.root.position.z = c.z + dz / d * c.r; }
-  }
-  P.root.position.y = groundAt(P.root.position.x, P.root.position.z);
-  P.lastXZ = (P.lastXZ || new THREE.Vector3()).set(P.root.position.x, 0, P.root.position.z);
-  const working = S.ST && /^Working/.test(S.ST.activity || "");
-  const legs = S.ST && S.ST.vehicle ? speed / (S.ST.speed || 1) : speed;   // a rider's legs do not race
-  setAnim(P, FIGHT.swinging() && (P.acts.attack || P.acts.work) ? (P.acts.attack ? "attack" : "work")
-          : FIGHT.blocking && P.acts.block && speed === 0 ? "block" : speed > 0 ? (legs > WALK + 0.1 ? "run" : "walk") : working && P.acts.work ? "work" : "idle",
-          speed > 0 ? legs / (legs > WALK + 0.1 ? 7.5 : 3.6) : 1);
-  P.mixer.update(dt);
+  const locked = busyTravel || !!S.travelling;
+  if (riding()) updateRiding(dt, it, locked);
+  else updateWalking(dt, it, locked);
   youRing.position.set(P.root.position.x, P.root.position.y + 0.12, P.root.position.z);
+  youRing.visible = !riding();
   followSun(focusPoint());
-  const pulse = 1 + 0.08 * Math.sin(performance.now() / 260);
-  youRing.scale.setScalar(pulse);
+  youRing.scale.setScalar(1 + 0.08 * Math.sin(performance.now() / 260));
+  arrivals(busyTravel);
+}
 
-  // Arriving somewhere is news to the server.
+function updateWalking(dt, it, locked){
+  const P = S.player;
+  const g0 = groundAt(P.root.position.x, P.root.position.z);
+  if (!WALKER.ready){ WALKER.s.y = g0; WALKER.ready = true; }
+  // A cart is still a faster walk; animals are ridden (updateRiding).
+  const cart = S.ST && S.ST.vehicle && !RIDEABLE.has(S.ST.vehicle) ? (S.ST.speed || 1) : 1;
+  const s = WALKER.step(dt, it, g0, {locked, speedMul: (FIGHT.blocking ? 0.4 : 1) * cart});
+  const last = P.root.position.clone();
+  P.root.position.x += s.vx * dt; P.root.position.z += s.vz * dt;
+  if (collide(P.root.position, last)){
+    // Bumping something takes the speed out of you, the way it does.
+    const dx = (P.root.position.x - last.x) / Math.max(dt, 1e-4), dz = (P.root.position.z - last.z) / Math.max(dt, 1e-4);
+    s.vx = dx; s.vz = dz;
+  }
+  P.root.position.y = s.y;
+  P.vel = (P.vel || new THREE.Vector3()).set(s.vx, 0, s.vz);
+  const speed = Math.hypot(s.vx, s.vz);
+  // FACING, as Fortnite: you face where the camera looks while you move or
+  // aim, leaning into a strafe; a slide goes where it is going; walking
+  // somewhere for you, you face the way.
+  let want = null;
+  if (s.state === "slide" || it.auto) want = speed > 0.2 ? Math.atan2(s.vx, s.vz) : null;
+  else if (camMode === "third" && (it.moving || s.aiming || s.swingT >= 0)){
+    const lean = it.moving ? Math.atan2(it.ax, Math.max(0.001, Math.abs(it.ay))) * 0.6 * (it.ay < 0 ? -1 : 1) : 0;
+    want = yaw + Math.PI + lean;
+  } else if (speed > 0.3) want = Math.atan2(s.vx, s.vz);
+  if (want != null){
+    let dh = want - P.heading; dh = Math.atan2(Math.sin(dh), Math.cos(dh));
+    P.heading += dh * Math.min(1, dt * 14);
+  }
+  P.root.rotation.y = P.heading;
+  // ANIMATION from the state.
+  const working = S.ST && /^Working/.test(S.ST.activity || "");
+  const back = it.moving && it.ay < 0 && !it.auto && camMode === "third";
+  let clip = "idle", rate = 1;
+  if ((FIGHT.swinging() || s.swingT >= 0) && (P.acts.attack || P.acts.work)) clip = P.acts.attack ? "attack" : "work";
+  else if (FIGHT.blocking && P.acts.block && speed < 0.3) clip = "block";
+  else if (s.state === "air" || s.state === "slide"){ clip = "run"; rate = 0.05; }
+  else if (s.state === "sprint"){ clip = "run"; rate = speed / 7.0; }
+  else if (speed > 0.3){ clip = "walk"; rate = (back ? -1 : 1) * Math.max(0.5, speed / 3.6); }
+  else if (working && P.acts.work) clip = "work";
+  setAnim(P, clip, rate);
+  P.mixer.update(dt);
+  // POSE: lean back into a slide, tuck in the air, squash on landing.
+  const body = P.root.children[0];
+  P.pose = P.pose || {tilt: 0, drop: 0, squash: 1, y: body.position.y};
+  const tilt = s.state === "slide" ? -1.1 : s.state === "air" ? 0.15 : 0;
+  P.pose.tilt += (tilt - P.pose.tilt) * Math.min(1, dt * 16);
+  P.pose.drop += ((s.state === "slide" ? -0.2 : 0) - P.pose.drop) * Math.min(1, dt * 16);
+  P.pose.squash += (1 - P.pose.squash) * Math.min(1, dt * 12);
+  body.rotation.x = P.pose.tilt; body.position.y = P.pose.y + P.pose.drop;
+  body.scale.y = body.scale.x * P.pose.squash;
+}
+
+/* THE HUD for movement: stamina (yours, or your animal's and its gait), the
+   crosshair that widens with spread, and the debug readout (` key) with the
+   state and the live numbers, for tuning by feel. */
+let DEBUG = false, hudAt = 0, LAST_RIDING = null;
+const HUD = {};
+function hudEl(id, cls){
+  if (!HUD[id]){ HUD[id] = document.createElement("div"); HUD[id].id = id; if (cls) HUD[id].className = cls; document.body.appendChild(HUD[id]); }
+  return HUD[id];
+}
+function updateHUD(now){
+  if (now - hudAt < 50) return;
+  hudAt = now;
+  const third = camMode === "third" && S.player, ride = riding();
+  // Stamina: shown while it is not full, or while you sprint or gallop.
+  const st = hudEl("stam"), w = WALKER.s, r = RIDER.s;
+  const val = ride ? r.stamina / TUNE.mountStaminaMax : w.stamina / TUNE.staminaMax;
+  const show = third && (val < 0.999 || (ride ? r.gait >= 3 : w.state === "sprint"));
+  st.style.display = show ? "block" : "none";
+  if (show) st.innerHTML = `<i style="width:${Math.round(val * 100)}%" class="${val < 0.2 ? "low" : ""}"></i>`
+    + (ride ? `<b>${TUNE.gaitNames[r.gait]}</b>` : "");
+  // Crosshair: on foot, mouse taken.
+  const rt = hudEl("reticle");
+  rt.style.display = third && !ride && (mouseLook || w.aiming) ? "block" : "none";
+  if (rt.style.display === "block"){
+    const gap = 6 + (w.spreadNow || 1) * 7;
+    rt.style.setProperty("--gap", `${gap}px`);
+    rt.classList.toggle("aim", w.aiming);
+  }
+  const dbg = hudEl("dbg");
+  dbg.style.display = DEBUG ? "block" : "none";
+  if (DEBUG){
+    const sp = Math.hypot(w.vx, w.vz);
+    dbg.textContent = ride
+      ? `RIDING  gait ${TUNE.gaitNames[r.gait]}  speed ${r.speed.toFixed(2)}  turn ${r.turn.toFixed(2)}\nmount stamina ${r.stamina.toFixed(0)}  heading ${(r.heading * 57.3 % 360).toFixed(0)}  fov ${camera.fov.toFixed(1)}`
+      : `state ${w.state}${w.aiming ? " +aim" : ""}  speed ${sp.toFixed(2)}  vy ${w.vy.toFixed(2)}  ${w.grounded ? "grounded" : "airborne"}\n`
+        + `stamina ${w.stamina.toFixed(0)}  slide cd ${w.slideCool.toFixed(2)}  swing cd ${w.swingCool.toFixed(2)}  spread ${(w.spreadNow || 0).toFixed(2)}  fov ${camera.fov.toFixed(1)}\n`
+        + `walk ${TUNE.walk} sprint ${TUNE.sprint} jump ${TUNE.jumpHeight} g ${TUNE.gravityUp}/${TUNE.gravityDown}  (window.convoy.tune)`;
+  }
+}
+
+/* RIDING (Red Dead): the donkey carries you; move.js's rider has the gaits. */
+const SADDLE = 0.12;                        // hips at the animal's back, legs astride
+function updateRiding(dt, it, locked){
+  const P = S.player, D = DONKEY;
+  const r = RIDER.step(dt, it, {locked});
+  const last = D.root.position.clone();
+  D.root.position.x += Math.sin(r.heading) * r.speed * dt;
+  D.root.position.z += Math.cos(r.heading) * r.speed * dt;
+  if (collide(D.root.position, last, 0.58)) r.speed *= 0.4;
+  D.root.position.y = groundAt(D.root.position.x, D.root.position.z);
+  D.root.rotation.y = r.heading; D.heading = r.heading;
+  P.root.position.set(D.root.position.x, D.root.position.y + SADDLE, D.root.position.z);
+  P.heading = r.heading; P.root.rotation.y = r.heading;
+  P.vel = (P.vel || new THREE.Vector3()).set(Math.sin(r.heading) * r.speed, 0, Math.cos(r.heading) * r.speed);
+  setAnim(P, "idle", 1); P.mixer.update(dt);
+  const body = P.root.children[0];
+  if (P.pose){ body.rotation.x = 0; body.position.y = P.pose.y; body.scale.y = body.scale.x; }
+  WALKER.s.y = D.root.position.y; WALKER.s.vx = WALKER.s.vz = 0;
+}
+
+/* Arriving somewhere is news to the server; so is leaving where you work. */
+function arrivals(busyTravel){
+  const P = S.player;
+  const working = S.ST && /^Working/.test(S.ST.activity || "");
   const at = placeAt(P.root.position);
-  // So is leaving the place you work in: the shift ends (2026-10-18).
   if (working && (!at || at.name !== S.here) && !S.departing && !busyTravel){
     S.departing = true;
     api.post("/api/depart", {}).then(r => { if (r && r.message) UI.toast(r.message); UI.refreshSoon(); })
@@ -1563,9 +1664,7 @@ function updatePlayer(dt){
       S.arriving = false;
       if (r.ok){
         S.here = at.name; UI.refreshSoon();
-        // A haul loaded or handed over on the way in: say so, and head on.
         if (r.haul) UI.toast(r.haul);
-        // Where to next is the compass's to show; you ride there yourself.
         if (S.errand && S.errand.place === at.name){ const e = S.errand; S.errand = null; if (e.buy) setTimeout(e.buy, 600); }
       }
     }).catch(() => { S.arriving = false; });
@@ -1592,6 +1691,7 @@ function arrowCamera(dt){
   else pitch = Math.max(0.04, Math.min(1.45, pitch + tilt * 0.9 * dt));
 }
 function updateStrategyCamera(dt){
+  if (camera.fov !== 55){ camera.fov = 55; camera.updateProjectionMatrix(); }
   // Pan with the keys, relative to which way the camera faces; faster when high.
   const fwd = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
   const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
@@ -1621,15 +1721,26 @@ function updateCamera(dt){
   // you find what is out there by riding to it; smoke still shows above it.
   if (outposts()){ scene.fog.near = 60; scene.fog.far = 340; } else { scene.fog.near = 180; scene.fog.far = 900; }
   const P = S.player; if (!P) return;
+  const ride = riding();
+  // RIDING (Red Dead): the camera drifts back behind the animal when you
+  // leave the mouse alone.
+  if (ride && performance.now() - lastLook > 1200 && Math.abs(RIDER.s.speed) > 0.5){
+    let dy = (RIDER.s.heading + Math.PI) - yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+    yaw += dy * Math.min(1, dt * 1.6);
+  }
   const fwd = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
   const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
-  // Over the right shoulder, Fortnite-style: the character sits a little left
-  // of centre and low in the frame, the world ahead of them.
-  const target = P.root.position.clone().add(new THREE.Vector3(0, 1.9, 0)).addScaledVector(right, Math.min(1.1, dist * 0.12));
+  // Over the right shoulder, Fortnite-style: close, the character a little
+  // left of centre and low in the frame; lower in a slide. Riding, higher and
+  // further back, centred on the animal.
+  const high = ride ? 2.1 : WALKER.s.state === "slide" ? 1.0 : 1.6;
+  const target = P.root.position.clone().add(new THREE.Vector3(0, high, 0)).addScaledVector(right, ride ? 0 : 0.75);
+  const fov = 70 + (ride ? (RIDER.s.gait >= 4 ? 7 : RIDER.s.gait >= 3 ? 3 : 0) : WALKER.s.fovOffset);
+  if (Math.abs(camera.fov - fov) > 0.05){ camera.fov += (fov - camera.fov) * Math.min(1, dt * 12); camera.updateProjectionMatrix(); }
   // THE CAMERA DOES NOT GO THROUGH WALLS. If a building stands between you
   // and where the camera wants to be, the camera comes in to this side of it.
   // Buildings are circles on the ground for this, the same as for walking.
-  let d = dist;
+  let d = ride ? Math.max(dist, 6) : dist;
   const back = fwd.clone().negate();
   for (const c of colliders){
     if (c.r < 3) continue;                       // wells and stalls are short
@@ -1654,10 +1765,10 @@ function updateCamera(dt){
     const x = target.x + (cam.x - target.x) * k, z = target.z + (cam.z - target.z) * k;
     cam.y = Math.max(cam.y, groundAt(x, z) + 0.9);
   }
-  camera.position.lerp(cam, 1 - Math.exp(-dt * 9));          // a little lag: the camera follows, not bolted on
-  // Look a little past the character, not down at its feet: the horizon
-  // stays in the upper third, the way a third-person game frames the road.
-  camera.lookAt(target.clone().addScaledVector(fwd, 4).add(new THREE.Vector3(0, -0.3, 0)));
+  camera.position.lerp(cam, 1 - Math.exp(-dt * (ride ? 7 : 16)));   // close behind, a touch of lag
+  // Look where the crosshair points: along the camera's yaw, down by its pitch.
+  const look = new THREE.Vector3(fwd.x * Math.cos(pitch), -Math.sin(pitch) * 0.85, fwd.z * Math.cos(pitch));
+  camera.lookAt(camera.position.clone().addScaledVector(look, 10));
 }
 
 function updateAgents(dt){
@@ -2142,11 +2253,51 @@ function pick(e, includeGround){
   }
   return null;
 }
+/* MOUSE LOOK (2026-10-31): over the shoulder, a click takes the mouse --
+   it turns the camera, left button swings, right button aims; Esc gives it
+   back for the panels. */
+let mouseLook = false, LOCK_OK = true;
+// Some embedded browsers refuse pointer lock; then the mouse looks by dragging,
+// as before.
+function lockMouse(){
+  if (camMode !== "third" || mouseLook || !LOCK_OK || !renderer.domElement.requestPointerLock) return;
+  try {
+    const r = renderer.domElement.requestPointerLock();
+    if (r && r.catch) r.catch(() => { LOCK_OK = false; modeChanged(); });
+  } catch (e){ LOCK_OK = false; }
+}
+document.addEventListener("pointerlockerror", () => { LOCK_OK = false; modeChanged(); });
+function freeMouse(){ if (mouseLook && document.exitPointerLock) document.exitPointerLock(); }
+document.addEventListener("pointerlockchange", () => {
+  mouseLook = document.pointerLockElement === renderer.domElement;
+  if (!mouseLook) keys.delete("mouse2");
+  modeChanged();
+});
+document.addEventListener("mousemove", e => {
+  if (!mouseLook) return;
+  const k = WALKER.s.aiming ? 0.55 : 1;                    // finer while aiming
+  yaw -= (e.movementX || 0) * 0.0022 * k;
+  pitch = Math.max(-0.45, Math.min(1.25, pitch + (e.movementY || 0) * 0.0018 * k));
+  lastLook = performance.now();
+});
+renderer.domElement.addEventListener("contextmenu", e => { if (camMode === "third") e.preventDefault(); });
+renderer.domElement.addEventListener("mousedown", e => {
+  if (!mouseLook) return;
+  if (e.button === 0) pressed.add("mouse0");
+  if (e.button === 2) keys.add("mouse2");
+});
+addEventListener("mouseup", e => { if (e.button === 2) keys.delete("mouse2"); });
 renderer.domElement.addEventListener("pointerdown", e => {
+  if (camMode === "third" && !placing && LOCK_OK){
+    if (!mouseLook && e.button === 0){ lockMouse(); pointer.swallow = true; return; }
+    if (mouseLook){ pointer.swallow = true; return; }
+  }
+  if (camMode === "third" && !mouseLook && e.button === 2) keys.add("mouse2");   // aim without the lock
   pointer.down = true; pointer.x = e.clientX; pointer.y = e.clientY; pointer.moved = 0; pointer.button = e.button;
   renderer.domElement.setPointerCapture(e.pointerId);
 });
 renderer.domElement.addEventListener("pointermove", e => {
+  if (mouseLook) return;
   if (pointer.down){
     const dx = e.clientX - pointer.x, dy = e.clientY - pointer.y;
     pointer.moved += Math.abs(dx) + Math.abs(dy);
@@ -2180,6 +2331,7 @@ renderer.domElement.addEventListener("pointermove", e => {
   updateHover(e);
 });
 renderer.domElement.addEventListener("pointerup", e => {
+  if (pointer.swallow){ pointer.swallow = false; return; }
   pointer.down = false;
   if (pointer.moved > 4) return;
   if (placing){
@@ -2234,10 +2386,14 @@ addEventListener("keydown", e => {
   const k = e.key.toLowerCase();
   if (k === "escape"){ if (BIGMAP.open){ closeBigMap(); return; } if (placing){ stopPlacing(); return; } UI.close(); return; }
   if (k === "tab"){ e.preventDefault(); toggleCamera(); return; }
-  if (k === "c"){ camMode === "strategy" ? flyTo(S.player.root.position) : findMe(); return; }
-  if (k === "r"){ if (!e.repeat) FIGHT.swing(); return; }
+  if (k === "c"){ if (camMode === "strategy") flyTo(S.player.root.position); else if (!e.repeat) pressed.add("c"); return; }
+  if (k === "r"){ if (!e.repeat) pressed.add("r"); return; }
   if (k === "f"){ FIGHT.block(true); return; }
-  if (k === "e"){ usePrompt(); return; }
+  if (k === "e"){ interact(); return; }
+  if (k === "h"){ whistle(); return; }
+  if (k === "`"){ DEBUG = !DEBUG; return; }
+  if (k === " "){ e.preventDefault(); if (!e.repeat) pressed.add(" "); return; }
+  if (k === "shift" && !e.repeat) pressed.add("shift");
   if (k === "m"){ BIGMAP.open ? closeBigMap() : openBigMap(); return; }
   if (["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright", "shift", "control", "meta"].includes(k)){
     keys.add(k); if (k.startsWith("arrow")) e.preventDefault();
@@ -2270,7 +2426,7 @@ function walkToBuilding(id, then){
 }
 function findMe(){
   if (!S.player) return;
-  yaw = S.player.heading + Math.PI; dist = 7; pitch = 0.2;
+  yaw = S.player.heading + Math.PI; dist = riding() ? 6 : 3.6; pitch = 0.12;
 }
 
 /* Fast travel: the simulation's own timed road. The screen goes dark while
@@ -2368,6 +2524,13 @@ function updatePrompt(){
     const d = v.root.position.distanceTo(me);
     if (d < 3.2 && d < bd){ best = {kind: "agent", id: v.id, label: `Talk to ${short(ownerName(v.id))}`}; bd = d; }
   }
+  // Your animal: ride it, or get down (2026-10-31).
+  const an = myAnimal();
+  if (riding()) best = {kind: "dismount", label: `Get down off your ${an ? an.type.toLowerCase() : "animal"}`};
+  else if (an && DONKEY.root && DONKEY.root.visible){
+    const d = Math.hypot(me.x - DONKEY.root.position.x, me.z - DONKEY.root.position.z);
+    if (d < 2.8 && d < bd + 1){ best = {kind: "ride", label: `Ride your ${an.type.toLowerCase()}`}; bd = d; }
+  }
   promptFor = best;
   const el = $("eprompt");
   el.style.display = best && !S.travelling ? "flex" : "none";
@@ -2375,8 +2538,12 @@ function updatePrompt(){
 }
 function usePrompt(){
   if (!promptFor) return;
+  if (promptFor.kind === "ride"){ mountAnimal(); return; }
+  if (promptFor.kind === "dismount"){ dismountAnimal(); return; }
+  freeMouse();                               // a panel wants the mouse back
   if (promptFor.kind === "building") UI.openBuilding(promptFor.id); else UI.openPerson(promptFor.id);
 }
+function interact(){ updatePrompt(); usePrompt(); }
 $("eprompt").addEventListener("click", usePrompt);
 
 /* ------------------------------------------------------------ waypoint */
@@ -2507,8 +2674,7 @@ function campInfo(){
     hide: on => camp.userData.bandits.forEach(b => { b.visible = !on; })};
 }
 
-/* YOUR DONKEY: at your side, packs on its back when it carries something. */
-let donkey = null;
+/* YOUR DONKEY: packs on its back when you carry something. */
 function makeDonkey(){
   if (MODELS.donkey){
     // The Meshy donkey is one solid piece: it walks with a gentle bob and
@@ -2536,26 +2702,102 @@ function makeDonkey(){
   g.scale.setScalar(0.85);
   return g;
 }
+/* YOUR DONKEY (2026-10-31): an animal in the world, not a follower. Left
+   alone it grazes where you left it, wandering a few steps; whistle (H) and it
+   trots to you; E beside it to ride, E again to get down. Ridden, it moves by
+   RIDER's gaits (updateRiding). */
+const RIDEABLE = new Set(["Donkey", "Horse", "Camel"]);
+const DONKEY = {root: null, mode: "graze", anchor: null, target: null, wait: 0, heading: 0, vid: "", gaitT: 0, called: false};
+function myAnimal(){ return ((S.ST && S.ST.vehicles) || []).find(v => RIDEABLE.has(v.type)); }
 function updateDonkey(dt, now){
-  const on = S.player && S.ST && S.ST.vehicle === "Donkey";
-  if (!on){ if (donkey) donkey.visible = false; return; }
-  if (!donkey){ donkey = makeDonkey(); scene.add(donkey); donkey.position.copy(S.player.root.position); }
-  donkey.visible = true;
-  const P = S.player.root.position, side = new THREE.Vector3(Math.cos(S.player.heading), 0, -Math.sin(S.player.heading));
-  const want = P.clone().addScaledVector(side, -1.6).add(new THREE.Vector3(-Math.sin(S.player.heading) * 0.6, 0, -Math.cos(S.player.heading) * 0.6));
-  const step = want.clone().sub(donkey.position).setY(0), d = step.length();
-  if (d > 30) donkey.position.copy(want);
-  else donkey.position.addScaledVector(step, Math.min(1, dt * 6));
-  donkey.position.y = groundAt(donkey.position.x, donkey.position.z);
-  if (d > 0.05) donkey.rotation.y = Math.atan2(step.x, step.z);
-  const moving = d > 0.15;
-  donkey.userData.legs.forEach((l, i) => { l.rotation.x = moving ? Math.sin(now / 90 + (i % 2) * Math.PI) * 0.5 : 0; });
-  if (donkey.userData.body){
-    const b = donkey.userData.body;
-    b.position.y = moving ? Math.abs(Math.sin(now / 140)) * 0.06 : 0;
-    b.rotation.z = moving ? Math.sin(now / 140) * 0.03 : 0;
+  const v = myAnimal();
+  if (!v || !S.player){ if (DONKEY.root) DONKEY.root.visible = false; return; }
+  if (!DONKEY.root){
+    DONKEY.root = makeDonkey(); scene.add(DONKEY.root); DONKEY.vid = v.id;
+    const home = v.mounted ? S.player.root.position : (S.places[v.location] ? S.places[v.location].c : S.player.root.position);
+    DONKEY.root.position.set(home.x + 2.5, 0, home.z + 1.5);
+    DONKEY.anchor = DONKEY.root.position.clone();
   }
-  donkey.userData.packs.visible = !!(S.OBS && Object.values(S.OBS.you.carrying || {}).reduce((a, b) => a + b, 0) > 0);
+  const D = DONKEY, pos = D.root.position;
+  D.root.visible = true;
+  let speed = 0;
+  if (riding()){
+    speed = Math.abs(RIDER.s.speed); D.mode = "ridden"; D.anchor = pos.clone();
+  } else {
+    if (D.mode === "ridden"){ D.mode = "graze"; D.anchor = pos.clone(); D.target = null; D.wait = 2; }
+    let goal = null, pace = 0;
+    if (D.mode === "come"){
+      const me = S.player.root.position, d = Math.hypot(me.x - pos.x, me.z - pos.z);
+      if (d < 2.4){
+        D.mode = "graze"; D.anchor = pos.clone(); D.target = null; D.wait = 3;
+        // Where you are, the server agrees it is -- so you can mount it here.
+        api.post("/api/callvehicle", {vehicle_id: v.id}).then(() => UI.refreshSoon()).catch(() => {});
+      } else if (d > 400){ pos.set(me.x - 3, 0, me.z - 3); }
+      else { goal = me; pace = TUNE.gaits[2]; }
+    } else {
+      D.wait -= dt;
+      if (!D.target && D.wait <= 0){
+        const a = Math.random() * Math.PI * 2, r = 1 + Math.random() * 4;
+        D.target = new THREE.Vector3(D.anchor.x + Math.cos(a) * r, 0, D.anchor.z + Math.sin(a) * r);
+      }
+      if (D.target){
+        if (Math.hypot(D.target.x - pos.x, D.target.z - pos.z) < 0.3){ D.target = null; D.wait = 3 + Math.random() * 6; }
+        else { goal = D.target; pace = 1.0; }
+      }
+    }
+    if (goal){
+      const want = Math.atan2(goal.x - pos.x, goal.z - pos.z);
+      let dh = want - D.heading; dh = Math.atan2(Math.sin(dh), Math.cos(dh));
+      D.heading += dh * Math.min(1, dt * 3.5);
+      speed = pace * Math.max(0.2, Math.cos(dh));
+      const last = pos.clone();
+      pos.x += Math.sin(D.heading) * speed * dt; pos.z += Math.cos(D.heading) * speed * dt;
+      if (collide(pos, last, 0.58) && D.target){ D.target = null; D.wait = 1; }
+    }
+    D.root.rotation.y = D.heading;
+  }
+  pos.y = groundAt(pos.x, pos.z);
+  // Gait, as bob and sway: quicker and higher the faster it goes; at rest it
+  // drops its head to graze.
+  D.gaitT += dt * (2 + speed * 1.4);
+  const moving = speed > 0.15, bob = Math.min(0.16, 0.025 + speed * 0.012);
+  D.root.userData.legs.forEach((l, i) => { l.rotation.x = moving ? Math.sin(D.gaitT * 3 + (i % 2) * Math.PI) * Math.min(0.9, 0.3 + speed * 0.06) : 0; });
+  if (D.root.userData.body){
+    const b = D.root.userData.body;
+    b.position.y = moving ? Math.abs(Math.sin(D.gaitT * 3)) * bob : 0;
+    b.rotation.z = moving ? Math.sin(D.gaitT * 3) * 0.03 : 0;
+    const graze = !moving && !riding() ? 0.12 + Math.sin(now / 900) * 0.04 : 0;
+    b.rotation.x += ((moving ? -speed * 0.006 : graze) - b.rotation.x) * Math.min(1, dt * 4);
+  }
+  D.root.userData.packs.visible = !!(S.OBS && Object.values(S.OBS.you.carrying || {}).reduce((a, b) => a + b, 0) > 0);
+}
+function whistle(){
+  if (!myAnimal() || !DONKEY.root || riding()) return;
+  DONKEY.mode = "come"; DONKEY.target = null;
+  UI.toast(`You whistle. Your ${myAnimal().type.toLowerCase()} is coming.`);
+}
+async function mountAnimal(){
+  const v = myAnimal(); if (!v || !DONKEY.root) return;
+  // The server must have it where you are: a whistle tells it so.
+  await api.post("/api/callvehicle", {vehicle_id: v.id}).catch(() => {});
+  const r = await UI.act("mount", {vehicle_id: v.id});
+  if (!r.ok) return;
+  RIDER.s.heading = DONKEY.heading; RIDER.s.speed = 0; RIDER.setGait(0);
+  if (S.ST) S.ST.vehicle = v.type;
+  yaw = DONKEY.heading + Math.PI;
+  modeChanged();
+}
+async function dismountAnimal(){
+  if (RIDER.s.speed > 1.5){ UI.toast("Rein in first (S)"); return; }
+  const r = await UI.act("dismount", {});
+  if (!r.ok) return;
+  if (S.ST) S.ST.vehicle = null;
+  const P = S.player, side = new THREE.Vector3(Math.cos(DONKEY.heading), 0, -Math.sin(DONKEY.heading));
+  P.root.position.addScaledVector(side, -1.2);
+  P.root.position.y = groundAt(P.root.position.x, P.root.position.z);
+  WALKER.s.y = P.root.position.y;
+  DONKEY.mode = "graze"; DONKEY.anchor = DONKEY.root.position.clone(); DONKEY.wait = 2;
+  modeChanged();
 }
 
 /* ------------------------------------------------------------ fog */
@@ -2961,6 +3203,7 @@ function frame(now){
   updateFog(now);
   updateSmoke(now);
   updateGangs(dt);
+  updateHUD(now);
   updateCamp();
   if (GRASS) GRASS.update(camMode === "strategy" ? focus : S.player.root.position);
   FIGHT.update(dt, now);
@@ -3009,11 +3252,13 @@ window.convoy = {camera, scene, S, renderer, set idleAt(v){ IDLE_AT = v; for (co
   look(x, z, d){ focusGoal.set(x, 0, z); focus.copy(focusGoal); if (d) sDist = d; },
   hold(k, ms){ keys.add(k); setTimeout(() => keys.delete(k), ms); },
   teleport(x, z){ S.player.root.position.set(x, groundAt(x, z), z); },
+  tune: TUNE, walker: WALKER.s, rider: RIDER.s, riding: () => riding(),
   floors(id, n){ const v = S.buildings.get(id); if (v) setFloors(v.root, n); }};
 
 /* ------------------------------------------------------------ start */
 const UI = createUI({api, S, walkToPlace, walkToBuilding, fastTravel, findMe, short,
-  onStatus: () => { checkTravel(); checkKnown(); defaultView(); gangBanner(); }, toggleCamera: () => toggleCamera(), mode: () => camMode,
+  onStatus: () => { checkTravel(); checkKnown(); defaultView(); gangBanner();
+    if (riding() !== LAST_RIDING){ LAST_RIDING = riding(); modeChanged(); } }, toggleCamera: () => toggleCamera(), mode: () => camMode,
   foundOn: (p, c, t) => foundOn(p, c, t), buyOn: (p, c) => buyOn(p, c), clearSelection: () => clearSelection(),
   startPlacing: t => startPlacing(t), stopPlacing: () => stopPlacing(),
   // A delivery taken: down into the saddle, Red Dead style.

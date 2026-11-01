@@ -1018,7 +1018,7 @@ class Dispatch:
     sends out to someone's outpost, or the state's convoy coming to collect
     goods it has bought from a yard. Paid or delivered at `arrives_at`."""
     id: str
-    kind: str                        # "meal" | "state_pickup"
+    kind: str                        # "meal" | "state_pickup" | "goods" (board.py)
     agent: str                       # who ordered it
     business: str                    # the tavern that sends, or the yard sold from
     item: str
@@ -1096,6 +1096,26 @@ class BuyOrder:
     courier_fee: float = 0.0         # for the whole order; a fill carries its share
     escrow: float = 0.0              # held now: goods + carriage still unspent
     status: str = "open"             # open | filled | cancelled
+
+
+@dataclass
+class BoardPost:
+    """A post on a trading post's market board (designer request, 2026-10-31):
+    goods for sale (held at the post) or wanted (the money held). Open to
+    everyone. See `convoy/board.py`."""
+    id: str
+    post: str                        # the trading post (a city's market place)
+    side: str                        # "sell" (for sale) | "buy" (wanted)
+    owner: str
+    item: str
+    qty: int                         # still for sale / still wanted
+    price: float
+    created_at: float
+    expires_at: float
+    qty_posted: int = 0
+    escrow: float = 0.0              # money held for a wanted post
+    filled: int = 0
+    status: str = "open"             # open | done | cancelled | expired
 
 
 @dataclass
@@ -1501,6 +1521,7 @@ class World:
     escort_postings: dict[str, "EscortPosting"] = field(default_factory=dict)
     raids: dict[str, "Raid"] = field(default_factory=dict)
     robberies: dict[str, "Robbery"] = field(default_factory=dict)
+    board: dict[str, "BoardPost"] = field(default_factory=dict)
     buy_orders: dict[str, "BuyOrder"] = field(default_factory=dict)
     marriage_offers: dict[str, "MarriageOffer"] = field(default_factory=dict)
     claims: dict[str, "Claim"] = field(default_factory=dict)

@@ -39,6 +39,7 @@ from convoy import town as TOWN
 TOKEN = secrets.token_urlsafe(24)
 HERE = Path(__file__).resolve().parent
 GAME3D = HERE / "game3d"                     # the 3D client: page, script, style
+ITEMS = HERE / "art" / "generated" / "items"   # item pictures (2026-10-31)
 ASSETS3D = HERE / "art" / "generated" / "3d"  # Meshy models, shrunk for the web
 
 
@@ -238,6 +239,12 @@ def make_handler(host: Host):
                 page = (GAME3D / "index.html").read_text()
                 page = (page.replace("__TOKEN__", TOKEN).replace("__YOU__", g.human_id))
                 return self._raw(page.encode(), "text/html; charset=utf-8")
+            if path.startswith("/items/"):
+                # Item pictures for the market (2026-10-31): art/generated/items/<slug>.svg.
+                target = (ITEMS / path.split("/", 2)[2]).resolve()
+                if ITEMS.resolve() not in target.parents or not target.is_file() or target.suffix != ".svg":
+                    return self._send({"error": "not found"}, 404)
+                return self._raw(target.read_bytes(), "image/svg+xml", cache=True)
             if path.startswith("/game3d/") or path.startswith("/assets3d/"):
                 root = GAME3D if path.startswith("/game3d/") else ASSETS3D
                 name = path.split("/", 2)[2]
@@ -259,6 +266,11 @@ def make_handler(host: Host):
                 return self._raw(host.map_bytes(), "application/json")
             if path == "/cards":
                 return self._send(g.cards())
+            if path == "/api/marketboard":
+                g = host.game
+                if g is None:
+                    return self._send({"error": "no game running"}, 409)
+                return self._send(g.market_board())
             if path == "/api/status":
                 return self._send(g.status())
             if path == "/api/state":
@@ -335,6 +347,11 @@ def make_handler(host: Host):
                 out = g.wild_claim(body if isinstance(body, dict) else {})
                 host._map = None                      # the map must show it at once
                 return self._send(out)
+            if path == "/api/callvehicle":
+                g = host.game
+                if g is None:
+                    return self._send({"error": "no game running"}, 409)
+                return self._send(g.call_vehicle(body if isinstance(body, dict) else {}))
             if path == "/api/road":
                 g = host.game
                 if g is None:

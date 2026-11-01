@@ -378,6 +378,7 @@ ACTION_FAMILY = {
         "set_retail_price", "offer_trade", "accept_trade", "decline_trade",
         "collect_business_inventory", "stock_business_inventory", "store_at_home",
         "post_buy_order", "cancel_buy_order", "fill_buy_order", "sell_to_bidder",
+        "board_post", "board_take", "board_cancel",   # the trading posts' board (2026-10-31)
     ),
     "travel": (
         "travel_to", "mount", "dismount", "accept_courier_job", "drop_courier_job",

@@ -801,7 +801,9 @@ def static_briefing(
             "HALF what it sold for between people over the last day "
             "(sell_to_bidder: the state's convoy collects from your yard, free, "
             "and pays when it collects -- if your land has a road; YOUR OUTPOST "
-            "says which does). A citizen who makes what the state "
+            "says which does). Each post also has a MARKET BOARD open to "
+            "everyone: board_post goods for sale or a wanted, board_take others' "
+            "posts; porters carry the goods, 2% to the post. A citizen who makes what the state "
             "sells and prices it under the state takes its customers.\n"
             "HOW TO START. Your grown family works any business you own for "
             "nothing (assign_family). A business needs four plots of its own: "
@@ -2085,6 +2087,10 @@ def observe(
                     else f"the state's convoy coming for {d.qty} {d.item} ({d.unit_price * d.qty:.2f})")
             outpost.setdefault("on_the_way", []).append(f"{what}, in {mins} min")
         outpost["the_state_buys_from_you_today"] = A.state_room(world, agent)
+        from . import board as BD
+        board = BD.lines_for(world, agent)
+        if board:
+            outpost["MARKET BOARD (board_take / board_post)"] = board
         from . import robbery as RB
         gangs = RB.for_owner(world, agent)
         if gangs:

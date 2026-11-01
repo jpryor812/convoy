@@ -338,6 +338,38 @@ rise back up.
   or more out between places, bandits may set on you (not every time; the
   more you carry, the likelier). R to swing, F to block, or run. AI settlers
   also plan raids on stretches of main road.
+- **Moving, as Fortnite** (2026-10-31, `game3d/move.js`): over the shoulder,
+  close. **Click** the 3D view to take the mouse (Esc gives it back): the
+  mouse looks, **LMB** swings (after a short windup), **RMB** aims (slower,
+  a narrower view, a tighter crosshair). **WASD** moves relative to the
+  camera with quick, not instant, starts and stops; **Shift** sprints on a
+  stamina bar (~8 s, back after a second's rest); **Space** jumps (~1.2 m,
+  with a little grace walking off a ledge or pressing just before landing);
+  **C** while sprinting slides. The ` key shows a debug readout with the
+  state and numbers; `window.convoy.tune` holds them all, for tuning by
+  feel. Where the browser will not hand over the mouse, drag to look.
+- **Riding, as Red Dead**: your donkey grazes where you leave it; **H**
+  whistles it to you; **E** beside it to ride, **E** to get down. Riding,
+  **W** walks on; **tap Shift** to spur up a gait (trot, canter, gallop) --
+  hold Shift to keep the pace, or a gallop eases back to a canter; **S**
+  reins in (hold it at a stand to back up); **A/D** steer, in wider arcs the
+  faster you go. Galloping tires the animal (the bar over its gait); the
+  camera drifts back behind it when you leave the mouse alone.
+- **The market board** (2026-10-31, `convoy/board.py`): every trading post
+  has one, open to everyone -- no need to have met the other person. Market
+  tab, **Board** (the default): recent deals with pictures, each good's
+  going price between people with a day's chart, what is **for sale** and
+  **wanted**, and a form to post your own. A for-sale post holds the goods
+  (from what you carry or your yards); a wanted post holds the money. Take
+  either, part or all; the post keeps 2% and its porters carry the goods to
+  the buyer's business that uses them (twice as long with no road). Posts
+  come down after a game day. Settlers trade there by rule once a game hour:
+  spare goods go up a little over the going price, a business short of
+  inputs buys the cheapest fair offer or posts a wanted. The state still buys
+  at most 100 a day from you; people buy as much as they want.
+- **Chat** (2026-10-31): Nearby reaches only people within 400 m (it says so
+  when nobody heard you). To reach people you have met, message them or make
+  a group of your contacts -- a new group is picked in the To list at once.
 - **The state buys at most 100 goods a day** from each house (2026-10-30),
   however they reach it -- its counter, its convoy, shipments or deliveries.
   It buys again at midnight; the market shows how many more it will take.

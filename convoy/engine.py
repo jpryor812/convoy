@@ -26,6 +26,7 @@ from . import banditry as B
 from . import combat as CB
 from . import ground as GR
 from . import raids as R
+from . import board as BD
 from . import robbery as RB
 from . import data as D
 from . import economy as E
@@ -153,6 +154,7 @@ class Engine:
         # Gangs robbing buildings (convoy/robbery.py) roll on their own stream,
         # so adding them shifts no other random outcome.
         self._rob_rng = random.Random(self.config.banditry_seed + 1)
+        self._board_rng = random.Random(self.config.banditry_seed + 2)
         self._next_robbery_check = 0.0
         # A resumed world may already be past the withdrawal hour; the state is
         # gone if there is no open government business left to close.
@@ -341,6 +343,9 @@ class Engine:
             if hour:
                 self._next_robbery_check = (w.sim_time // 3600.0 + 1) * 3600.0
             RB.tick(w, self.log, self._rob_rng, hour)
+            BD.tick(w, self.log)
+            if hour:
+                BD.ai_tick(w, self.log, self._board_rng)
         self._debt_interest(hours)
         if w.outposts and w.sim_time >= self._next_discovery:
             self._next_discovery = w.sim_time + DS.EVERY_S
@@ -371,6 +376,16 @@ class Engine:
                     a.add_item(d.item, d.qty)
                     self.log.emit(w.sim_time, "meal_delivered", actor=d.agent, subject=d.business,
                                   location=a.location, item=d.item)
+            elif d.kind == "goods":
+                # The board's porters arrive (convoy/board.py).
+                a = w.agents.get(d.agent)
+                biz = w.businesses.get(d.business) if d.business else None
+                if biz is not None and not biz.closed:
+                    biz.add_item(d.item, d.qty)
+                elif a is not None:
+                    a.add_item(d.item, d.qty)
+                self.log.emit(w.sim_time, "board_delivered", actor=d.agent, subject=d.business or None,
+                              location=d.destination, item=d.item, qty=d.qty)
             elif d.kind == "state_pickup":
                 biz = w.businesses.get(d.business)
                 total = round(d.unit_price * d.qty, 2)

@@ -642,3 +642,50 @@ html,body{background:#2a2219;font-size:15px}
 #gang-banner button{border:2px solid #2a0b07;border-radius:999px;background:#fff3e6;color:#2a0b07;font:700 12px var(--head);padding:2px 12px;cursor:pointer}
 @keyframes gangpulse{0%,100%{box-shadow:0 3px 0 #2a0b07}50%{box-shadow:0 3px 0 #2a0b07,0 0 18px rgba(255,90,60,.55)}}
 .lbl-gang{font:700 12px var(--head);color:#fff;background:#7c1d14;border:2px solid #2a0b07;border-radius:999px;padding:1px 8px;white-space:nowrap}
+
+/* ---------- the market board (2026-10-31) ---------- */
+.ico-item{width:26px;height:26px;flex:0 0 auto;vertical-align:middle;filter:drop-shadow(0 1px 0 rgba(0,0,0,.25))}
+.ico-item.big{width:38px;height:38px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.chip{border:2px solid var(--ink);border-radius:999px;background:#fff;color:var(--ink);font:700 12px var(--head);padding:2px 10px;cursor:pointer}
+.chip.on{background:var(--gold)}
+.deals{display:flex;flex-direction:column;gap:4px}
+.deal{display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:10px;background:rgba(255,255,255,.55);font:600 13px var(--body)}
+.deal .grow{flex:1;min-width:0}
+.deal .px{font:700 13px var(--head);color:var(--ink)}
+.deal.state{opacity:.65}
+.deal.mine{background:rgba(255,214,102,.45)}
+.board-cols{display:grid;grid-template-columns:1fr;gap:4px}
+.post{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:8px;margin:6px 0;border-radius:12px;border:2px solid rgba(0,0,0,.12);background:#fffaf0}
+.post.sell{border-left:6px solid #4f8a3a}
+.post.buy{border-left:6px solid #3a6a8a}
+.post .grow{flex:1 1 180px;min-width:0}
+.post small{display:block;color:var(--soft);font:600 12px var(--body)}
+.post .mk-act{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;flex:1 1 100%}
+.prices{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px}
+.pcard{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:12px;background:#fffaf0;border:2px solid rgba(0,0,0,.1)}
+.pcard .grow{flex:1;min-width:0}
+.pcard small{display:block;color:var(--soft);font:600 12px var(--body)}
+.spark{width:90px;height:26px;flex:0 0 auto}
+.spark-none{font-size:11px}
+.postform{padding:8px;border-radius:12px;background:#fffaf0;border:2px dashed rgba(0,0,0,.18)}
+.postform .hire-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.postform input{width:80px}
+
+/* ---------- movement HUD (2026-10-31) ---------- */
+#stam{position:fixed;left:50%;bottom:92px;transform:translateX(-50%);width:220px;height:10px;border-radius:999px;
+  background:rgba(20,14,8,.55);border:2px solid rgba(255,240,210,.7);z-index:30;pointer-events:none}
+#stam i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#f2c14e,#ffe08a);transition:width .08s linear}
+#stam i.low{background:linear-gradient(90deg,#c2412d,#f08a5d)}
+#stam b{position:absolute;left:50%;top:-20px;transform:translateX(-50%);font:700 12px var(--head);color:#fff3dc;text-shadow:0 1px 2px #000;text-transform:capitalize}
+#reticle{--gap:12px;position:fixed;left:50%;top:50%;width:0;height:0;z-index:30;pointer-events:none}
+#reticle::before,#reticle::after{content:"";position:absolute;background:#fff;box-shadow:0 0 2px #000}
+#reticle::before{left:calc(-1 * var(--gap) - 9px);top:-1px;width:calc(2 * var(--gap) + 18px);height:2px;
+  -webkit-mask:linear-gradient(90deg,#000 9px,transparent 9px,transparent calc(100% - 9px),#000 calc(100% - 9px));
+          mask:linear-gradient(90deg,#000 9px,transparent 9px,transparent calc(100% - 9px),#000 calc(100% - 9px))}
+#reticle::after{top:calc(-1 * var(--gap) - 9px);left:-1px;height:calc(2 * var(--gap) + 18px);width:2px;
+  -webkit-mask:linear-gradient(180deg,#000 9px,transparent 9px,transparent calc(100% - 9px),#000 calc(100% - 9px));
+          mask:linear-gradient(180deg,#000 9px,transparent 9px,transparent calc(100% - 9px),#000 calc(100% - 9px))}
+#reticle.aim::before,#reticle.aim::after{background:#ffe08a}
+#dbg{position:fixed;left:12px;bottom:12px;z-index:60;white-space:pre;font:12px/1.4 ui-monospace,Menlo,monospace;color:#e8ffe0;
+  background:rgba(0,0,0,.66);padding:8px 10px;border-radius:8px;pointer-events:none}
