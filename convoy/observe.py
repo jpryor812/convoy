@@ -803,7 +803,9 @@ def static_briefing(
             "and pays when it collects -- if your land has a road; YOUR OUTPOST "
             "says which does). Each post also has a MARKET BOARD open to "
             "everyone: board_post goods for sale or a wanted, board_take others' "
-            "posts; porters carry the goods, 2% to the post. A citizen who makes what the state "
+            "posts; porters carry the goods, 2% to the post. Goods ridden between places go by "
+            "CONVOY: a rich one is worth robbing (rob_convoy), a poor one or a friend's is not. "
+            "A citizen who makes what the state "
             "sells and prices it under the state takes its customers.\n"
             "HOW TO START. Your grown family works any business you own for "
             "nothing (assign_family). A business needs four plots of its own: "
@@ -2443,6 +2445,17 @@ def observe(
 
     if not world.npc_bandits:
         _raid_blocks(world, log, agent, obs)
+    if world.outposts:
+        # CONVOYS (2026-11-01): loads ridden by hand across the frontier, and
+        # whether you could go for one (trek.can_rob says why not).
+        from . import trek as TK
+        near = TK.on_the_road(world, agent)
+        if near:
+            obs["convoys_near_you"] = [
+                f"{c['trek_id']}: {c['owner']} -> {c['to']}, load {_value_bucket(c['value'])}, "
+                f"{c['guards']} guard(s), {int(c['along'] * 100)}% of the way"
+                + (f" -- not for you: {c['why_not']}" if c["why_not"] else "")
+                for c in near[:4]]
 
     # WHAT THINGS ACTUALLY SELL FOR. Every price an agent has had until now was
     # either a book price from `data.py` or one counter's asking price in front
@@ -2716,6 +2729,7 @@ def render(obs: dict[str, Any]) -> str:
         ("your_raid", "YOUR RAID (you are lying in wait)"),
         ("raids_to_join", "RAIDS YOUR NEIGHBOURS ARE LYING IN WAIT ON (join_raid)"),
         ("on_the_roads", "LOADS ON THE ROADS RIGHT NOW"),
+        ("convoys_near_you", "CONVOYS ON THE ROAD NEAR YOU (rob_convoy)"),
         ("raids_lately", "RAIDS IN THE LAST DAY"),
         ("taxes_now", "CURRENT TAX RATES"),
         ("where_to_buy_stock", "WHERE TO ORDER FEEDSTOCK (you need not travel)"),

@@ -382,7 +382,7 @@ ACTION_FAMILY = {
     ),
     "travel": (
         "travel_to", "mount", "dismount", "accept_courier_job", "drop_courier_job",
-        "plan_raid", "join_raid", "abandon_raid",
+        "plan_raid", "join_raid", "abandon_raid", "rob_convoy",
         "deliver_consignment", "collect_consignment", "cancel_consignment",
     ),
     "work": (

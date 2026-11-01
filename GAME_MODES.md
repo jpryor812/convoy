@@ -360,6 +360,37 @@ Finding someone (being within sight) only shows you they exist. Then:
 5. **Rings, levels, survey know-how**, then **eras**.
 6. **Combat** returns: robbing buildings, danger by ring.
 
+## The convoy at the heart, the map around it (design, 2026-11-01)
+
+The designer: "delivering goods is tedious, whereas I wanted it to be the
+core action/event of the game." Agreed in chat, in three steps:
+
+1. **The convoy (built).** Goods go by convoy, ridden by hand in the 3D
+   world -- widescreen, music, the load in sacks on the animal or the cart --
+   and it is attacked every time, harder the more it carries: riders for
+   rich loads, and settlers who can see the road may come for it under their
+   own names (they weigh it every hour; models can also `rob_convoy`). Win
+   and they pay; lose and what they take is theirs. No fast travel with
+   goods. See `convoy/trek.py`, `game3d/convoy.js`.
+2. **The map and energy (next).** The map is the main way to play: still
+   foggy, found by moving, one hex at a time. Each step costs energy,
+   separate from hunger: 10 on foot or a donkey, 12 a horse, 15 a carriage.
+   Rest at home (2 hours for 10) or at a camp (Camp Supplies, 8); some meals
+   give a little back; home upgrades rest you better. Out of energy, fast
+   travel home. Units drawn big, as in Civilization. Third person is for
+   looking round your unit, and for the convoy. Send grown family or hired
+   hands to explore for you. Position and fog move to the server.
+3. **Territory and the refinery district (later).** Borders round your
+   home, farms and mines. Refineries only in their own district round the
+   state's refinery, with plots for sale -- outside your borders, so the
+   trip there and on to market is the trek, and a refinery of yours needs
+   guards. And wild herds: Hide and Wool only from land with cattle or sheep
+   you have found and claimed, as Civilization's resources.
+
+Open: whether the state's pickup and the board's porters (goods moved
+unseen, asked for on 2026-10-30) become convoys too -- a hired driver,
+robbable -- once step 3 makes the long trips.
+
 ## Next: outposts and towns (design, 2026-10-27)
 
 The game we are building towards. It replaces the open world above: there

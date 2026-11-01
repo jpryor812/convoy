@@ -40,6 +40,7 @@ TOKEN = secrets.token_urlsafe(24)
 HERE = Path(__file__).resolve().parent
 GAME3D = HERE / "game3d"                     # the 3D client: page, script, style
 ITEMS = HERE / "art" / "generated" / "items"   # item pictures (2026-10-31)
+AUDIO = HERE / "art" / "audio"                 # convoy music, if any (2026-11-01; see game3d/convoy.js)
 ASSETS3D = HERE / "art" / "generated" / "3d"  # Meshy models, shrunk for the web
 
 
@@ -245,6 +246,16 @@ def make_handler(host: Host):
                 if ITEMS.resolve() not in target.parents or not target.is_file() or target.suffix != ".svg":
                     return self._send({"error": "not found"}, 404)
                 return self._raw(target.read_bytes(), "image/svg+xml", cache=True)
+            if path.startswith("/audio/"):
+                # THE CONVOY'S MUSIC (2026-11-01): a track dropped in art/audio
+                # (convoy.mp3, fight.mp3) is played instead of the drawn score.
+                name = path.split("/", 2)[2]
+                if name == "list":
+                    return self._send({n: (AUDIO / f"{n}.mp3").is_file() for n in ("convoy", "fight")})
+                target = (AUDIO / name).resolve()
+                if AUDIO.resolve() not in target.parents or not target.is_file() or target.suffix != ".mp3":
+                    return self._send({"error": "not found"}, 404)
+                return self._raw(target.read_bytes(), "audio/mpeg", cache=True)
             if path.startswith("/game3d/") or path.startswith("/assets3d/"):
                 root = GAME3D if path.startswith("/game3d/") else ASSETS3D
                 name = path.split("/", 2)[2]
@@ -383,6 +394,11 @@ def make_handler(host: Host):
                 if g is None:
                     return self._send({"error": "no game running"}, 409)
                 return self._send(g.fight_op(body if isinstance(body, dict) else {}))
+            if path == "/api/trek":
+                g = host.game
+                if g is None:
+                    return self._send({"error": "no game running"}, 409)
+                return self._send(g.trek_op(body if isinstance(body, dict) else {}))
             if path == "/api/eat":
                 g = host.game
                 if g is None:

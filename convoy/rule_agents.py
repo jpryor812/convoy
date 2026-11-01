@@ -15,6 +15,8 @@ those paths fire correctly, not merely avoid them:
 
 from __future__ import annotations
 
+import random
+
 from . import actions as A
 from . import data as D
 from . import economy as E
@@ -98,6 +100,8 @@ class StandardRules:
             return
         if self.eats and self._rule_eat(world, log, agent):
             return
+        if self._rule_rob_convoy(world, log, agent):
+            return
         if self._rule_sell(world, log, agent):
             return
         if self.buys_vehicle and self._rule_buy_vehicle(world, log, agent):
@@ -116,6 +120,18 @@ class StandardRules:
             return False
         ok, _ = A.loot_ground(world, log, agent)
         return ok
+
+    # -- rule 0.25: a rich convoy on a road you can reach (2026-11-01) -----
+
+    def _rule_rob_convoy(self, world, log, agent) -> bool:
+        """The designer: "if they see a convoy with a lot of goods, they should
+        go try to rob it." The same weighing the engine does hourly for every
+        settler (trek.consider), seeded so a run replays."""
+        if not world.outposts or not world.treks:
+            return False
+        from . import trek as TK
+        rng = random.Random(f"{agent.id}:{int(world.sim_time // 3600)}")
+        return TK.consider(world, log, agent, rng) is not None
 
     # -- rule 0.5: take a guild invite if one is waiting -------------------
 

@@ -20,10 +20,12 @@
 
 export const TUNE = {
   // On foot (Fortnite).
-  walk: 4.0,                 // m/s
-  sprint: 7.0,
-  accel: 40,                 // m/s^2 toward the wanted speed
-  decel: 45,                 // ... and to a stop: ~0.15 s from a sprint
+  // Walk 1.5x and sprint 2x the first values (designer, 2026-11-01: "a
+  // little too slow"); accel, decel and the slide scaled to keep the feel.
+  walk: 6.0,                 // m/s
+  sprint: 14.0,
+  accel: 60,                 // m/s^2 toward the wanted speed
+  decel: 65,                 // ... and to a stop: ~0.1 s from a walk
   airControl: 0.35,          // share of accel while airborne
   jumpHeight: 1.2,
   gravityUp: 22,             // m/s^2 rising ...
@@ -36,8 +38,8 @@ export const TUNE = {
   staminaRegen: 20,          // per s
   staminaDelay: 1.0,         // s after sprinting before it comes back
   staminaToSprint: 10,       // needed to start sprinting again
-  slideMinSpeed: 5.5,        // must be sprinting this fast to slide
-  slideSpeed: 9.0,
+  slideMinSpeed: 10.0,        // must be sprinting this fast to slide
+  slideSpeed: 17.0,
   slideTau: 0.32,            // s: speed decays toward walk with this time constant
   slideTime: 0.75,
   slideCooldown: 0.5,
@@ -55,12 +57,14 @@ export const TUNE = {
   swingWindup: 0.15,         // s before the hit lands
   swingCooldown: 0.5,
   // Riding (Red Dead Redemption 2), for a donkey.
-  gaits: [0, 2.2, 4.5, 7.0, 9.5],   // stand, walk, trot, canter, gallop (m/s)
+  // Raised with the faster walk and sprint (designer, 2026-11-01): a gallop
+  // has to beat running on foot, or the donkey is not worth calling.
+  gaits: [0, 3.3, 7.0, 11.5, 18.0],  // stand, walk, trot, canter, gallop (m/s)
   gaitNames: ["stand", "walk", "trot", "canter", "gallop"],
-  rideAccel: 3.2,
-  rideDecel: 4.5,
-  rideBrake: 9.0,
-  backUp: 1.2,               // reversing, slowly ...
+  rideAccel: 5.5,
+  rideDecel: 7.5,
+  rideBrake: 15.0,
+  backUp: 1.6,               // reversing, slowly ...
   backUpDelay: 0.6,          // ... after holding S this long at a stand
   turnSlow: 2.4,             // rad/s at a walk ...
   turnFast: 0.9,             // ... and at a gallop: wide arcs
@@ -306,8 +310,12 @@ export function createRider(){
     else if (s.gait === 3) s.stamina = Math.max(0, s.stamina - T.mountDrainCanter * dt);
     else s.stamina = Math.min(T.mountStaminaMax, s.stamina + T.mountRegen * dt);
     if (s.gait === 4 && s.stamina <= 0){ setGait(3); ev.emit("OnWinded"); }
+    // THE CONVOY (2026-11-01): a cart goes no faster than a trot, nothing
+    // gallops off the road, and a heavy load slows every gait (opts from
+    // convoy.js).
+    if (opts.maxGait != null && s.gait > opts.maxGait) setGait(opts.maxGait);
     // Speed: momentum both ways; reining in is quicker than coasting.
-    let want = T.gaits[s.gait];
+    let want = T.gaits[s.gait] * (opts.speedMul ?? 1);
     // Reining in stops you; keep holding at a stand and you back up.
     s.stoppedT = back && Math.abs(s.speed) <= 0.3 ? s.stoppedT + dt : 0;
     if (back && (s.stoppedT > T.backUpDelay || s.speed < -0.05)) want = -T.backUp;

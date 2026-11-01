@@ -131,11 +131,16 @@ export function createUI(ctx){
     if (tavernHere && (hungry || left < 8)) acts.push(B("Eat here", "buy_meal", {}, !working));
     acts.push(`<button class="btn" data-me="1" title="Health, food and eating">Eat${hungry ? " \u26a0\ufe0f" : ""}</button>`);
     acts.push(`<button class="btn" data-tab="here">Here</button>`);
+    // THE CONVOY (2026-11-01): carrying goods, set out with them (convoy.js).
+    const load = o && Object.entries(o.you.carrying || {}).some(([i, q]) => q > 0 && !/Bat|Dagger|Sword|Spear|Axe|Club/.test(i));
+    if (load && ctx.setOut && !(ctx.convoyOn && ctx.convoyOn())) acts.unshift(`<button class="btn go" data-setout="1" title="Take your load somewhere by convoy">Set out</button>`);
     acts.push(`<button class="btn" data-cam="1">${ctx.mode && ctx.mode() === "third" ? "Overview (Tab)" : "Take control (Tab)"}</button>`);
     $("unitacts").innerHTML = acts.join("");
     wire($("unitacts"));
     const me = $("unitacts").querySelector("[data-me]");
     if (me) me.onclick = () => openMe();
+    const so = $("unitacts").querySelector("[data-setout]");
+    if (so) so.onclick = () => ctx.setOut();
     const cam = $("unitacts").querySelector("[data-cam]");
     if (cam) cam.onclick = () => { ctx.toggleCamera && ctx.toggleCamera(); renderUnit(); };
   }

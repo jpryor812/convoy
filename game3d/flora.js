@@ -16,11 +16,19 @@ export function createFlora({THREE, tex, wind}){
     uv.push(u0, v0, u1, v0, u1, v1, u0, v1);
     idx.push(o, o + 1, o + 2, o, o + 2, o + 3);
   }
-  function build(pos, uv, idx){
+  function build(pos, uv, idx, ao){
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
     g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
     g.setIndex(idx); g.computeVertexNormals();
+    // LIGHT INSIDE A CROWN (2026-11-01): cards near the trunk and low down
+    // sit in the tree's own shade; the tips catch the sun. Without this a
+    // tree is one flat tone, a dark paper cut-out.
+    if (ao){
+      const col = [];
+      for (let i = 0; i < pos.length; i += 3){ const v = ao(pos[i], pos[i + 1], pos[i + 2]); col.push(v, v * 1.01, v * 0.96); }
+      g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+    }
     // Cards lit as if they were the crown's surface: normals point out from the
     // trunk and up, so a tree is lit like a volume, not like flat paper.
     const p = g.attributes.position, n = g.attributes.normal;
@@ -36,12 +44,11 @@ export function createFlora({THREE, tex, wind}){
 
   // A fir: tiers of branch cards. The twig atlas's branches sit in its upper
   // right; cards sample that region.
-  function firFoliage(){
+  function firFoliage(H = 9.5, tiers = 15, R0 = 3.3, bare = 1.3){
     const pos = [], uv = [], idx = [];
-    const H = 9.5, tiers = 14;
     for (let t = 0; t < tiers; t++){
-      const k = t / (tiers - 1), y = 1.3 + k * (H - 1.9);
-      const R = 3.3 * Math.pow(1 - k, 0.8) + 0.45, n = 8 - Math.floor(k * 4);
+      const k = t / (tiers - 1), y = bare + k * (H - bare - 0.6);
+      const R = R0 * Math.pow(1 - k, 0.85) * (0.88 + rnd() * 0.24) + 0.4, n = 9 - Math.floor(k * 5);
       for (let i = 0; i < n; i++){
         const a = (i / n) * Math.PI * 2 + t * 0.9 + rnd() * 0.5;
         const cx = Math.cos(a), cz = Math.sin(a), px = -cz, pz = cx, w = R * 0.72, drop = R * 0.5;
@@ -61,24 +68,37 @@ export function createFlora({THREE, tex, wind}){
     // the leader
     quad(pos, uv, idx, [-0.6, H - 1.6, 0], [0.6, H - 1.6, 0], [0.6, H + 0.3, 0], [-0.6, H + 0.3, 0], 0.62, 0.66, 0.95, 0.97);
     quad(pos, uv, idx, [0, H - 1.6, -0.6], [0, H - 1.6, 0.6], [0, H + 0.3, 0.6], [0, H + 0.3, -0.6], 0.62, 0.66, 0.95, 0.97);
-    return build(pos, uv, idx);
+    return build(pos, uv, idx, (x, y, z) => {
+      const out = Math.min(1, Math.hypot(x, z) / Math.max(0.8, R0 * (1 - y / H) + 0.4));
+      return 0.5 + 0.38 * out + 0.22 * (y / H);
+    });
   }
   // A broadleaf crown: leaf cards on a rough sphere.
-  function leafCrown(){
+  // Several lobes round the top of the trunk, not one ball: an oak's crown
+  // is clumps of leaves with gaps between, and the light gets in.
+  function leafCrown(lobes = 6, cards = 80){
     const pos = [], uv = [], idx = [];
-    const C = [0, 5.2, 0], R = 2.6;
-    for (let i = 0; i < 34; i++){
-      const u = rnd() * 2 - 1, a = rnd() * Math.PI * 2, r = R * (0.55 + rnd() * 0.5);
+    const C = [0, 5.0, 0], R = 2.9, L = [];
+    for (let i = 0; i < lobes; i++){
+      const a = (i / lobes) * Math.PI * 2 + rnd() * 0.6, o = i === 0 ? 0 : 1.9 + rnd() * 0.7;
+      L.push([C[0] + Math.cos(a) * o, C[1] + (i === 0 ? 1.0 : (rnd() - 0.65) * 1.9), C[2] + Math.sin(a) * o, i === 0 ? 2.4 : 1.7 + rnd() * 0.6]);
+    }
+    for (let i = 0; i < cards; i++){
+      const lb = L[i % lobes];
+      const u = rnd() * 2 - 1, a = rnd() * Math.PI * 2, r = lb[3] * (0.45 + rnd() * 0.6);
       const dir = [Math.sqrt(1 - u * u) * Math.cos(a), u * 0.75, Math.sqrt(1 - u * u) * Math.sin(a)];
-      const c = [C[0] + dir[0] * r, C[1] + dir[1] * r, C[2] + dir[2] * r];
-      const s = 1.5 + rnd() * 0.7, ang = rnd() * Math.PI;
+      const c = [lb[0] + dir[0] * r, lb[1] + dir[1] * r, lb[2] + dir[2] * r];
+      const s = 1.2 + rnd() * 0.6, ang = rnd() * Math.PI;
       const ax = [Math.cos(ang) * s, 0, Math.sin(ang) * s], ay = [0, s, 0];
       quad(pos, uv, idx,
         [c[0] - ax[0] - ay[0] * 0.5, c[1] - ay[1] * 0.5, c[2] - ax[2]], [c[0] + ax[0], c[1] - ay[1] * 0.5, c[2] + ax[2]],
         [c[0] + ax[0], c[1] + ay[1] * 0.5, c[2] + ax[2]], [c[0] - ax[0], c[1] + ay[1] * 0.5, c[2] - ax[2]],
         0.02, 0.05, 0.55, 0.95);
     }
-    return build(pos, uv, idx);
+    return build(pos, uv, idx, (x, y, z) => {
+      const out = Math.min(1, Math.hypot(x - C[0], (y - C[1]) * 1.2, z - C[2]) / (R + 1.4));
+      return 0.56 + 0.42 * out * out + 0.14 * Math.max(0, (y - C[1]) / 3);
+    });
   }
   function grassClump(){
     const pos = [], uv = [], idx = [];
@@ -92,7 +112,7 @@ export function createFlora({THREE, tex, wind}){
     g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
     g.setIndex(idx);
     // Darker at the root, sunlit at the tip.
-    const col = []; for (let i = 1; i < pos.length; i += 3){ const t = pos[i] / 0.75; const v = 0.62 + 0.38 * t; col.push(v, v, v * 0.95); }
+    const col = []; for (let i = 1; i < pos.length; i += 3){ const t = pos[i] / 0.75; const v = 0.72 + 0.34 * t; col.push(v, v, v * 0.92); }
     g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
     const n = new Float32Array(pos.length); for (let i = 1; i < n.length; i += 3) n[i] = 1;   // lit from above, like the ground
     g.setAttribute("normal", new THREE.BufferAttribute(n, 3));
@@ -106,8 +126,17 @@ export function createFlora({THREE, tex, wind}){
   }
 
   // ---- materials ----------------------------------------------------------------
+  /* Cards are two-sided, and three lights a back face as if its normal
+     pointed the other way -- down into the ground, for a blade or a branch --
+     so half of every tree and tuft came out near black. Their normals are the
+     crown's (see build), the same from either side. */
   function swaying(mat, amount){
+    // Its own program per amount: three keys programs by this function's
+    // source, which is the same for every amount.
+    mat.customProgramCacheKey = () => "sway" + amount;
     mat.onBeforeCompile = sh => {
+      sh.fragmentShader = sh.fragmentShader.replace("#include <normal_fragment_begin>",
+        "#include <normal_fragment_begin>\n  normal = normalize(vNormal);");
       sh.uniforms.uWind = wind;
       sh.vertexShader = "uniform float uWind;\n" + sh.vertexShader.replace("#include <begin_vertex>",
         `#include <begin_vertex>
@@ -120,47 +149,93 @@ export function createFlora({THREE, tex, wind}){
   }
   function cardMat(map, alpha, amount, colour){
     const m = swaying(new THREE.MeshLambertMaterial({map, alphaMap: alpha, alphaTest: 0.45, side: THREE.DoubleSide,
-      color: colour}), amount);
+      color: colour, vertexColors: true}), amount);
     return m;
   }
   function depthFor(alpha){
     return new THREE.MeshDepthMaterial({depthPacking: THREE.RGBADepthPacking, alphaMap: alpha, alphaTest: 0.45, side: THREE.DoubleSide});
   }
-  const bark = new THREE.MeshLambertMaterial({map: tex.bark, color: "#b5a99a"});
-  const firMat = cardMat(tex.twig, tex.twigA, 0.03, "#e9ecd2");
-  const leafMat = cardMat(tex.leaves, tex.leavesA, 0.025, "#d8d0a8");
+  const bark = new THREE.MeshLambertMaterial({map: tex.bark, color: "#a89a88"});
+  const firMat = cardMat(tex.twig, tex.twigA, 0.03, "#f2f4dc");
+  const leafMat = cardMat(tex.leaves, tex.leavesA, 0.025, "#f0e6bc");
   // The photographed blades give the shape (alpha); the colour is straw and
   // sage, so a field reads as dry prairie grass in the late sun.
   const grassMat = swaying(new THREE.MeshLambertMaterial({alphaMap: tex.grassA, alphaTest: 0.4, vertexColors: true,
-    side: THREE.DoubleSide, color: "#d2c690"}), 0.2);
+    side: THREE.DoubleSide, color: "#cfc88e"}), 0.2);
 
-  const GEO = {firTrunk: trunk(8.5, 0.22), fir: firFoliage(), oakTrunk: trunk(5, 0.38), crown: leafCrown(), grass: grassClump()};
+  // Two of each, so a wood is not one tree stamped a thousand times: a full
+  // fir and a tall, narrow one; a spreading oak and a smaller, rounder one.
+  const GEO = {firTrunk: trunk(8.5, 0.2), fir: firFoliage(), fir2: firFoliage(12.5, 18, 2.4, 2.2),
+    oakTrunk: trunk(4.6, 0.36), crown: leafCrown(), crown2: leafCrown(4, 52), grass: grassClump()};
 
   /* Plant `trees` ([x, y, z, scale, kind]) and `grass` ([x, y, z, scale]). */
   function plant(trees, grass){
-    const firs = trees.filter(t => t[4] === "fir"), oaks = trees.filter(t => t[4] !== "fir");
+    const firs = trees.filter(t => t[4] === "fir"), firs2 = trees.filter(t => t[4] === "fir2"),
+          oaks = trees.filter(t => t[4] === "oak"), oaks2 = trees.filter(t => t[4] === "oak2"),
+          bushes = trees.filter(t => t[4] === "bush");
     const out = [];
     const put = (geo, mat, list, castShadow, depth, tint) => {
       const im = new THREE.InstancedMesh(geo, mat, Math.max(1, list.length));
       const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), e = new THREE.Euler();
       const c = new THREE.Color();
-      list.forEach(([x, y, z, k], i) => {
-        e.set(0, (x * 13.7 + z * 3.1) % 6.28, 0); q.setFromEuler(e); s.set(k, k * (0.9 + ((x * 7) % 1) * 0.2), k); p.set(x, y, z);
+      list.forEach(([x, y, z, k, kind], i) => {
+        const fr = v => ((v % 1) + 1) % 1;
+        e.set((fr(x * 3.3) - 0.5) * 0.06, (x * 13.7 + z * 3.1) % 6.28, (fr(z * 2.9) - 0.5) * 0.06);   // not all bolt upright
+        q.setFromEuler(e); s.set(k, k * (0.85 + fr(x * 7) * 0.3), k); p.set(x, y, z);
+        // A bush is a crown with no trunk, sat in the grass.
+        if (kind === "bush"){ s.set(k * 0.55, k * 0.42, k * 0.55); p.y -= 1.5 * k; }
         m4.compose(p, q, s); im.setMatrixAt(i, m4);
-        if (tint){ const v = 0.82 + (((x * 31 + z * 17) % 1 + 1) % 1) * 0.3; c.setRGB(v, v * (0.97 + (((z * 11) % 1 + 1) % 1) * 0.06), v * 0.92); im.setColorAt(i, c); }
+        if (tint){
+          // Each tree its own shade: some yellower, some bluer, some darker.
+          const v = 0.8 + fr(x * 31 + z * 17) * 0.32, warm = fr(z * 11 + x * 0.7);
+          c.setRGB(v * (0.93 + warm * 0.14), v * (0.98 + fr(x * 5.1) * 0.05), v * (0.96 - warm * 0.12)); im.setColorAt(i, c);
+        }
       });
       im.count = list.length;
       im.castShadow = castShadow; im.receiveShadow = true;
       if (depth) im.customDepthMaterial = depth;
       im.raycast = () => {};
+      im.userData.list = list;
       out.push(im);
     };
-    put(GEO.firTrunk, bark, firs, true);
+    put(GEO.firTrunk, bark, [...firs, ...firs2], true);
     put(GEO.fir, firMat, firs, true, depthFor(tex.twigA), true);
-    put(GEO.oakTrunk, bark, oaks, true);
+    put(GEO.fir2, firMat, firs2, true, depthFor(tex.twigA), true);
+    put(GEO.oakTrunk, bark, [...oaks, ...oaks2], true);
     put(GEO.crown, leafMat, oaks, true, depthFor(tex.leavesA), true);
+    put(GEO.crown2, leafMat, oaks2, true, depthFor(tex.leavesA), true);
+    put(GEO.crown2, leafMat, bushes, false, null, true);
     put(GEO.grass, grassMat, grass, false, null, true);
     return out;
+  }
+  /* Clear the trees where `gone(x, z)` says (a field has been ploughed). */
+  function clear(meshes, gone){
+    const m4 = new THREE.Matrix4(), zero = new THREE.Matrix4().makeScale(0, 0, 0);
+    for (const im of meshes){
+      const list = im.userData.list; if (!list) continue;
+      let hit = false;
+      list.forEach(([x, , z], i) => { if (gone(x, z)){ im.setMatrixAt(i, zero); hit = true; } });
+      if (hit) im.instanceMatrix.needsUpdate = true;
+    }
+  }
+  /* CROPS (2026-11-01): the grass card, taller and in rows -- golden wheat,
+     green shoots, pasture. `list` is [x, y, z, width, height] in the parent's
+     space. */
+  const cropMats = {};
+  function crops(list, colour, sway = 0.12){
+    const key = colour + sway;
+    if (!cropMats[key]) cropMats[key] = swaying(new THREE.MeshLambertMaterial({alphaMap: tex.grassA, alphaTest: 0.4, vertexColors: true,
+      side: THREE.DoubleSide, color: colour}), sway);
+    const im = new THREE.InstancedMesh(GEO.grass, cropMats[key], Math.max(1, list.length));
+    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), e = new THREE.Euler(), c = new THREE.Color();
+    list.forEach(([x, y, z, k, ky], i) => {
+      e.set(0, ((x * 7.3 + z * 3.7) % 6.28), 0); q.setFromEuler(e); s.set(k, ky, k); p.set(x, y, z);
+      m4.compose(p, q, s); im.setMatrixAt(i, m4);
+      const v = 0.86 + (((x * 13.1 + z * 7.7) % 1 + 1) % 1) * 0.24; c.setRGB(v, v, v * 0.96); im.setColorAt(i, c);
+    });
+    im.count = list.length; im.raycast = () => {}; im.receiveShadow = true;
+    im.computeBoundingSphere();
+    return im;
   }
   /* THE GRASS AROUND YOU: a dense field within FIELD_R of the camera's
      focus, on a fixed world grid (so blades do not swim as you move),
@@ -174,7 +249,8 @@ export function createFlora({THREE, tex, wind}){
     const c = new THREE.Color();
     const h = (i, j, k) => { const v = Math.sin(i * 127.1 + j * 311.7 + k * 74.7) * 43758.5453; return v - Math.floor(v); };
     let at = null;
-    function update(center){
+    function update(center, force){
+      if (force) at = null;
       if (at && Math.hypot(center.x - at.x, center.z - at.z) < 6) return;
       at = {x: center.x, z: center.z};
       const i0 = Math.floor((center.x - FIELD_R) / STEP), i1 = Math.ceil((center.x + FIELD_R) / STEP);
@@ -197,5 +273,5 @@ export function createFlora({THREE, tex, wind}){
     }
     return {mesh: im, update};
   }
-  return {plant, grassField};
+  return {plant, grassField, clear, crops, materials: [bark, firMat, leafMat]};
 }

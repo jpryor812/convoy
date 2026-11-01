@@ -16,11 +16,11 @@ function run(w, secs, held = [], pressedFirst = [], ground = 0){
 }
 const speed = s => Math.hypot(s.vx, s.vz);
 
-// Walk, and stopping is quick but not instant.
+// Walk (6 m/s), and stopping is quick but not instant.
 {
   const w = createWalker();
   run(w, 0.15, ["w"]);
-  ok("walk reaches 4 m/s fast", Math.abs(speed(w.s) - TUNE.walk) < 0.05, speed(w.s).toFixed(2));
+  ok("walk reaches full speed fast", Math.abs(speed(w.s) - TUNE.walk) < 0.05, speed(w.s).toFixed(2));
   run(w, 0.05, []);
   ok("not an instant stop", speed(w.s) > 0.5, speed(w.s).toFixed(2));
   run(w, 0.15, []);
@@ -32,7 +32,7 @@ const speed = s => Math.hypot(s.vx, s.vz);
   let t = 0;
   for (; t < 12 && (t < 0.5 || w.s.state === "sprint"); t += DT) w.step(DT, intent(["w", "shift"]), 0);
   ok("sprint runs about 8 s", t > 7.5 && t < 9, t.toFixed(2));
-  ok("at 7 m/s", true);
+  ok("at sprint speed", true);
   const at = w.s.stamina;
   run(w, 0.8, ["w"]);
   ok("no regen in the first second", w.s.stamina - at < 1, (w.s.stamina - at).toFixed(1));
@@ -66,15 +66,15 @@ const speed = s => Math.hypot(s.vx, s.vz);
   }
   ok("jump buffer: pressed just before landing, it jumps again", b.s.vy > 0 || b.s.y > 0.05, `vy ${b.s.vy.toFixed(2)} y ${b.s.y.toFixed(2)}`);
 }
-// Slide: from a sprint, 9 m/s easing toward a walk in ~0.75 s; not from a walk; the weapon waits.
+// Slide: from a sprint, faster than it, easing toward a walk in ~0.75 s; not from a walk; the weapon waits.
 {
   const w = createWalker();
   run(w, 0.5, ["w", "shift"]);
   w.step(DT, intent(["w", "shift"], ["c"]), 0);
-  ok("slide starts at ~9 m/s", w.s.state === "slide" && speed(w.s) > 8.5, `${w.s.state} ${speed(w.s).toFixed(2)}`);
+  ok("slide starts above a sprint", w.s.state === "slide" && speed(w.s) > TUNE.slideSpeed - 0.5, `${w.s.state} ${speed(w.s).toFixed(2)}`);
   run(w, 0.4, ["w", "shift"]);
   const mid = speed(w.s);
-  ok("eases off, not a linear drop", mid < 7 && mid > TUNE.walk, mid.toFixed(2));
+  ok("eases off, not a linear drop", mid < TUNE.sprint && mid > TUNE.walk, mid.toFixed(2));
   run(w, 0.5, ["w"]);
   ok("over by ~0.8 s", w.s.state !== "slide", w.s.state);
   w.step(DT, intent(["w"], ["r"]), 0);

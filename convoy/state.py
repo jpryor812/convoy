@@ -1137,6 +1137,31 @@ class Robbery:
 
 
 @dataclass
+class Trek:
+    """A convoy under way: someone riding their goods to a destination,
+    with the encounters waiting along the road (designer, 2026-11-01). See
+    `convoy/trek.py`. Kept per owner: their latest, ended or not."""
+    id: str
+    owner: str
+    origin: str
+    destination: str
+    cargo: dict[str, int]
+    value: float
+    metres: float                    # the road's length, as the page routes it
+    started: float
+    # {at: share of the road, kind: bandits|riders, n, raiders: [agent ids],
+    #  done: "" | "on" | "won" | "lost" | "fled" | "quiet"}
+    encounters: list[dict] = field(default_factory=list)
+    guards: int = 0
+    share: float = 0.0               # how far along, 0..1
+    status: str = "on"               # on | arrived | turned back
+    ended: float = 0.0
+    beaten: int = 0
+    coins: float = 0.0
+    lost: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
 class Raid:
     """People lying in wait on a road, to rob whoever comes along it.
 
@@ -1521,6 +1546,7 @@ class World:
     escort_postings: dict[str, "EscortPosting"] = field(default_factory=dict)
     raids: dict[str, "Raid"] = field(default_factory=dict)
     robberies: dict[str, "Robbery"] = field(default_factory=dict)
+    treks: dict[str, "Trek"] = field(default_factory=dict)     # owner id -> their latest convoy
     board: dict[str, "BoardPost"] = field(default_factory=dict)
     buy_orders: dict[str, "BuyOrder"] = field(default_factory=dict)
     marriage_offers: dict[str, "MarriageOffer"] = field(default_factory=dict)

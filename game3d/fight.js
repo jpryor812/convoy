@@ -10,8 +10,9 @@
    and an ambush on the open road while you carry goods (the server rolls for
    it every few seconds you spend between places). */
 
-export function createFight({THREE, scene, S, api, makePerson, setAnim, CSS2DObject, UI, placeAt, campInfo, groundAt, banditModel}){
-  const REACH = 2.9, BANDIT_SPEED = 5.2, WINDUP = 0.7, RECOVER = 1.6, ESCAPE = 30;
+export function createFight({THREE, scene, S, api, makePerson, setAnim, CSS2DObject, UI, placeAt, campInfo, groundAt, banditModel,
+                             makeMount, short, convoy}){
+  const REACH = 2.9, BANDIT_SPEED = 5.2, RIDER_SPEED = 11.5, WINDUP = 0.7, RECOVER = 1.6, ESCAPE = 30;
   let F = null;              // the server's view of the fight
   let foes = new Map();      // foe id -> {p, state, t, el, dead}
   let blocking = false, swingUntil = 0, nextSwing = 0, roadAt = 0, busy = false, restUntil = 0;
@@ -48,25 +49,38 @@ export function createFight({THREE, scene, S, api, makePerson, setAnim, CSS2DObj
     shield.position.set(0, 1.15, 0.65); shield.visible = false; P.root.add(shield);
   }
 
-  function spawn(view, at){
+  /* `opts` for a convoy (convoy.js): bandits come out of the roadside
+     `ahead` of you and block the road; riders come up from `behind`;
+     settlers wear their own names, and are not darkened like bandits. */
+  function spawn(view, at, opts = {}){
     clearFoes();
     const P = S.player.root.position;
     view.foes.forEach((f, i) => {
-      const p = makePerson(banditModel ? banditModel() : "persian-man");
-      p.body.traverse(o => { if (o.isMesh && o.material){ o.material = o.material.clone(); o.material.color && o.material.color.multiplyScalar(0.45); } });
+      const p = makePerson(f.settler ? (i % 2 ? "drover" : "miner") : banditModel ? banditModel() : "persian-man");
+      if (!f.settler) p.body.traverse(o => { if (o.isMesh && o.material){ o.material = o.material.clone(); o.material.color && o.material.color.multiplyScalar(0.45); } });
       const ang = (at ? 0 : Math.random() * Math.PI * 2) + i * 1.3;
-      const from = at ? at.clone().add(new THREE.Vector3(i * 2 - 1, 0, 1.5)) : P.clone().add(new THREE.Vector3(Math.cos(ang) * 14, 0, Math.sin(ang) * 14));
+      const base = f.mounted ? opts.behind : opts.ahead;
+      const side = (i % 2 ? 1 : -1) * (2 + (i >> 1) * 2.2);
+      const from = base ? base.clone().add(new THREE.Vector3(side, 0, (i >> 1) * 1.5))
+        : at ? at.clone().add(new THREE.Vector3(i * 2 - 1, 0, 1.5)) : P.clone().add(new THREE.Vector3(Math.cos(ang) * 14, 0, Math.sin(ang) * 14));
       p.root.position.copy(from);
-      const tag = document.createElement("div"); tag.className = "foe-tag";
-      tag.innerHTML = `<b>${f.name}</b><i><u style="width:100%"></u></i><em>!</em>`;
+      const tag = document.createElement("div"); tag.className = "foe-tag" + (f.settler ? " settler" : "");
+      tag.innerHTML = `<b>${short ? short(f.name) : f.name}</b><i><u style="width:100%"></u></i><em>!</em>`;
       const lbl = new CSS2DObject(tag); lbl.position.set(0, 2.25, 0); p.root.add(lbl);
       scene.add(p.root);
-      foes.set(f.id, {p, state: "approach", t: 0.4 + i * 0.5, el: tag, dead: false, hp: f.hp, max: f.max});
+      let mount = null;
+      if (f.mounted && makeMount){ mount = makeMount(); scene.add(mount); }
+      foes.set(f.id, {p, state: "approach", t: 0.4 + i * 0.5, el: tag, dead: false, hp: f.hp, max: f.max,
+                      mount, speed: f.mounted ? RIDER_SPEED : BANDIT_SPEED});
     });
   }
   function clearFoes(){
-    for (const f of foes.values()){ scene.remove(f.p.root); f.el.remove(); }
+    for (const f of foes.values()){ scene.remove(f.p.root); if (f.mount) scene.remove(f.mount); f.el.remove(); }
     foes.clear();
+  }
+  /* A convoy's encounter, started by the server (game.trek_op). */
+  function begin(view, opts){
+    arm(); spawn(view, null, opts); sync(view);
   }
   function sync(view){
     F = view;
@@ -85,8 +99,8 @@ export function createFight({THREE, scene, S, api, makePerson, setAnim, CSS2DObj
     const pct = Math.max(0, (you.hp - you.down_at) / (100 - you.down_at) * 100);
     h.innerHTML = `<div class="fh-title">${F.kind === "camp" ? "☠️ Bandit camp" : "⚔️ Ambush!"}</div>`
       + `<div class="fh-row"><span>You</span><i class="fh-bar you"><u style="width:${pct}%"></u></i><b>${Math.round(you.hp)}</b></div>`
-      + F.foes.map(f => `<div class="fh-row"><span>${f.name}</span><i class="fh-bar"><u style="width:${Math.max(0, f.hp / f.max * 100)}%"></u></i><b>${Math.round(f.hp)}</b></div>`).join("")
-      + `<div class="fh-keys"><b>R</b> swing your ${you.weapon} &middot; hold <b>F</b> to block &middot; ${F.kind === "ambush" ? "or run" : "walk away to give up"}</div>`;
+      + F.foes.map(f => `<div class="fh-row"><span>${short ? short(f.name) : f.name}</span><i class="fh-bar"><u style="width:${Math.max(0, f.hp / f.max * 100)}%"></u></i><b>${Math.round(f.hp)}</b></div>`).join("")
+      + `<div class="fh-keys"><b>R</b> swing your ${you.weapon} &middot; hold <b>F</b> to block &middot; ${F.kind === "ambush" ? "or run" : F.kind === "convoy" ? "or ride on through (E to mount, Shift to spur)" : "walk away to give up"}</div>`;
     h.classList.add("on");
   }
 
@@ -170,7 +184,8 @@ export function createFight({THREE, scene, S, api, makePerson, setAnim, CSS2DObj
       });
     }
     // Start: an ambush, out between places carrying goods.
-    if (!F && !busy && now - roadAt > 4000 && !placeAt(P.root.position) && !(S.ST && /^Travelling/.test(S.ST.activity || ""))){
+    if (!F && !busy && now - roadAt > 4000 && !placeAt(P.root.position) && !(S.ST && /^Travelling/.test(S.ST.activity || ""))
+        && !(convoy && convoy())){
       roadAt = now;
       const carrying = S.OBS && Object.values(S.OBS.you.carrying || {}).reduce((a, b) => a + b, 0) > 0;
       if (carrying){
@@ -186,14 +201,19 @@ export function createFight({THREE, scene, S, api, makePerson, setAnim, CSS2DObj
     let nearest = 1e9;
     for (const [id, f] of foes){
       f.p.mixer.update(dt);
-      if (groundAt) f.p.root.position.y = groundAt(f.p.root.position.x, f.p.root.position.z);
+      if (groundAt) f.p.root.position.y = groundAt(f.p.root.position.x, f.p.root.position.z) + (f.mount ? 0.12 : 0);
+      if (f.mount){
+        f.mount.position.set(f.p.root.position.x, f.p.root.position.y - 0.12, f.p.root.position.z);
+        f.mount.rotation.y = f.p.root.rotation.y;
+        if (f.state === "down"){ scene.remove(f.mount); f.mount = null; }
+      }
       const to = P.root.position.clone().sub(f.p.root.position).setY(0), d = to.length();
       if (f.state === "down"){
         f.t += dt; f.p.root.rotation.x = Math.max(-Math.PI / 2, -f.t * 4); f.el.style.opacity = "0.4";
         setAnim(f.p, "idle"); continue;
       }
       if (f.state === "leave"){
-        f.p.root.position.addScaledVector(to.normalize(), -BANDIT_SPEED * dt);
+        f.p.root.position.addScaledVector(to.normalize(), -f.speed * dt);
         setAnim(f.p, "run", 1.2); continue;
       }
       nearest = Math.min(nearest, d);
@@ -203,22 +223,22 @@ export function createFight({THREE, scene, S, api, makePerson, setAnim, CSS2DObj
       f.el.classList.toggle("wind", f.state === "windup");
       if (f.state === "approach"){
         if (d > REACH * 0.7){
-          f.p.root.position.addScaledVector(to.normalize(), BANDIT_SPEED * dt);
-          setAnim(f.p, "run", 1.1);
+          f.p.root.position.addScaledVector(to.normalize(), f.speed * dt);
+          setAnim(f.p, f.mount ? "idle" : "run", 1.1);
         } else { setAnim(f.p, "idle"); if (f.t <= 0){ f.state = "windup"; f.t = WINDUP; } }
       } else if (f.state === "windup"){
         setAnim(f.p, f.p.acts.attack ? "attack" : f.p.acts.work ? "work" : "idle", f.p.acts.attack ? 1.0 : 0.6);
         if (f.t <= 0){ f.state = "recover"; f.t = RECOVER + Math.random() * 0.6; strike(id, f); }
       } else if (f.state === "recover"){
         setAnim(f.p, "idle");
-        if (d > REACH * 0.9) f.p.root.position.addScaledVector(to.normalize(), BANDIT_SPEED * 0.8 * dt);
+        if (d > REACH * 0.9) f.p.root.position.addScaledVector(to.normalize(), f.speed * 0.8 * dt);
         if (f.t <= 0) f.state = "approach";
       }
       // Bandits do not stand inside you.
       if (d < 1.1 && d > 0.01) f.p.root.position.addScaledVector(to.normalize(), -(1.1 - d));
     }
     // Run far enough and you are away.
-    if (F && F.kind === "ambush" && !busy && nearest > ESCAPE && nearest < 1e8){
+    if (F && (F.kind === "ambush" || F.kind === "convoy") && !busy && nearest > ESCAPE && nearest < 1e8){
       busy = true;
       send({op: "flee"}).then(r => { busy = false; handle(r); });
     }
@@ -231,7 +251,7 @@ export function createFight({THREE, scene, S, api, makePerson, setAnim, CSS2DObj
   }
 
   return {
-    update, swing, block,
+    update, swing, block, begin,
     get blocking(){ return blocking; },
     swinging: () => performance.now() < swingUntil,
     get active(){ return !!F; },

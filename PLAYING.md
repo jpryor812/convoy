@@ -355,6 +355,21 @@ rise back up.
   reins in (hold it at a stand to back up); **A/D** steer, in wider arcs the
   faster you go. Galloping tires the animal (the bar over its gait); the
   camera drifts back behind it when you leave the mouse alone.
+- **The convoy** (2026-11-01, `convoy/trek.py`, `game3d/convoy.js`): goods
+  go by convoy. Leave a place carrying anything and you are asked where to
+  take it -- or press **Set out** by your portrait. The panel shows the
+  road's length, the load at book price and the danger; hire a guard there
+  if you like. Setting out goes widescreen, with music and the road drawn
+  ahead of you; you ride it yourself. Your load rides with you: sacks slung
+  on the donkey, sacks in a cart, a sack on your back on foot. Bandits come
+  every time -- more of them, and more often, the more you carry; riders
+  from behind for loads worth 300 or more; and settlers who hear of a rich
+  load near their road may come for it under their own names. Get down (E)
+  and fight, or spur on and outrun them. Off the road nothing gallops; a
+  cart never passes a trot; a heavy load slows every gait. Arrive and the
+  bars lift with what happened on the way. No fast travel with goods. Drop
+  `art/audio/convoy.mp3` (and `fight.mp3`) in to replace the drawn music.
+  Debugging: `convoy.trek`, `convoy.trekSkip(0.5)`, `convoy.convoyPanel()`.
 - **The market board** (2026-10-31, `convoy/board.py`): every trading post
   has one, open to everyone -- no need to have met the other person. Market
   tab, **Board** (the default): recent deals with pictures, each good's

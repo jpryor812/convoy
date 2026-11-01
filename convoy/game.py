@@ -48,6 +48,7 @@ from . import family as FAM
 from . import delivery as DL
 from . import missions as MI
 from . import combat as CB
+from . import trek as TK
 from . import ground as GR
 
 # Raiders leave a newcomer alone for their first game day.
@@ -224,6 +225,7 @@ class Game:
         # A fight in progress (convoy/combat.py): the page plays it, this keeps score.
         self.fight: CB.Fight | None = None
         self.last_ambush = -1e12
+        self._trek_rng = random.Random()
         # `models` is for tests: anything with `decide`, `usage` and `world_lock`.
         self.models = models if models is not None else llm.LLMPolicy(
             log=log, requests_per_minute=settings.rpm,
@@ -995,7 +997,8 @@ class Game:
                     self.fight = f = CB.start_camp(w, you, int(mi.get("bandits", 2)))
                     line = "The bandits come at you! R to swing, hold F to block."
             elif op == "road":
-                if f is None:
+                # On a convoy the road's dangers are the trek's own (trek_op).
+                if f is None and TK.active(w, you) is None:
                     nf = CB.road_check(w, self.log, you, self.last_ambush)
                     if nf is not None:
                         self.fight, self.last_ambush, f = nf, w.sim_time, nf
@@ -1021,6 +1024,10 @@ class Game:
     def _settle_fight(self, f: CB.Fight) -> str:
         """The end of a fight. Call with the world lock held."""
         w, you = self.world, self.you
+        if f.kind == "convoy":
+            msg = TK.settle(w, self.log, you, f, self._trek_rng)
+            self._push("did", msg)
+            return msg
         if f.over == "won":
             if f.kind == "camp":
                 msg = MI.finish(w, self.log, you, "bounty", "You drove the bandits off.")
@@ -1034,6 +1041,57 @@ class Game:
             msg = "You got away." if f.kind == "ambush" else "You fall back from the camp."
         self._push("did", msg)
         return msg
+
+    # -- the convoy (designer, 2026-11-01; convoy/trek.py) ----------------------
+
+    def trek_view(self) -> dict[str, Any] | None:
+        t = self.world.treks.get(self.human_id)
+        if t is None or (t.status != "on" and self.world.sim_time - t.ended > 600):
+            return None
+        return {"id": t.id, "origin": t.origin, "destination": t.destination, "cargo": t.cargo,
+                "value": round(t.value, 2), "metres": round(t.metres), "share": round(t.share, 3),
+                "status": t.status, "guards": t.guards, "beaten": t.beaten, "coins": round(t.coins, 1),
+                "lost": t.lost, "attacks": len(t.encounters),
+                "met": sum(1 for e in t.encounters if e["done"] and e["done"] != "quiet"),
+                "next_at": next((e["at"] for e in t.encounters if not e["done"]), None)}
+
+    def trek_op(self, body: dict[str, Any]) -> dict[str, Any]:
+        """The convoy, ridden by the page and scored here. Ops: plan (where
+        to, with the page's road length in map metres), start, progress (map
+        metres along the road; answers with a fight when bandits are reached),
+        abort, and state."""
+        op = str(body.get("op", "state"))
+        with self.engine.world_lock:
+            w, you = self.world, self.you
+            dest = str(body.get("to", ""))
+            route = float(body.get("metres", 0) or 0)
+            if op == "plan":
+                return {"ok": True, "plan": TK.plan(w, you, dest, route), "trek": self.trek_view()}
+            if op == "start":
+                if TK.active(w, you):
+                    return {"ok": False, "message": "a convoy is already under way", "trek": self.trek_view()}
+                t, msg = TK.start(w, self.log, you, dest, route, self._trek_rng)
+                if t is not None:
+                    self._push("alert", msg)
+                return {"ok": t is not None, "message": msg, "trek": self.trek_view()}
+            if op == "progress":
+                enc = TK.progress(w, you, float(body.get("metres", 0) or 0))
+                out: dict[str, Any] = {"ok": True, "trek": self.trek_view(), "fight": None}
+                if enc is not None and self.fight is None:
+                    self.fight = TK.fight_for(w, self.log, you, enc)
+                    named = [x.name for x in self.fight.foes if x.agent]
+                    line = (f"{', '.join(named)} {'is' if len(named) == 1 else 'are'} on the road ahead -- they want your load!"
+                            if named else "Riders coming up behind!" if enc["kind"] == "riders"
+                            else "Bandits block the road!")
+                    if enc.get("guarded"):
+                        line += f" Your guards take on {enc['guarded']}."
+                    self._push("alert", line)
+                    out.update(message=line, fight=CB.view(self.fight, you), kind=enc["kind"])
+                return out
+            if op == "abort":
+                msg = TK.abort(w, self.log, you)
+                return {"ok": True, "message": msg, "trek": self.trek_view()}
+            return {"ok": True, "trek": self.trek_view(), "fight": CB.view(self.fight, you)}
 
     def depart(self) -> dict[str, Any]:
         """The player walked out of the place they stood in. A shift there ends:
@@ -1681,6 +1739,17 @@ class Game:
                            + (f": {d.get('left')} back to you." if d.get("left") else "."))
         if e.actor == me and e.type in ("board_posted", "board_traded", "board_closed"):
             return None
+        # THE CONVOY (2026-11-01, convoy/trek.py). Your own are told as they
+        # happen (trek_op); settlers riding out for yours are a surprise on the
+        # road, not a feed line. Someone else's convoy robbed is news.
+        if e.type.startswith("convoy_") and e.type in ("convoy_set_out", "convoy_ambushed", "convoy_robbed",
+                                                       "convoy_beat_off", "convoy_arrived", "convoy_raiders"):
+            if e.actor == me or e.type == "convoy_raiders":
+                return None
+            if e.type == "convoy_robbed" and isinstance(d.get("by"), list) and d["by"]:
+                return "world", (f"{self._name(e.actor)}'s convoy was robbed on the road by "
+                                 f"{', '.join(self._name(r) for r in d['by'])}.")
+            return None
         # BANDIT GANGS (2026-10-30, convoy/robbery.py): coming, robbing, done.
         if e.actor == me and e.type in ("robbery_sighted", "robbery_started", "building_robbed", "robbery_beaten"):
             biz = self.world.businesses.get(e.subject)
@@ -2051,6 +2120,9 @@ class Game:
             # the escorts and every other reader see the player where they are.
             self.log.emit(w.sim_time, "travel", actor=you.id, location=origin,
                           destination=place, seconds=0.0, walked=True)
+            done = TK.finish(w, self.log, you, place)
+            if done:
+                self._push("did", done)
             haul, go = self._haul_on_arrival()
             # A delivery run: load at your business, hand over at the buyer's.
             if you.delivery:
@@ -2058,12 +2130,18 @@ class Game:
                     if line:
                         haul += " " + line
         self._push("wake", f"You arrived at {place}.{note}{haul}")
-        return {"ok": True, "message": f"arrived at {place}.{note}{haul}", "haul": haul.strip(), "go": go}
+        return {"ok": True, "message": f"arrived at {place}.{note}{haul}", "haul": haul.strip(), "go": go,
+                "convoy": done}
 
     def act(self, action: str, args: dict[str, Any]) -> dict[str, Any]:
         """One action, exactly as an agent's tool call would run it."""
         if not isinstance(args, dict):
             return {"ok": False, "message": "arguments must be an object"}
+        # GOODS GO BY CONVOY (2026-11-01): no fast travel with a load worth
+        # robbing -- you ride it, and the road has its say (convoy/trek.py).
+        if action == "travel_to" and self.world.outposts and TK.value(self.world, self.you) >= TK.MIN_VALUE:
+            return {"ok": False, "message": ("Goods go by convoy: you carry "
+                    f"{TK.value(self.world, self.you):.0f} worth. Set out with them, or leave them behind.")}
         with self.engine.world_lock:
             # "WORK HERE MYSELF" MEANS WORK. For an agent, joining its own
             # business's roster and starting a shift are two decisions; for the
@@ -2145,6 +2223,7 @@ class Game:
             "from": con.seller_business, "to": con.buyer_business}
         return {"upcoming": upcoming, "market_keys": market_keys, "delivery": you.delivery, "mission": you.mission,
             "haul": haul, "health": round(you.health, 1), "fight": CB.view(self.fight, you),
+            "trek": self.trek_view(),
             "activity": self.activity(),
             "location": you.location,
             # What the player rides, and how much faster than walking it is:

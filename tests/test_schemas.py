@@ -394,6 +394,8 @@ def test_prefix_cost_is_within_budget():
     # 20,500 -> 21,200 on 2026-10-31: the MARKET BOARD at the trading posts
     # (board_post, board_take, board_cancel and a briefing sentence) and the
     # bandit gangs' sentence. Measured 21,041.
+    # 2026-11-01: THE CONVOY (rob_convoy and a briefing sentence). Measured
+    # 21,186; the budget is unchanged, and nearly spent.
     ok("outposts prefix under 21.2k tokens", out_tok < 21200, f"~{out_tok} tokens")
     ok("prefix is large enough to cache", prefix_tok > 1024, f"~{prefix_tok} tokens")
 

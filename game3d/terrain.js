@@ -13,9 +13,25 @@
    people, trees and the cursor all stand on it. reground() re-levels an area
    after the map changes (a new claim and its track). */
 
+/* THE VEIL OVER UNEXPLORED LAND (2026-11-01). It was near-white paint, and
+   read as a snowfield with trees standing on it. Now a warm dust that keeps
+   a little of the land's light and shade, and thins up a mountainside so a
+   range still stands as a landmark. Shared with the trees and rocks (see
+   hazeMat in main.js), so nothing floats on it. Needs vHazeP (world
+   position) and the haze uniforms. */
+export const HAZE_GLSL = `
+  float hz = uHazeOn * texture2D(tHaze, (vHazeP.xz - uHazeBox.xy) / uHazeBox.zw).a;
+  hz *= 1.0 - 0.6 * smoothstep(12.0, 60.0, vHazeP.y);
+  float hzl = dot(gl_FragColor.rgb, vec3(0.3, 0.55, 0.15));
+  gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.8, 0.75, 0.64) * (0.8 + 0.4 * hzl), hz * 0.84);`;
+
 export function createTerrain({THREE, w, d, roadSegs, places, rivers, mountains, windUniform, tex, haze}){
   const STEP = 4;                                   // scene units between vertices
-  const SNOWLINE = Math.max(40, Math.max(0, ...mountains.map(m => m.h || 0)) * 0.6);
+  // MOUNTAINS (2026-11-01: "make the graphics of the world better ... the
+  // mountains"): drawn about twice as tall and half again as wide as the map
+  // has them, so a range stands over the plain rather than humps on it.
+  const MT_H = 2.1, MT_R = 1.55;
+  const SNOWLINE = Math.max(40, Math.max(0, ...mountains.map(m => m.h || 0)) * MT_H * 0.58);
   const nx = Math.ceil(w / STEP) + 1, nz = Math.ceil(d / STEP) + 1;
   const x0 = -w / 2, z0 = -d / 2;
   const H = new Float32Array(nx * nz);
@@ -32,6 +48,17 @@ export function createTerrain({THREE, w, d, roadSegs, places, rivers, mountains,
     let s = 0, amp = 0.5, f = 1;
     for (let o = 0; o < oct; o++){ s += amp * vnoise(x * f, z * f); f *= 2.03; amp *= 0.5; }
     return s / 0.9375;
+  }
+  // Ridged noise: each octave folded sharp at its middle, and weighted by the
+  // one before, so ridges branch into spurs and gullies the way rock erodes.
+  function ridged(x, z, oct = 5){
+    let s = 0, amp = 0.55, f = 1, w = 1, norm = 0;
+    for (let o = 0; o < oct; o++){
+      let n = 1 - Math.abs(vnoise(x * f, z * f) * 2 - 1);
+      n *= n; n *= w; w = Math.min(1, n * 1.6);
+      s += n * amp; norm += amp; f *= 2.1; amp *= 0.5;
+    }
+    return s / norm;
   }
 
   // ---- what keeps ground flat: roads (bucketed), places, rivers ---------------
@@ -99,22 +126,27 @@ export function createTerrain({THREE, w, d, roadSegs, places, rivers, mountains,
     const n = fbm(x * 0.0065 + 17.3, z * 0.0065 - 4.1);
     let h = Math.pow(Math.max(0, n - 0.18) / 0.82, 1.4) * 9;          // rolling hills, flats between
     h += (fbm(x * 0.03, z * 0.03, 2) - 0.5) * 0.8;                     // small undulation
-    let peak = 0;
+    let peak = 0, foot = 0;
     for (const mt of mountains){
       const dist = Math.hypot(x - mt.x, z - mt.z);
-      const dd = dist - mt.r * 0.85;
-      if (dd < 80) h += Math.pow(1 - Math.max(0, dd) / 80, 2) * 8;    // foothills
-      if (tex && mt.h){
+      const dd = dist - mt.r * MT_R * 0.85;
+      if (dd < 110) foot = Math.max(foot, Math.pow(1 - Math.max(0, dd) / 110, 2) * 12);   // foothills
+      if (tex && mt.h && dist < mt.r * MT_R * 1.25 + mt.r * 0.5){
         // THE MOUNTAIN ITSELF, part of the ground (2026-10-19): a ridged peak,
-        // not a cone set on the grass. Ridges are |noise| folded sharp.
-        const R = mt.r * 1.25, k = 1 - dist / R;
+        // not a cone set on the grass. The outline is warped by noise so no
+        // two are round; the faces are ridged noise, spurs and gullies.
+        const wx = (fbm(x * 0.012 + mt.z, z * 0.012, 2) - 0.5) * mt.r * 0.9;
+        const wz = (fbm(x * 0.012, z * 0.012 - mt.x, 2) - 0.5) * mt.r * 0.9;
+        const R = mt.r * MT_R * 1.25, k = 1 - Math.hypot(x + wx - mt.x, z + wz - mt.z) / R;
         if (k > 0){
-          const ridge = 1 - Math.abs(fbm(x * 0.02 + mt.x, z * 0.02 - mt.z, 4) * 2 - 1);
-          peak = Math.max(peak, mt.h * Math.pow(k, 1.5) * (0.62 + 0.55 * ridge * ridge));
+          const ridge = ridged(x * 0.026 + mt.x * 0.01, z * 0.026 - mt.z * 0.01);
+          const body = Math.pow(k, 1.35) * (1 - 0.25 * Math.pow(k, 4));        // a shoulder, not a spike
+          const crag = ridged(x * 0.075 - mt.z * 0.01, z * 0.075 + mt.x * 0.01, 3);   // crags and ledges
+          peak = Math.max(peak, mt.h * MT_H * body * (0.42 + 0.8 * ridge + 0.24 * crag));
         }
       }
     }
-    return Math.max(0, h) * m + peak * Math.max(m, 0.15);
+    return Math.max(0, h + foot) * m + peak * Math.max(m, 0.15);
   }
 
   // ---- the mesh -------------------------------------------------------------
@@ -155,6 +187,30 @@ export function createTerrain({THREE, w, d, roadSegs, places, rivers, mountains,
       const h = heightFn(x, z);
       H[i] = h; pos.setY(i, h); shade(i, x, z, h);
     }
+    if (tex) hollows(ix0, iz0, ix1, iz1);
+  }
+  /* GULLIES IN SHADE (2026-11-01): ground lower than the ground round it is
+     a hollow the sky barely reaches; higher is a ridge in the open. Darkening
+     one and lifting the other is what makes crags read as crags. Only where
+     the land has real relief, so the plains keep their even tone. */
+  function hollows(ix0, iz0, ix1, iz1){
+    const K = 3;
+    for (let iz = iz0; iz <= iz1; iz++) for (let ix = ix0; ix <= ix1; ix++){
+      const i = iz * nx + ix, h = H[i];
+      if (h < 6) continue;
+      let sum = 0, n = 0;
+      for (let dz = -K; dz <= K; dz += K) for (let dx = -K; dx <= K; dx += K){
+        if (!dx && !dz) continue;
+        const jx = ix + dx, jz = iz + dz;
+        if (jx < 0 || jz < 0 || jx >= nx || jz >= nz) continue;
+        sum += H[jz * nx + jx]; n++;
+      }
+      const curv = h - sum / Math.max(1, n);
+      const k = Math.max(0.55, Math.min(1.18, 1 + curv * 0.045));
+      const blend = Math.min(1, (h - 6) / 10);
+      const f = 1 + (k - 1) * blend;
+      col[i * 3] *= f; col[i * 3 + 1] *= f; col[i * 3 + 2] *= f;
+    }
   }
   bucketRoads();
   fill(0, 0, nx - 1, nz - 1);
@@ -184,13 +240,12 @@ export function createTerrain({THREE, w, d, roadSegs, places, rivers, mountains,
       if (before) before.call(mat, sh, r);
       Object.assign(sh.uniforms, haze);
       sh.vertexShader = sh.vertexShader
-        .replace("#include <common>", "#include <common>\nvarying vec2 vHazeXZ;")
-        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvHazeXZ = (modelMatrix * vec4(transformed, 1.0)).xz;");
+        .replace("#include <common>", "#include <common>\nvarying vec3 vHazeP;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvHazeP = (modelMatrix * vec4(transformed, 1.0)).xyz;");
       sh.fragmentShader = sh.fragmentShader
-        .replace("#include <common>", "#include <common>\nuniform sampler2D tHaze; uniform vec4 uHazeBox; uniform float uHazeOn; varying vec2 vHazeXZ;")
+        .replace("#include <common>", "#include <common>\nuniform sampler2D tHaze; uniform vec4 uHazeBox; uniform float uHazeOn; varying vec3 vHazeP;")
         .replace("#include <dithering_fragment>", `#include <dithering_fragment>
-          float hz = uHazeOn * texture2D(tHaze, (vHazeXZ - uHazeBox.xy) / uHazeBox.zw).a;
-          gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.87, 0.84, 0.78), hz * 0.86);`);
+          ${HAZE_GLSL}`);
     };
     return mat;
   }
@@ -215,7 +270,15 @@ export function createTerrain({THREE, w, d, roadSegs, places, rivers, mountains,
       sh.fragmentShader = sh.fragmentShader
         .replace("#include <common>", `#include <common>
           uniform sampler2D tGrass, tMoss, tDry, tTrail, tRock, tSand; uniform float uSnow; varying float vWet; varying vec3 vSplat; varying vec3 vWPos; varying vec3 vWNrm;
-          vec3 two(sampler2D t, vec2 p){ return mix(texture2D(t, p * 0.16).rgb, texture2D(t, p * 0.037 + 0.31).rgb, 0.45); }`)
+          vec3 two(sampler2D t, vec2 p){ return mix(texture2D(t, p * 0.16).rgb, texture2D(t, p * 0.037 + 0.31).rgb, 0.45); }
+          // Rock projected from all three sides, so a cliff is not streaked
+          // by a texture laid flat from above; two scales against tiling.
+          vec3 tri(sampler2D t, vec3 p, vec3 n, float s){
+            vec3 b = pow(abs(n), vec3(4.0)); b /= (b.x + b.y + b.z);
+            vec3 a = texture2D(t, p.zy * s).rgb * b.x + texture2D(t, p.xz * s).rgb * b.y + texture2D(t, p.xy * s).rgb * b.z;
+            vec3 c = texture2D(t, p.zy * s * 0.23 + 0.4).rgb * b.x + texture2D(t, p.xz * s * 0.23 + 0.4).rgb * b.y + texture2D(t, p.xy * s * 0.23 + 0.4).rgb * b.z;
+            return mix(a, c, 0.4);
+          }`)
         .replace("#include <map_fragment>", `
           vec2 p = vWPos.xz;
           vec3 g = two(tGrass, p);
@@ -226,10 +289,27 @@ export function createTerrain({THREE, w, d, roadSegs, places, rivers, mountains,
           vec3 sand = two(tSand, p * 0.9);
           g = mix(g, sand, smoothstep(0.15, 0.7, vWet));
           g *= mix(1.0, 0.62, smoothstep(-0.05, -0.9, vWPos.y));
-          float steep = smoothstep(0.80, 0.62, normalize(vWNrm).y);
-          g = mix(g, texture2D(tRock, p * 0.09).rgb, steep);
-          float snow = smoothstep(uSnow, uSnow + 14.0, vWPos.y + (texture2D(tRock, p * 0.05).r - 0.5) * 12.0) * smoothstep(0.35, 0.7, normalize(vWNrm).y);
-          g = mix(g, vec3(0.93, 0.93, 0.95) * 1.1, snow);
+          vec3 wn = normalize(vWNrm);
+          // High ground: the grass thins and darkens to alpine turf, then
+          // gives way to scree and bare rock; the steeper, the sooner.
+          float alt = smoothstep(14.0, uSnow * 0.8, vWPos.y);
+          g = mix(g, g * vec3(0.78, 0.84, 0.8), alt * 0.6);
+          vec3 rk = tri(tRock, vWPos, wn, 0.075);
+          // Grey-brown granite, not the photograph's red; cracks and hollows
+          // darker, from the same rock seen much larger.
+          rk = mix(vec3(dot(rk, vec3(0.3, 0.55, 0.15))), rk, 0.5) * vec3(1.0, 0.97, 0.92);
+          float cav = dot(tri(tRock, vWPos, wn, 0.018), vec3(0.333));
+          rk *= 0.5 + 1.0 * cav;
+          // Strata: lighter and darker bands of rock along the height, wavering.
+          float band = sin(vWPos.y * 0.55 + texture2D(tRock, p * 0.011).r * 7.0);
+          rk *= mix(vec3(1.06, 1.03, 0.98), vec3(0.84, 0.86, 0.9), 0.5 + 0.5 * band);
+          rk *= 0.82 + 0.3 * smoothstep(0.2, 0.9, wn.y);                 // overhangs in shade
+          float steep = smoothstep(0.82 - alt * 0.12, 0.6 - alt * 0.12, wn.y);
+          float scree = smoothstep(0.92, 0.8, wn.y) * alt * (1.0 - steep);
+          g = mix(g, rk * vec3(1.05, 1.0, 0.95) * 1.1, scree * 0.7);
+          g = mix(g, rk, steep);
+          float snow = smoothstep(uSnow, uSnow + 14.0, vWPos.y + (texture2D(tRock, p * 0.05).r - 0.5) * 12.0) * smoothstep(0.35, 0.7, wn.y);
+          g = mix(g, vec3(0.93, 0.94, 0.97) * (1.02 + 0.08 * wn.y), snow);
           diffuseColor.rgb *= g;
           if (snow > 0.0) diffuseColor.rgb = mix(diffuseColor.rgb, g, snow);`);
     };

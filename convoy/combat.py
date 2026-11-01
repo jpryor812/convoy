@@ -70,11 +70,13 @@ class Foe:
     hp: float = BANDIT_HP
     max_hp: float = BANDIT_HP
     hit: float = BANDIT_HIT
+    mounted: bool = False      # a rider: comes from behind, as fast as a canter
+    agent: str = ""            # a settler robbing a convoy (convoy/trek.py), by id
 
 
 @dataclass
 class Fight:
-    kind: str                  # "camp" or "ambush"
+    kind: str                  # "camp", "ambush" or "convoy" (convoy/trek.py)
     place: str
     foes: list[Foe] = field(default_factory=list)
     started: float = 0.0       # sim time
@@ -104,7 +106,8 @@ def view(f: Fight | None, agent: "Agent") -> dict[str, Any] | None:
         return None
     w = weapon(agent)
     return {"kind": f.kind, "place": f.place, "over": f.over,
-            "foes": [{"id": x.id, "name": x.name, "hp": round(x.hp, 1), "max": x.max_hp} for x in f.foes],
+            "foes": [{"id": x.id, "name": x.name, "hp": round(x.hp, 1), "max": x.max_hp,
+                      "mounted": x.mounted, "settler": bool(x.agent)} for x in f.foes],
             "you": {"hp": round(agent.health, 1), "down_at": KNOCKED_DOWN, "weapon": w.name,
                     "damage": w.damage, "swing": w.attack_speed, "armour": round(armour(agent), 2)}}
 
@@ -176,9 +179,9 @@ def struck(world: "World", log: "EventLog", agent: "Agent", f: Fight, foe_id: st
     return dmg, ("Blocked" if blocked else f"-{dmg:.0f}")
 
 
-def rob(world: "World", log: "EventLog", agent: "Agent", rng: random.Random | None = None) -> str:
-    """A lost road fight: the bandits take a share of each good and some coin."""
-    rng = rng or random.Random()
+def take(world: "World", agent: "Agent") -> tuple[dict[str, int], float]:
+    """What a lost road fight costs: a share of each good carried, and some
+    coin. Returns (goods taken, coins taken); where they go is the caller's."""
     taken: dict[str, int] = {}
     for item, qty in list(agent.inventory.items()):
         if item in D.WEAPONS or item in D.ARMOR:
@@ -188,6 +191,12 @@ def rob(world: "World", log: "EventLog", agent: "Agent", rng: random.Random | No
             taken[item] = n
     coins = round(agent.denari * COIN_LOSS_SHARE, 2)
     agent.denari -= coins
+    return taken, coins
+
+
+def rob(world: "World", log: "EventLog", agent: "Agent", rng: random.Random | None = None) -> str:
+    """A lost road fight: the bandits take a share of each good and some coin."""
+    taken, coins = take(world, agent)
     log.emit(world.sim_time, "robbed", actor=agent.id, location=agent.location,
              significance=Significance.MEDIUM, by="bandits", items=taken, denari=coins)
     goods = ", ".join(f"{q} {i}" for i, q in taken.items()) or "nothing you carried"

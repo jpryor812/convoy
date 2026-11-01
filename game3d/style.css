@@ -689,3 +689,47 @@ html,body{background:#2a2219;font-size:15px}
 #reticle.aim::before,#reticle.aim::after{background:#ffe08a}
 #dbg{position:fixed;left:12px;bottom:12px;z-index:60;white-space:pre;font:12px/1.4 ui-monospace,Menlo,monospace;color:#e8ffe0;
   background:rgba(0,0,0,.66);padding:8px 10px;border-radius:8px;pointer-events:none}
+
+/* ---------- THE CONVOY (2026-11-01, convoy.js): widescreen and quiet ---------- */
+.letterbox{position:fixed;left:0;right:0;height:0;background:#000;z-index:40;pointer-events:none;
+  transition:height 1.1s cubic-bezier(.6,0,.2,1)}
+#lb-top{top:0} #lb-bot{bottom:0}
+.letterbox.on{height:11vh}
+body.cinema #leftcol, body.cinema #lboard, body.cinema #buildbar, body.cinema #advisors,
+body.cinema #nextmove, body.cinema #ribbon, body.cinema #note, body.cinema #topbar, body.cinema #unit,
+body.cinema #keys, body.cinema #minimapbox, body.cinema #eprompt, body.cinema .lbl-biz, body.cinema .lbl-place{opacity:0;pointer-events:none;transition:opacity .6s}
+#cv-card{position:fixed;left:0;right:0;top:34vh;z-index:41;text-align:center;pointer-events:none;opacity:0;
+  color:#f6e7c4;text-shadow:0 2px 12px #000c, 0 0 2px #000}
+#cv-card.on{animation:cvcard 4.2s ease forwards}
+#cv-card h1{margin:0;font:600 clamp(28px,4.4vw,54px)/1.1 Georgia,"Times New Roman",serif;letter-spacing:.16em;text-transform:uppercase}
+#cv-card p{margin:10px 0 0;font:italic 18px Georgia,serif;letter-spacing:.06em;opacity:.9}
+@keyframes cvcard{0%{opacity:0;transform:translateY(8px)}15%{opacity:1;transform:none}80%{opacity:1}100%{opacity:0}}
+#cv-hud{position:fixed;left:0;right:0;bottom:0;height:11vh;z-index:42;display:none;align-items:center;justify-content:center;gap:22px;
+  color:#e9d9b4;font:15px Georgia,serif;letter-spacing:.08em}
+#cv-hud span{opacity:.9}
+#cv-hud #cv-where{text-transform:uppercase;letter-spacing:.2em;font-size:13px;color:#cdb98c}
+#cv-hud button{background:transparent;border:1px solid #cdb98c88;color:#e9d9b4;border-radius:6px;padding:4px 10px;cursor:pointer;font:13px Georgia,serif}
+#cv-hud button:hover{border-color:#f3d27a;color:#fff}
+#cv-hud #cv-mute.off{opacity:.4;text-decoration:line-through}
+#convoy-panel{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:46;width:min(440px,calc(100vw - 32px));
+  padding:14px 16px;display:none;animation:popin .25s}
+#convoy-panel h3{margin:0 0 8px;font:700 19px var(--head);display:flex;justify-content:space-between;align-items:center;gap:8px}
+#convoy-panel .cv-load{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+#convoy-panel .cv-load span{background:var(--cream2);border:2px solid var(--wood);border-radius:999px;padding:1px 10px;font:600 13px var(--head)}
+#convoy-panel .cv-h{font:700 13px var(--head);color:var(--soft);text-transform:uppercase;letter-spacing:.06em;margin-top:6px}
+#convoy-panel .cv-list{display:flex;flex-direction:column;gap:6px;margin-top:6px;max-height:46vh;overflow:auto}
+#convoy-panel .cv-list button{display:flex;justify-content:space-between;align-items:center;gap:10px;text-align:left;cursor:pointer;
+  background:#fff;border:2px solid var(--wood);border-radius:10px;padding:7px 10px;color:var(--ink)}
+#convoy-panel .cv-list button:hover{background:var(--cream2)}
+#convoy-panel .cv-list small{color:var(--soft);white-space:nowrap}
+#convoy-panel .cv-facts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:6px 0}
+#convoy-panel .cv-facts div{background:var(--cream2);border-radius:10px;padding:6px 8px;text-align:center}
+#convoy-panel .cv-facts small{display:block;color:var(--soft);font-size:12px}
+#convoy-panel .cv-facts b{font:700 18px var(--head)}
+#convoy-panel .cv-danger{background:#3a1f12;color:#ffd9b0;border-radius:10px;padding:8px 10px;margin:8px 0;font-size:14px}
+#convoy-panel .cv-result{font-size:15px;line-height:1.5;margin:4px 0 8px}
+#convoy-panel .cv-foot{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:10px}
+#convoy-panel .cv-foot .mini{width:auto;padding:0 10px;height:28px}
+#convoy-panel .cv-foot .go{background:linear-gradient(#8ee06a,var(--green2));color:#fff;border:3px solid var(--ink);border-radius:12px;
+  padding:5px 18px;font:700 16px var(--head);cursor:pointer;text-shadow:0 1px 0 #0006;box-shadow:0 3px 0 var(--ink)}
+.foe-tag.settler b{color:#ffd23f}

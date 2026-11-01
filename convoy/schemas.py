@@ -232,6 +232,10 @@ DESCRIPTIONS: dict[str, str] = {
     ),
     "board_take": "Take a MARKET BOARD post: buy from a for-sale, or sell into a wanted.",
     "board_cancel": "Take down your board post; held goods or money come back.",
+    "rob_convoy": (
+        "Rob a convoy from CONVOYS ON THE ROAD NEAR YOU: you wait ahead on its "
+        "road under your own name. Beat its rider and take a share of the load."
+    ),
     "build_road": (
         "Lay a dirt road from your land to another claim, or (to_place empty) the "
         "nearest road; paid by the metre. The state's convoy collects only by road."
@@ -542,7 +546,7 @@ DESCRIPTIONS_AFTER_WITHDRAWAL: dict[str, str] = {
 # Only make sense when nobody starts in a town; kept off every other run's
 # prompt, which has no budget to spare for them.
 OUTPOSTS_ONLY: frozenset = frozenset({"claim_land", "build_road", "order_meal", "repay_debt",
-                                      "board_post", "board_take", "board_cancel",
+                                      "board_post", "board_take", "board_cancel", "rob_convoy",
                                       "say_hi", "share_info", "ask_info", "answer_request", "offer_for_info",
                                       "make_group", "invite_to_group", "post_group_chat"})
 # Only the player answers share requests by hand; every settler answers by

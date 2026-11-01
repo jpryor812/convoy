@@ -23,7 +23,8 @@ import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { createUI } from "./ui.js";
 import { createLife } from "./life.js";
 import { createFight } from "./fight.js";
-import { createTerrain } from "./terrain.js";
+import { createConvoy } from "./convoy.js";
+import { createTerrain, HAZE_GLSL } from "./terrain.js";
 import { createFlora } from "./flora.js";
 import { TUNE, readIntent, createWalker, createRider } from "./move.js";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
@@ -128,6 +129,33 @@ const scene = new THREE.Scene();
 // air, muted earth and sage -- not the bright Hay Day of 2026-10-17.
 const HAZE = "#c9b996";
 scene.fog = new THREE.Fog(HAZE, 180, 900);
+/* HAZE LIES LOW (2026-11-01): dust and haze sit in the valleys and thin with
+   height, so peaks stand clear above it, and what is far off cools toward
+   blue -- distance read the way a painter reads it. Every material's fog,
+   patched once before anything compiles. */
+THREE.ShaderChunk.fog_pars_vertex = "#ifdef USE_FOG\n varying float vFogDepth; varying float vFogY;\n#endif";
+THREE.ShaderChunk.fog_vertex = `#ifdef USE_FOG
+  vFogDepth = - mvPosition.z;
+  vFogY = (transpose(mat3(viewMatrix)) * (mvPosition.xyz - viewMatrix[3].xyz)).y;
+#endif`;
+THREE.ShaderChunk.fog_pars_fragment = `#ifdef USE_FOG
+  uniform vec3 fogColor; varying float vFogDepth; varying float vFogY;
+  #ifdef FOG_EXP2
+    uniform float fogDensity;
+  #else
+    uniform float fogNear; uniform float fogFar;
+  #endif
+#endif`;
+THREE.ShaderChunk.fog_fragment = `#ifdef USE_FOG
+  #ifdef FOG_EXP2
+    float fogFactor = 1.0 - exp(- fogDensity * fogDensity * vFogDepth * vFogDepth);
+  #else
+    float fogFactor = smoothstep(fogNear, fogFar, vFogDepth);
+  #endif
+  fogFactor *= mix(1.0, exp(- max(0.0, vFogY - 6.0) / 26.0), 0.85);
+  vec3 fogTint = mix(fogColor, fogColor * vec3(0.8, 0.9, 1.1), smoothstep(fogNear, fogFar * 1.6, vFogDepth));
+  gl_FragColor.rgb = mix(gl_FragColor.rgb, fogTint, fogFactor);
+#endif`;
 const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 3000);
 addEventListener("resize", () => {
   renderer.setSize(innerWidth, innerHeight); labels.setSize(innerWidth, innerHeight);
@@ -452,7 +480,7 @@ function buildWorld(D, totals){
   scatterNature(D, w, d);
 }
 
-let TERRAIN = null;
+let TERRAIN = null, TREE_MESHES = [];
 /* Trees by grid cell, for bumping into them and keeping the camera out of them. */
 const TREES = new Map(), TREE_CELL = 8;
 function treesNear(x, z){
@@ -542,6 +570,29 @@ function veiled(mat){
         gl_FragColor.a *= 1.0 - uHazeOn * texture2D(tHaze, (vHazeXZ - uHazeBox.xy) / uHazeBox.zw).a;`);
   };
 }
+/* Trees and rocks take the same veil as the ground (HAZE_GLSL), so where
+   the land is unexplored they are dust-veiled with it, not standing out. */
+function hazeMat(mat){
+  const before = mat.onBeforeCompile, key = mat.customProgramCacheKey ? mat.customProgramCacheKey() : "";
+  mat.customProgramCacheKey = () => key + "|haze";
+  mat.onBeforeCompile = (sh, r) => {
+    if (before) before.call(mat, sh, r);
+    if (!GROUND_HAZE.uniforms) return;
+    Object.assign(sh.uniforms, GROUND_HAZE.uniforms);
+    sh.vertexShader = sh.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying vec3 vHazeP;")
+      .replace("#include <project_vertex>", `#include <project_vertex>
+        #ifdef USE_INSTANCING
+          vHazeP = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;
+        #else
+          vHazeP = (modelMatrix * vec4(transformed, 1.0)).xyz;
+        #endif`);
+    sh.fragmentShader = sh.fragmentShader
+      .replace("#include <common>", "#include <common>\nuniform sampler2D tHaze; uniform vec4 uHazeBox; uniform float uHazeOn; varying vec3 vHazeP;")
+      .replace("#include <dithering_fragment>", `#include <dithering_fragment>\n${HAZE_GLSL}`);
+  };
+  return mat;
+}
 function addRoad(pts, width, mat){
   if (pts.length < 2) return;
   const pos = [], idx = [], uv = [];
@@ -602,32 +653,92 @@ function scatterNature(D, w, d){
   const riverX = (D.river.axis - CY) * SCALE, riverH = D.river.half * SCALE;
   const borders = (D.river.borders || []).map(r => [(r.axis - CX) * SCALE, r.half * SCALE]);
   let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  for (let i = 0; i < 5200; i++){
+  // WOODS AND MEADOWS (2026-11-01): trees gather where a slow noise is high
+  // -- stands of wood with open grass between and the odd lone tree -- instead
+  // of an even sprinkle over everything. Bushes fringe the woods.
+  const vh = (i, j) => { const v = Math.sin(i * 127.1 + j * 311.7) * 43758.5453; return v - Math.floor(v); };
+  const vn = (x, z) => {
+    const i = Math.floor(x), j = Math.floor(z), fx = x - i, fz = z - j, sx = fx * fx * (3 - 2 * fx), sz = fz * fz * (3 - 2 * fz);
+    const a = vh(i, j), b = vh(i + 1, j), c = vh(i, j + 1), e = vh(i + 1, j + 1);
+    return a + (b - a) * sx + (c - a) * sz + (a - b - c + e) * sx * sz;
+  };
+  const woods = (x, z) => vn(x / 170 + 9.3, z / 170 - 4.1) * 0.7 + vn(x / 55, z / 55) * 0.3;
+  for (let i = 0; i < 16000 && trees.length < 6200; i++){
     const x = (rnd() - 0.5) * (w - 100), z = (rnd() - 0.5) * (d - 100);
     if (Math.abs(x - riverX) < riverH + 4) continue;
     if (borders.some(([bz, bh]) => Math.abs(z - bz) < bh + 4)) continue;
     if (placeList.some(p => Math.hypot(x - p.c.x, z - p.c.z) < p.r + 4)) continue;
     if (distToRoads(x, z) < 7) continue;
-    (rnd() < 0.12 ? rocks : trees).push([x, z, 0.7 + rnd() * 0.9]);
+    const n = woods(x, z), r = rnd();
+    if (r < 0.035){ rocks.push([x, z, 0.7 + rnd() * 0.9]); continue; }
+    const pTree = 0.04 + 0.9 * Math.pow(Math.max(0, Math.min(1, (n - 0.42) / 0.25)), 1.4);
+    if (r < pTree) trees.push([x, z, 0.75 + rnd() * 0.8]);
+    else if (n > 0.34 && n < 0.52 && r < pTree + 0.08) trees.push([x, z, 0.7 + rnd() * 0.6, "bush"]);
   }
   if (FLORA){
-    const list = trees.map(([x, z, k]) => [x, groundAt(x, z) - 0.15, z, k * 0.85, hash(`${x | 0},${z | 0}`) < 0.62 ? "fir" : "oak"])
-      .filter(t => t[1] < 60);
-    for (const [x, , z, k] of list){
+    // Firs on high ground and in the cold; oaks lower down and by the water.
+    // Above the tree line, nothing; just below it, small firs only.
+    const kindOf = (x, y, z, kind) => {
+      if (kind) return kind;
+      const h = hash(`${x | 0},${z | 0}`), fir = y > 9 || h < 0.55 + Math.min(0.3, y / 30);
+      return fir ? (hash(`${z | 0}`, 2) < 0.3 ? "fir2" : "fir") : (hash(`${x | 0}`, 3) < 0.35 ? "oak2" : "oak");
+    };
+    const list = trees.map(([x, z, k, kind]) => { const y = groundAt(x, z); return [x, y - 0.15, z, k * 0.85 * (y > 30 ? 0.7 : 1), kindOf(x, y, z, kind)]; })
+      .filter(t => t[1] < 48 && !(t[1] > 30 && t[4] !== "fir"));
+    for (const [x, , z, k, kind] of list){
+      if (kind === "bush") continue;
       const key = `${Math.floor(x / TREE_CELL)},${Math.floor(z / TREE_CELL)}`;
       if (!TREES.has(key)) TREES.set(key, []);
       TREES.get(key).push([x, z, k]);
     }
-    for (const im of FLORA.plant(list, [])) scene.add(im);
-    GRASS = FLORA.grassField(groundAt, TERRAIN.grassy);
+    for (const m of FLORA.materials) hazeMat(m);
+    TREE_MESHES = FLORA.plant(list, []);
+    for (const im of TREE_MESHES) scene.add(im);
+    GRASS = FLORA.grassField(groundAt, (x, z) => TERRAIN.grassy(x, z) && !inField(x, z));
     scene.add(GRASS.mesh);
+    // BOULDERS (2026-11-01): grey granite, broken into facets and half sunk
+    // in the ground, with moss and lichen on their tops -- not smooth brown
+    // pebbles set on the grass. Two shapes, each tumbled its own way.
     const rockTex = LAND.rock.clone(); rockTex.needsUpdate = true;
-    const stones = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1.2, 1).translate(0, 0.4, 0),
-      new THREE.MeshStandardMaterial({map: rockTex, color: "#b0a594", roughness: 0.95, flatShading: true}), rocks.length);
+    const stoneMat = new THREE.MeshStandardMaterial({map: rockTex, color: "#c4c0b6", roughness: 0.95, flatShading: true});
+    stoneMat.customProgramCacheKey = () => "boulder";
+    stoneMat.onBeforeCompile = sh => {
+      sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vUpN;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvUpN = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * objectNormal);");
+      sh.fragmentShader = sh.fragmentShader.replace("#include <common>", "#include <common>\nvarying vec3 vUpN;")
+        .replace("#include <map_fragment>", `#include <map_fragment>
+          vec3 mono = vec3(dot(diffuseColor.rgb, vec3(0.3, 0.55, 0.15)));
+          diffuseColor.rgb = mix(mono, diffuseColor.rgb, 0.45);
+          float moss = smoothstep(0.75, 0.97, normalize(vUpN).y);
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.42, 0.44, 0.28) * (0.8 + mono * 0.6), moss * 0.35);`);
+    };
+    hazeMat(stoneMat);
+    const boulder = (seed, detail) => {
+      const g = new THREE.IcosahedronGeometry(1.2, detail), v = g.attributes.position;
+      for (let i = 0; i < v.count; i++){
+        const x = v.getX(i), y = v.getY(i), z = v.getZ(i);
+        const n = Math.sin(x * 3.1 + seed) * Math.cos(z * 2.7 - seed) * 0.5 + Math.sin(y * 4.3 + seed * 2) * 0.25;
+        const k = 1 + n * 0.3, flat = y > 0.7 ? 0.7 + (y - 0.7) * 0.2 : y;    // weathered flat on top
+        v.setXYZ(i, x * k, flat * k * 0.85, z * k);
+      }
+      g.computeVertexNormals(); g.translate(0, 0.35, 0);
+      return g;
+    };
+    const geos = [boulder(1.7, 1), boulder(4.2, 1)];
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), e = new THREE.Euler();
-    rocks.forEach(([x, z, k], i) => { e.set(x % 1, x % 6.28, z % 1); q.setFromEuler(e); s.set(k, k * 0.6, k * 0.9); p.set(x, groundAt(x, z) - 0.2, z); m.compose(p, q, s); stones.setMatrixAt(i, m); });
-    stones.castShadow = stones.receiveShadow = true;
-    scene.add(stones);
+    geos.forEach((geo, gi) => {
+      const mine = rocks.filter((r, i) => i % 2 === gi);
+      const stones = new THREE.InstancedMesh(geo, stoneMat, Math.max(1, mine.length));
+      mine.forEach(([x, z, k], i) => {
+        const fr = v => ((v % 1) + 1) % 1;
+        e.set((fr(x * 1.3) - 0.5) * 0.7, fr(x * 0.37) * 6.28, (fr(z * 1.7) - 0.5) * 0.7); q.setFromEuler(e);
+        s.set(k * (0.8 + fr(z * 3.1) * 0.6), k * (0.55 + fr(x * 2.3) * 0.4), k * (0.8 + fr(x * 5.7) * 0.5));
+        p.set(x, groundAt(x, z) - 0.35 * k, z); m.compose(p, q, s); stones.setMatrixAt(i, m);
+      });
+      stones.count = mine.length;
+      stones.castShadow = stones.receiveShadow = true;
+      scene.add(stones);
+    });
     return;
   }
   const trunkGeo = new THREE.CylinderGeometry(0.25, 0.35, 2.4, 6); trunkGeo.translate(0, 1.2, 0);
@@ -784,6 +895,147 @@ function makeBuilding(b){
   setFloors(root, b.floors || 0);
   return root;
 }
+/* FARMLAND (2026-11-01: "make the graphics of the world better ... the
+   farmland"). A farm is its barn and its fields: up to three ploughed plots
+   round the back and sides of the barn, fenced with split rails, showing what
+   it grows -- golden wheat in rows, pasture for the hides, young shoots in
+   the furrows otherwise. A plot is left out where it would cross a road, the
+   water, someone else's square or another building. Trees on a plot are
+   felled; the grass round you does not grow on one. */
+const FIELDS = [];             // {id, cx, cz, ax, az, hw, hd}: rectangles, for the grass and trees
+function inField(x, z){
+  for (const f of FIELDS){
+    const dx = x - f.cx, dz = z - f.cz;
+    if (Math.abs(dx * f.ax + dz * f.az) < f.hw && Math.abs(-dx * f.az + dz * f.ax) < f.hd) return true;
+  }
+  return false;
+}
+let soilTex = null, fenceMat = null;
+function soil(){
+  if (soilTex) return soilTex;
+  // Eight furrows a tile: dark troughs, lighter ridges, clods.
+  const c = document.createElement("canvas"); c.width = c.height = 256;
+  const g = c.getContext("2d");
+  for (let x = 0; x < 256; x++){
+    const t = (x % 32) / 32, ridge = Math.sin(t * Math.PI);
+    const v = 70 + ridge * 48;
+    g.fillStyle = `rgb(${v + 22 | 0},${v + 6 | 0},${v - 18 | 0})`; g.fillRect(x, 0, 1, 256);
+  }
+  for (let i = 0; i < 3500; i++){
+    const v = Math.random() * 40 - 20, x = Math.random() * 256, y = Math.random() * 256;
+    g.fillStyle = `rgba(${110 + v | 0},${88 + v | 0},${60 + v | 0},0.55)`; g.fillRect(x, y, 1 + Math.random() * 3, 1 + Math.random() * 2);
+  }
+  soilTex = new THREE.CanvasTexture(c);
+  soilTex.wrapS = soilTex.wrapT = THREE.RepeatWrapping; soilTex.colorSpace = THREE.SRGBColorSpace;
+  soilTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return soilTex;
+}
+const CROP = {
+  Wheat:         {soil: "#e2cf9c", plant: "#f2cf6e", k: 1.1, ky: 1.45, row: 0.85, gap: 0.42},
+  Hide:          {soil: null,      plant: "#b9c482", k: 1.0, ky: 0.8,  row: 0,    gap: 1.0},
+  "Dirty Water": {soil: "#ffffff", plant: "#9fbf62", k: 0.55, ky: 0.55, row: 0.85, gap: 0.6},
+};
+function dropFields(v){
+  if (v.fields) v.root.remove(v.fields);
+  for (let i = FIELDS.length - 1; i >= 0; i--) if (FIELDS[i].id === v.b.id) FIELDS.splice(i, 1);
+  v.fields = null; v.crop = null;
+}
+function farmFields(v){
+  const card = (S.DATA.cards || {})[v.b.id] || {};
+  const crop = CROP[card.producing] ? card.producing : "Dirty Water";
+  // Re-laid when the crop changes, or squares round it are bought or built on.
+  const key = `${crop}|${S.cellOwner.size}|${S.buildings.size}`;
+  if (v.fieldKey === key) return;
+  dropFields(v);
+  v.crop = crop; v.fieldKey = key;
+  const C = CROP[crop], root = v.root, ang = v.ang, P = v.pos;
+  const fx = Math.sin(ang), fz = Math.cos(ang), rx = Math.cos(ang), rz = -Math.sin(ang);
+  const toW = (lx, lz) => [P.x + rx * lx + fx * lz, P.z + rz * lx + fz * lz];
+  const mine = new Set(S.bizCells.get(v.b.id) || []);
+  const group = new THREE.Group();
+  const H = BUILDING_W / 2;
+  // [centre across, centre along (front is +), half width, half depth]
+  const slots = [[0, -(H + 1.5 + 9), 7, 9], [-(H + 1.5 + 7), -2, 7, 8.5], [H + 1.5 + 7, -2, 7, 8.5]];
+  const ok = (lx, lz) => {
+    const [x, z] = toW(lx, lz);
+    if (distToRoads(x, z) < 3.5) return false;
+    if (S.riverLines && (S.riverLines.x.some(a => Math.abs(x - a) < 12) || S.riverLines.z.some(a => Math.abs(z - a) < 12))) return false;
+    // Its own squares, and the empty, unowned squares of its own place, are
+    // farmland; anyone else's are not.
+    const cell = `${Math.floor(x / CELL)},${Math.floor(z / CELL)}`, sq = S.cells.get(cell);
+    if (sq && !mine.has(cell) && (sq.place !== v.b.place || S.cellOwner.has(cell))) return false;
+    if (colliders.some(c => c.id !== v.b.id && Math.hypot(c.x - x, c.z - z) < (c.r || 3) + 2)) return false;
+    if (inField(x, z)) return false;
+    return Math.abs(groundAt(x, z)) < 6;
+  };
+  const crops = [], posts = [], rails = [];
+  for (const [cx, cz, hw, hd] of slots){
+    let fine = true;
+    for (const [a, b] of [[0, 0], [-1, -1], [1, -1], [-1, 1], [1, 1], [0, -1], [0, 1], [-1, 0], [1, 0]]) if (!ok(cx + a * hw, cz + b * hd)){ fine = false; break; }
+    if (!fine) continue;
+    const [wx, wz] = toW(cx, cz);
+    FIELDS.push({id: v.b.id, cx: wx, cz: wz, ax: rx, az: rz, hw: hw + 0.5, hd: hd + 0.5});
+    // The ground of the plot, draped over the land.
+    if (C.soil){
+      const geo = new THREE.PlaneGeometry(hw * 2, hd * 2, Math.ceil(hw), Math.ceil(hd)); geo.rotateX(-Math.PI / 2);
+      const pa = geo.attributes.position;
+      for (let i = 0; i < pa.count; i++){
+        const lx = pa.getX(i) + cx, lz = pa.getZ(i) + cz, [x, z] = toW(lx, lz);
+        pa.setXYZ(i, lx, groundAt(x, z) - P.y + 0.06, lz);
+      }
+      const uv = geo.attributes.uv;
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * hw * 2 / 7.2, uv.getY(i) * hd * 2 / 7.2);
+      geo.computeVertexNormals();
+      const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({map: soil(), color: C.soil, roughness: 1,
+        polygonOffset: true, polygonOffsetFactor: -1}));
+      mesh.receiveShadow = true; mesh.raycast = () => {};
+      group.add(mesh);
+    }
+    // What grows: rows along the plot, or pasture scattered over it.
+    for (let a = -hw + 0.6; a <= hw - 0.6; a += C.row || C.gap * 1.6){
+      for (let b = -hd + 0.5; b <= hd - 0.5; b += C.gap){
+        const j = hash(`${v.b.id}${a.toFixed(1)}${b.toFixed(1)}`);
+        const lx = cx + a + (C.row ? (j - 0.5) * 0.12 : (j - 0.5) * 1.4), lz = cz + b + (hash(`${b}${a}`, 3) - 0.5) * (C.row ? 0.2 : 1.2);
+        if (!C.row && j < 0.35) continue;
+        const [x, z] = toW(lx, lz);
+        crops.push([lx, groundAt(x, z) - P.y, lz, C.k * (0.85 + j * 0.3), C.ky * (0.85 + hash(`${a}${b}`, 5) * 0.3)]);
+      }
+    }
+    // A split-rail fence round it: a post every 2.4 m, two rails between.
+    const corners = [[-hw - 0.4, -hd - 0.4], [hw + 0.4, -hd - 0.4], [hw + 0.4, hd + 0.4], [-hw - 0.4, hd + 0.4]];
+    for (let s = 0; s < 4; s++){
+      const [ax, az] = corners[s], [bx, bz] = corners[(s + 1) % 4];
+      const len = Math.hypot(bx - ax, bz - az), n = Math.max(1, Math.round(len / 2.4));
+      let prev = null;
+      for (let i = 0; i <= n; i++){
+        const lx = cx + ax + (bx - ax) * i / n, lz = cz + az + (bz - az) * i / n, [x, z] = toW(lx, lz);
+        const pt = new THREE.Vector3(lx, groundAt(x, z) - P.y, lz);
+        if (i < n) posts.push(pt);
+        if (prev) for (const h of [0.5, 0.95]) rails.push([prev.clone().setY(prev.y + h), pt.clone().setY(pt.y + h)]);
+        prev = pt;
+      }
+    }
+  }
+  if (!FIELDS.some(f => f.id === v.b.id)) return;
+  if (FLORA && crops.length) group.add(FLORA.crops(crops, C.plant, crop === "Wheat" ? 0.16 : 0.1));
+  if (!fenceMat) fenceMat = new THREE.MeshStandardMaterial({color: "#ffffff", map: noiseTexture("#7f6b52", 30, 64, 1), roughness: 1});
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), X = new THREE.Vector3(1, 0, 0);
+  const postIM = new THREE.InstancedMesh(new THREE.BoxGeometry(0.16, 1.25, 0.16).translate(0, 0.5, 0), fenceMat, posts.length);
+  posts.forEach((pt, i) => { q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), hash(`${pt.x}${pt.z}`) * 0.4 - 0.2); sc.set(1, 0.9 + hash(`${pt.z}`) * 0.25, 1); m4.compose(pt, q, sc); postIM.setMatrixAt(i, m4); });
+  const railIM = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 0.09, 0.11), fenceMat, rails.length);
+  rails.forEach(([a, b], i) => {
+    const d = b.clone().sub(a), len = d.length();
+    q.setFromUnitVectors(X, d.normalize()); sc.set(len + 0.2, 1, 1); m4.compose(a.clone().add(b).multiplyScalar(0.5), q, sc); railIM.setMatrixAt(i, m4);
+  });
+  for (const im of [postIM, railIM]){ im.castShadow = im.receiveShadow = true; im.raycast = () => {}; im.computeBoundingSphere(); group.add(im); }
+  root.add(group); v.fields = group;
+  // Fell the trees on the plots, and let the grass round you re-grow around them.
+  const gone = (x, z) => inField(x, z);
+  if (FLORA) FLORA.clear(TREE_MESHES, gone);
+  for (const [k, list] of TREES) TREES.set(k, list.filter(([x, z]) => !gone(x, z)));
+  if (GRASS && S.player) GRASS.update(S.player.root.position, true);
+}
+
 /* FLOORS (2026-10-30): "an upgrade to buildings to add a floor which would
    increase storage". Each floor is a timber storey under the building, which
    is lifted onto it -- the building as it was, now standing taller. */
@@ -1253,11 +1505,14 @@ function syncBuildings(){
     root.visible = landShown(b.owner, pos);
     scene.add(root);
     S.buildings.set(b.id, {root, b, pos, ang, born: performance.now(), pop: popNext === b.id || S.ready});
+    if (b.type === "Farm") farmFields(S.buildings.get(b.id));
     if (popNext === b.id) popNext = null;
     colliders.push({id: b.id, x: pos.x, z: pos.z, r: BUILDING_W * 0.42});
   }
+  for (const v of S.buildings.values()) if (v.b.type === "Farm") farmFields(v);
   for (const [id, v] of S.buildings){
     if (live.has(id)) continue;
+    if (v.fields) dropFields(v);
     scene.remove(v.root); v.root.traverse(o => { if (o.isCSS2DObject) o.element.remove(); });
     S.buildings.delete(id);
     const i = colliders.findIndex(c => c.id === id); if (i >= 0) colliders.splice(i, 1);
@@ -1572,8 +1827,8 @@ function updateWalking(dt, it, locked){
   if ((FIGHT.swinging() || s.swingT >= 0) && (P.acts.attack || P.acts.work)) clip = P.acts.attack ? "attack" : "work";
   else if (FIGHT.blocking && P.acts.block && speed < 0.3) clip = "block";
   else if (s.state === "air" || s.state === "slide"){ clip = "run"; rate = 0.05; }
-  else if (s.state === "sprint"){ clip = "run"; rate = speed / 7.0; }
-  else if (speed > 0.3){ clip = "walk"; rate = (back ? -1 : 1) * Math.max(0.5, speed / 3.6); }
+  else if (s.state === "sprint"){ clip = "run"; rate = speed / 9.0; }
+  else if (speed > 0.3){ clip = "walk"; rate = (back ? -1 : 1) * Math.max(0.5, speed / 4.5); }
   else if (working && P.acts.work) clip = "work";
   setAnim(P, clip, rate);
   P.mixer.update(dt);
@@ -1632,7 +1887,7 @@ function updateHUD(now){
 const SADDLE = 0.12;                        // hips at the animal's back, legs astride
 function updateRiding(dt, it, locked){
   const P = S.player, D = DONKEY;
-  const r = RIDER.step(dt, it, {locked});
+  const r = RIDER.step(dt, it, {locked, ...CONVOY.limits()});
   const last = D.root.position.clone();
   D.root.position.x += Math.sin(r.heading) * r.speed * dt;
   D.root.position.z += Math.cos(r.heading) * r.speed * dt;
@@ -1658,12 +1913,16 @@ function arrivals(busyTravel){
     api.post("/api/depart", {}).then(r => { if (r && r.message) UI.toast(r.message); UI.refreshSoon(); })
       .finally(() => setTimeout(() => { S.departing = false; }, 3000));
   }
+  // Out of a place with goods on you: the convoy is offered.
+  if (at) S.inside = at.name;
+  else if (S.inside){ const from = S.inside; S.inside = null; if (!busyTravel && !S.travelling) CONVOY.left(from); }
   if (at && at.name !== S.here && !S.arriving && !busyTravel && !S.travelling){
     S.arriving = true;
     api.post("/api/arrive", {place: at.name}).then(r => {
       S.arriving = false;
       if (r.ok){
         S.here = at.name; UI.refreshSoon();
+        CONVOY.arrived(r);
         if (r.haul) UI.toast(r.haul);
         if (S.errand && S.errand.place === at.name){ const e = S.errand; S.errand = null; if (e.buy) setTimeout(e.buy, 600); }
       }
@@ -2385,7 +2644,7 @@ addEventListener("keydown", e => {
   if (typing()) return;
   const k = e.key.toLowerCase();
   if (k === "escape"){ if (BIGMAP.open){ closeBigMap(); return; } if (placing){ stopPlacing(); return; } UI.close(); return; }
-  if (k === "tab"){ e.preventDefault(); toggleCamera(); return; }
+  if (k === "tab"){ e.preventDefault(); if (!CONVOY.active) toggleCamera(); return; }
   if (k === "c"){ if (camMode === "strategy") flyTo(S.player.root.position); else if (!e.repeat) pressed.add("c"); return; }
   if (k === "r"){ if (!e.repeat) pressed.add("r"); return; }
   if (k === "f"){ FIGHT.block(true); return; }
@@ -2706,7 +2965,7 @@ function makeDonkey(){
    alone it grazes where you left it, wandering a few steps; whistle (H) and it
    trots to you; E beside it to ride, E again to get down. Ridden, it moves by
    RIDER's gaits (updateRiding). */
-const RIDEABLE = new Set(["Donkey", "Horse", "Camel"]);
+const RIDEABLE = new Set(["Donkey", "Horse", "Camel", "Donkey Cart"]);
 const DONKEY = {root: null, mode: "graze", anchor: null, target: null, wait: 0, heading: 0, vid: "", gaitT: 0, called: false};
 function myAnimal(){ return ((S.ST && S.ST.vehicles) || []).find(v => RIDEABLE.has(v.type)); }
 function updateDonkey(dt, now){
@@ -2759,7 +3018,8 @@ function updateDonkey(dt, now){
   pos.y = groundAt(pos.x, pos.z);
   // Gait, as bob and sway: quicker and higher the faster it goes; at rest it
   // drops its head to graze.
-  D.gaitT += dt * (2 + speed * 1.4);
+  // The stride lengthens at speed rather than the legs blurring.
+  D.gaitT += dt * (2 + Math.min(speed, 9) * 1.3 + Math.max(0, speed - 9) * 0.35);
   const moving = speed > 0.15, bob = Math.min(0.16, 0.025 + speed * 0.012);
   D.root.userData.legs.forEach((l, i) => { l.rotation.x = moving ? Math.sin(D.gaitT * 3 + (i % 2) * Math.PI) * Math.min(0.9, 0.3 + speed * 0.06) : 0; });
   if (D.root.userData.body){
@@ -2769,7 +3029,8 @@ function updateDonkey(dt, now){
     const graze = !moving && !riding() ? 0.12 + Math.sin(now / 900) * 0.04 : 0;
     b.rotation.x += ((moving ? -speed * 0.006 : graze) - b.rotation.x) * Math.min(1, dt * 4);
   }
-  D.root.userData.packs.visible = !!(S.OBS && Object.values(S.OBS.you.carrying || {}).reduce((a, b) => a + b, 0) > 0);
+  // Your load rides on it: sacks slung over it, or in its cart (convoy.js).
+  CONVOY.dress(D.root, v.type, CONVOY.load(), speed, dt);
 }
 function whistle(){
   if (!myAnimal() || !DONKEY.root || riding()) return;
@@ -2862,7 +3123,7 @@ function hazeSetup(w, d){
 }
 function drawHaze(){
   if (!GROUND_HAZE.uniforms) return;
-  const on = outposts() ? 1 : 0;
+  const on = outposts() && !GROUND_HAZE.off ? 1 : 0;
   if (on !== GROUND_HAZE.on){ GROUND_HAZE.on = on; GROUND_HAZE.uniforms.uHazeOn.value = on; }
   if (!on || GROUND_HAZE.n === explored.size) return;
   GROUND_HAZE.n = explored.size;
@@ -3207,6 +3468,8 @@ function frame(now){
   updateCamp();
   if (GRASS) GRASS.update(camMode === "strategy" ? focus : S.player.root.position);
   FIGHT.update(dt, now);
+  CONVOY.update(dt, now);
+  CONVOY.dressWalker(S.player, CONVOY.load(), riding());
   updateDonkey(dt, now);
   if (border && border.userData.edge){
     const pulse = 0.5 + 0.5 * Math.sin(now / 420);
@@ -3251,20 +3514,31 @@ window.convoy = {camera, scene, S, renderer, set idleAt(v){ IDLE_AT = v; for (co
   get mode(){ return camMode; }, third: () => enterThird(), overview: (d) => { if (d) sDist = d; enterStrategy(); },
   look(x, z, d){ focusGoal.set(x, 0, z); focus.copy(focusGoal); if (d) sDist = d; },
   hold(k, ms){ keys.add(k); setTimeout(() => keys.delete(k), ms); },
-  teleport(x, z){ S.player.root.position.set(x, groundAt(x, z), z); },
+  teleport(x, z){ S.player.root.position.set(x, groundAt(x, z), z); if (riding() && DONKEY.root) DONKEY.root.position.set(x, groundAt(x, z), z); },
   tune: TUNE, walker: WALKER.s, rider: RIDER.s, riding: () => riding(),
-  floors(id, n){ const v = S.buildings.get(id); if (v) setFloors(v.root, n); }};
+  floors(id, n){ const v = S.buildings.get(id); if (v) setFloors(v.root, n); },
+  haze(on){ GROUND_HAZE.off = !on; GROUND_HAZE.n = -1; drawHaze(); },
+  get trek(){ return CONVOY.trek; }, trekSkip: share => CONVOY.skip(share), convoyPanel: () => CONVOY.open(),
+  get fight(){ return FIGHT; }};
 
 /* ------------------------------------------------------------ start */
 const UI = createUI({api, S, walkToPlace, walkToBuilding, fastTravel, findMe, short,
-  onStatus: () => { checkTravel(); checkKnown(); defaultView(); gangBanner();
+  onStatus: () => { checkTravel(); checkKnown(); defaultView(); gangBanner(); CONVOY.sync(S.ST);
     if (riding() !== LAST_RIDING){ LAST_RIDING = riding(); modeChanged(); } }, toggleCamera: () => toggleCamera(), mode: () => camMode,
   foundOn: (p, c, t) => foundOn(p, c, t), buyOn: (p, c) => buyOn(p, c), clearSelection: () => clearSelection(),
   startPlacing: t => startPlacing(t), stopPlacing: () => stopPlacing(),
-  // A delivery taken: down into the saddle, Red Dead style.
-  onDelivery: () => { if (camMode !== "third") enterThird(); }});
+  // A delivery taken: down into the saddle, Red Dead style -- and if the
+  // goods are already on you, off by convoy.
+  onDelivery: () => { if (camMode !== "third") enterThird(); if (CONVOY.load() > 0) CONVOY.open(); },
+  setOut: () => CONVOY.open(), convoyOn: () => CONVOY.active});
 const FIGHT = createFight({THREE, scene, S, api, makePerson, setAnim, CSS2DObject, UI, placeAt, campInfo, groundAt,
-  banditModel: () => CAST.m[CAST.m.length > 1 ? 1 : 0]});
+  banditModel: () => CAST.m[CAST.m.length > 1 ? 1 : 0], makeMount: () => makeDonkey(), short, convoy: () => CONVOY.active});
+/* THE CONVOY (2026-11-01, convoy.js; the score in convoy/trek.py). */
+const CONVOY = createConvoy({THREE, scene, S, api, UI, SCALE, roadSegs, distToRoads, groundAt, placeAt, short,
+  you: () => G.you, FIGHT: () => FIGHT, makePerson, setAnim, makeMount: () => makeDonkey(),
+  enterThird: () => { if (camMode !== "third") enterThird(); },
+  stopMount: () => { if (riding()){ RIDER.s.speed = Math.min(RIDER.s.speed, 1.5); RIDER.setGait(0); } },
+  teleport: (x, z) => window.convoy.teleport(x, z)});
 /* BANDIT GANGS (2026-10-30, convoy/robbery.py): a gang coming for one of
    your buildings walks in from its hideout in the hills, then mills about
    the building while it loots; a red banner counts the hour down. Only

@@ -28,6 +28,7 @@ from . import ground as GR
 from . import raids as R
 from . import board as BD
 from . import robbery as RB
+from . import trek as TK
 from . import data as D
 from . import economy as E
 from . import world_map as M
@@ -155,6 +156,7 @@ class Engine:
         # so adding them shifts no other random outcome.
         self._rob_rng = random.Random(self.config.banditry_seed + 1)
         self._board_rng = random.Random(self.config.banditry_seed + 2)
+        self._trek_rng = random.Random(self.config.banditry_seed + 3)
         self._next_robbery_check = 0.0
         # A resumed world may already be past the withdrawal hour; the state is
         # gone if there is no open government business left to close.
@@ -346,6 +348,8 @@ class Engine:
             BD.tick(w, self.log)
             if hour:
                 BD.ai_tick(w, self.log, self._board_rng)
+                # Settlers weigh the convoys on the road (convoy/trek.py).
+                TK.tick(w, self.log, self._trek_rng)
         self._debt_interest(hours)
         if w.outposts and w.sim_time >= self._next_discovery:
             self._next_discovery = w.sim_time + DS.EVERY_S
@@ -667,27 +671,8 @@ class Engine:
         )
 
     def _share_loot(self, members: list[str], taken: dict[str, int]) -> dict[str, int]:
-        """Deal the take round the raiders as stolen goods, one unit at a time,
-        to whoever still has room. Returns what nobody could carry."""
-        w = self.world
-        room = {m: max(0, w.agents[m].carry_capacity(w) - w.agents[m].carried_units())
-                for m in members}
-        left: dict[str, int] = {}
-        i = 0
-        for item, qty in taken.items():
-            for _ in range(qty):
-                placed = False
-                for k in range(len(members)):
-                    m = members[(i + k) % len(members)]
-                    if room[m] > 0:
-                        w.agents[m].add_stolen(item, 1)
-                        room[m] -= 1
-                        i = (i + k + 1) % len(members)
-                        placed = True
-                        break
-                if not placed:
-                    left[item] = left.get(item, 0) + 1
-        return left
+        """Deal the take round the raiders as stolen goods (trek.share_loot)."""
+        return TK.share_loot(self.world, members, taken)
 
     def _lookouts(self, agent: Agent, origin: str, destination: str) -> tuple:
         """The owner's lookouts on watch near either end of this journey:

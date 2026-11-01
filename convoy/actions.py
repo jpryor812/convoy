@@ -3721,6 +3721,17 @@ def open_courier_jobs(world: World, agent: Agent, limit: int = 8) -> list[dict[s
 # RAIDS -- robbery by people (designer decision, 2026-10-16). See `raids`.
 # ---------------------------------------------------------------------------
 
+def rob_convoy(world: World, log: EventLog, agent: Agent, trek_id: str) -> Result:
+    """Ride out to rob a convoy on the road near you (CONVOYS ON THE ROAD
+    NEAR YOU): you wait for it ahead, under your own name, and take what you
+    can if you beat its rider. See convoy/trek.py."""
+    from . import trek as TK
+    t = next((t for t in world.treks.values() if t.id == trek_id), None)
+    if t is None:
+        return False, f"no convoy {trek_id!r} on the road"
+    return TK.join(world, log, agent, t)
+
+
 def plan_raid(
     world: World, log: EventLog, agent: Agent, segment: str,
     hours: float = 4.0, target_id: str = "",

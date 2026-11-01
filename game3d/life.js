@@ -303,7 +303,7 @@ export function createLife(ctx){
       if (st.ground) st.ground.children.forEach((c, i) => {
         if (c.userData.grazes){ c.rotation.y = Math.sin(t * 0.25 + i * 1.7) * 1.4; }
       });
-      const p = PROD && PROD.businesses[v.b.id];
+      const p = PROD && PROD.businesses && PROD.businesses[v.b.id];
       let frac = 0, working = false;
       if (p && !p.blocked){
         working = true;
