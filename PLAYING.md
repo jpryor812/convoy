@@ -355,6 +355,24 @@ rise back up.
   reins in (hold it at a stand to back up); **A/D** steer, in wider arcs the
   faster you go. Galloping tires the animal (the bar over its gait); the
   camera drifts back behind it when you leave the mouse alone.
+- **The map, hex by hex** (2026-11-01, `convoy/journey.py`, `game3d/hexmap.js`):
+  with outposts the game opens on the map. The land is hexes of 250 m; hover
+  one to see the way there and its cost ("5 hexes · 6 energy · 50 min"), click
+  to walk it -- ten game minutes a hex at your game speed (turn the speed up
+  to move briskly). Each hex shows you it and the ring round it; a hex with a
+  place in it is arriving there. **Energy** (the ⚡ in the top bar) is one a
+  hex, two up a mountain; nobody crosses the river except at a ford. Your
+  mount sets the most you have: on foot 8, donkey, camel or cart 10, horse 12,
+  a chariot 15; a **Feather Bed** (+2) and a **Hearth** (+3) at home add to
+  it (House tab). Get it back by **Rest** at home (two hours, to full),
+  **Make camp** with Camp Supplies from a store or the state's Tavern (two
+  hours, +8, a tent on the map), **Sleep rough** (four hours, +5) or a meal
+  (+2). **Go home** is the one fast trip, from anywhere, goods and all.
+  **Explorers** (House tab): send a grown member of the family, or hire a
+  scout (20 a day), to a spot you click on the map or roaming one way for
+  some days; they camp when spent and what they see goes on your map. Tab
+  looks round over your shoulder without moving you. Convoys go only to
+  places you have found. Debugging: `convoy.hexmap`.
 - **The convoy** (2026-11-01, `convoy/trek.py`, `game3d/convoy.js`): goods
   go by convoy. Leave a place carrying anything and you are asked where to
   take it -- or press **Set out** by your portrait. The panel shows the
@@ -367,7 +385,7 @@ rise back up.
   load near their road may come for it under their own names. Get down (E)
   and fight, or spur on and outrun them. Off the road nothing gallops; a
   cart never passes a trot; a heavy load slows every gait. Arrive and the
-  bars lift with what happened on the way. No fast travel with goods. Drop
+  bars lift with what happened on the way. No fast travel but home. Drop
   `art/audio/convoy.mp3` (and `fight.mp3`) in to replace the drawn music.
   Debugging: `convoy.trek`, `convoy.trekSkip(0.5)`, `convoy.convoyPanel()`.
 - **The market board** (2026-10-31, `convoy/board.py`): every trading post

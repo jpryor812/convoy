@@ -45,7 +45,7 @@ def state_offers(biz) -> tuple[str, ...]:
         from . import data as D
         finished = sorted(i for i in D.ALL_ITEMS
                           if i != "On Foot" and i not in D.VEHICLES and not D.is_intermediate(i)
-                          and (i in D.WEAPONS or i in D.ARMOR or i == "Upgraded Tools"))
+                          and (i in D.WEAPONS or i in D.ARMOR or i in ("Upgraded Tools", "Camp Supplies")))
         return ("Meal", *finished)
     return tuple(biz.spec.outputs or ())
 

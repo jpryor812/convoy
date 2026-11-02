@@ -394,6 +394,11 @@ def make_handler(host: Host):
                 if g is None:
                     return self._send({"error": "no game running"}, 409)
                 return self._send(g.fight_op(body if isinstance(body, dict) else {}))
+            if path == "/api/journey":
+                g = host.game
+                if g is None:
+                    return self._send({"error": "no game running"}, 409)
+                return self._send(g.journey_op(body if isinstance(body, dict) else {}))
             if path == "/api/trek":
                 g = host.game
                 if g is None:

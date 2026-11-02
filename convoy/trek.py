@@ -65,10 +65,11 @@ RAIDER_SHARE_OF_PURSE = 0.1    # what a beaten raider drops
 
 
 def cargo(world: "World", agent: "Agent") -> dict[str, int]:
-    """The goods a convoy carries: everything in hand but weapons, armour and
-    meals, and any consignment being hauled for someone."""
+    """The goods a convoy carries: everything in hand but weapons, armour,
+    meals and camp kit, and any consignment being hauled for someone."""
     out = {i: q for i, q in agent.inventory.items()
-           if q > 0 and i not in D.WEAPONS and i not in D.ARMOR and i not in D.MEALS}
+           if q > 0 and i not in D.WEAPONS and i not in D.ARMOR and i not in D.MEALS
+           and i not in D.PLAYER_ONLY_ITEMS}
     c = world.consignments.get(agent.hauling or "")
     if c is not None and agent.hauling_units > 0:
         out[c.item] = out.get(c.item, 0) + agent.hauling_units
@@ -140,6 +141,11 @@ def start(world: "World", log: "EventLog", agent: "Agent", destination: str,
         return None, "you are already there"
     if CL.place_xy(world, destination) is None:
         return None, f"{destination} is not a place you can ride to"
+    # Only to places you have found on the map (convoy/journey.py).
+    if agent.hex is not None and agent.explored:
+        from . import journey as JY
+        if not JY.found(agent, JY.hex_of_place(world, destination)):
+            return None, f"you have not found {destination} yet: explore the map first"
     v = value(world, agent)
     if v < MIN_VALUE:
         return None, f"you carry {v:.0f} worth; a convoy is for {MIN_VALUE:.0f} or more"

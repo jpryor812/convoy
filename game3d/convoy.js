@@ -152,6 +152,7 @@ export function createConvoy(ctx){
     const here = placeAt(P.root.position), seen = new Map();
     const add = (place, label, kind) => {
       const pl = S.places[place]; if (!pl || (here && here.name === place) || seen.has(place)) return;
+      if (ctx.found && !ctx.found(pl.c)) return;        // only places you have found (step 2)
       seen.set(place, {place, label, kind, km: P.root.position.distanceTo(pl.c) / SCALE / 1000});
     };
     const go = S.ST && (S.ST.go || (S.ST.delivery && S.ST.delivery.destination));
@@ -167,7 +168,7 @@ export function createConvoy(ctx){
   }
   function carrying(){
     const c = S.OBS && S.OBS.you && S.OBS.you.carrying || {};
-    return Object.entries(c).filter(([i, q]) => q > 0 && !/Bat|Dagger|Sword|Spear|Axe|Club|Armou?r|Helm|Shield/.test(i));
+    return Object.entries(c).filter(([i, q]) => q > 0 && !/Bat|Dagger|Sword|Spear|Axe|Club|Armou?r|Helm|Shield|Meal|Camp Supplies/.test(i));
   }
   function units(){ return carrying().reduce((a, [, q]) => a + q, 0); }
   function capacity(){ return (S.OBS && S.OBS.you && S.OBS.you.capacity) || 10; }

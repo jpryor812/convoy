@@ -290,6 +290,15 @@ class Agent:
     # player's own pins on the full map ({x, y, label}).
     shared: dict[str, list[str]] = field(default_factory=dict)
     pins: list[dict[str, Any]] = field(default_factory=list)
+    # THE MAP, HEX BY HEX (2026-11-01, convoy/journey.py): the hex you stand
+    # on ([q, r], or None before you have one), your energy for moving, the
+    # hexes still to walk, every hex you have found ("q,r" keys), and what
+    # you have done to your home to rest better.
+    hex: list[int] | None = None
+    energy: float = 10.0
+    route: list[list[int]] = field(default_factory=list)
+    explored: list[str] = field(default_factory=list)
+    home_rest: list[str] = field(default_factory=list)
     # A delivery run under way (convoy/delivery.py), or None.
     delivery: dict[str, Any] | None = None
     # Missions (convoy/missions.py): those finished, and the one under way.
@@ -1137,6 +1146,30 @@ class Robbery:
 
 
 @dataclass
+class Explorer:
+    """Someone out exploring for a house (2026-11-01): a grown member of the
+    family, or a scout hired for the trip. They walk hex by hex, to a spot or
+    roaming one way, camp when spent, and everything they see is added to
+    their house's map. See `convoy/journey.py`."""
+    id: str
+    owner: str
+    name: str
+    kind: str                        # "family" | "hired"
+    member: str                      # the family member's id, or ""
+    hex: list[int]
+    energy: float
+    max_energy: float
+    mode: str                        # "target" | "roam"
+    target: list[int] | None = None
+    direction: str = ""
+    until: float = 0.0               # roaming ends (sim seconds)
+    status: str = "out"              # out | camp | back
+    busy_until: float = 0.0          # the step or the camp under way ends
+    found: int = 0                   # new hexes
+    started: float = 0.0
+
+
+@dataclass
 class Trek:
     """A convoy under way: someone riding their goods to a destination,
     with the encounters waiting along the road (designer, 2026-11-01). See
@@ -1547,6 +1580,7 @@ class World:
     raids: dict[str, "Raid"] = field(default_factory=dict)
     robberies: dict[str, "Robbery"] = field(default_factory=dict)
     treks: dict[str, "Trek"] = field(default_factory=dict)     # owner id -> their latest convoy
+    explorers: dict[str, "Explorer"] = field(default_factory=dict)
     board: dict[str, "BoardPost"] = field(default_factory=dict)
     buy_orders: dict[str, "BuyOrder"] = field(default_factory=dict)
     marriage_offers: dict[str, "MarriageOffer"] = field(default_factory=dict)

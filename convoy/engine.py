@@ -29,6 +29,7 @@ from . import raids as R
 from . import board as BD
 from . import robbery as RB
 from . import trek as TK
+from . import journey as JY
 from . import data as D
 from . import economy as E
 from . import world_map as M
@@ -157,6 +158,10 @@ class Engine:
         self._rob_rng = random.Random(self.config.banditry_seed + 1)
         self._board_rng = random.Random(self.config.banditry_seed + 2)
         self._trek_rng = random.Random(self.config.banditry_seed + 3)
+        self._explore_rng = random.Random(self.config.banditry_seed + 4)
+        # Called at the end of every tick, with the world lock held: the game
+        # walks the player's hexes here (game.py, convoy/journey.py).
+        self.after_tick: list = []
         self._next_robbery_check = 0.0
         # A resumed world may already be past the withdrawal hour; the state is
         # gone if there is no open government business left to close.
@@ -350,6 +355,8 @@ class Engine:
                 BD.ai_tick(w, self.log, self._board_rng)
                 # Settlers weigh the convoys on the road (convoy/trek.py).
                 TK.tick(w, self.log, self._trek_rng)
+            # Explorers walk their hexes (convoy/journey.py).
+            JY.tick_explorers(w, self.log, self._explore_rng)
         self._debt_interest(hours)
         if w.outposts and w.sim_time >= self._next_discovery:
             self._next_discovery = w.sim_time + DS.EVERY_S
@@ -362,6 +369,8 @@ class Engine:
         self._respawn()
         self._decisions()
         self._diaries()
+        for hook in self.after_tick:
+            hook()
 
     # -- continuous processes ---------------------------------------------
 

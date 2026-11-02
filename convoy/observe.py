@@ -321,7 +321,7 @@ def _static_economy(state_gone: bool = False, city: str = M.HOME_CITY,
         lines.append("")
         lines.append(f"  {'item':<24}{'book':>8}")
         for item in D.ALL_ITEMS:
-            if item == "On Foot":
+            if item == "On Foot" or item in D.PLAYER_ONLY_ITEMS:
                 continue
             lines.append(f"  {item:<24}{_money(round(D.base_price(item), 2)):>8}")
     else:
@@ -333,6 +333,8 @@ def _static_economy(state_gone: bool = False, city: str = M.HOME_CITY,
         lines.append("")
         lines.append(f"  {'item':<24}{'NPC sells to you':>18}{'NPC buys from you':>19}")
         for item in D.ALL_ITEMS:
+            if item in D.PLAYER_ONLY_ITEMS:
+                continue
             lines.append(
                 f"  {item:<24}{_money(round(E.npc_sell_price(item), 2)):>18}"
                 f"{_money(round(E.npc_buy_price(item), 2)):>19}"
@@ -357,6 +359,8 @@ def _static_economy(state_gone: bool = False, city: str = M.HOME_CITY,
         "the more valuable the good, the longer it takes):"
     )
     for recipe in list(D.REFINING_RECIPES.values()) + list(D.CRAFTING_RECIPES.values()):
+        if recipe.output in D.PLAYER_ONLY_ITEMS:
+            continue
         ins = " + ".join(f"{q}x {i}" for i, q in recipe.inputs.items())
         hrs = D.production_hours(recipe.output)
         lines.append(

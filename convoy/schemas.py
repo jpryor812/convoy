@@ -404,7 +404,7 @@ def _enum_for(action: str, param: str) -> list[str] | None:
         # invites a call that can only ever be refused, and costs the enum's
         # tokens on every tool that takes one, on every call, forever. The other
         # five vehicles stay: a Vehicle Dealer really does stock them.
-        return [i for i in D.ALL_ITEMS if i != "On Foot"]
+        return [i for i in D.ALL_ITEMS if i != "On Foot" and i not in D.PLAYER_ONLY_ITEMS]
     if param == "what" and action in ("share_info", "ask_info"):
         from . import social as SO
         return list(SO.KINDS)

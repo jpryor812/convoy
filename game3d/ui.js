@@ -90,6 +90,17 @@ export function createUI(ctx){
     const hungry = st.hunger !== "Normal", left = st.fed_hours_left;
     $("t-food").textContent = hungry ? st.hunger.toUpperCase() : left > 0 ? `Fed ${left.toFixed(0)}h` : "Eat now";
     $("t-foodbox").classList.toggle("warn", hungry || left < 3);
+    // ENERGY (2026-11-01, convoy/journey.py): hexes you can still walk.
+    if (st.map){
+      let eb = $("t-energybox");
+      if (!eb){
+        eb = document.createElement("div"); eb.id = "t-energybox"; eb.className = "res"; eb.title = "Energy: one a hex (two up a mountain). Rest at home, camp, or eat to get it back.";
+        eb.innerHTML = `<span class="en-ic">⚡</span><b id="t-energy"></b>`;
+        $("t-foodbox").after(eb);
+      }
+      $("t-energy").textContent = `${Math.floor(st.map.energy)} / ${st.map.max}`;
+      eb.classList.toggle("warn", st.map.energy < 1);
+    }
     if (st.cities && st.cities.length > 1){
       const order = st.cities.slice().sort((a, b) => b.total - a.total);
       const i = order.findIndex(c => c.key === st.city);
@@ -124,6 +135,20 @@ export function createUI(ctx){
       $("u-carry").textContent = `${n} / ${o.you.capacity}${haul ? ` · ${haul.qty} ${haul.item} to deliver` : ""}${st.vehicle ? " · " + st.vehicle : ""}`;
     }
     const acts = [];
+    // THE MAP (2026-11-01): stop, rest, camp or go home (convoy/journey.py).
+    const mp = st.map;
+    if (mp){
+      const atHome = mp.home && mp.hex && mp.home[0] === mp.hex[0] && mp.home[1] === mp.hex[1];
+      if (mp.moving || (mp.route && mp.route.length)) acts.push(`<button class="btn" data-jy='{"op":"stop"}'>Stop</button>`);
+      else if (!mp.resting && !mp.homeward){
+        if (atHome && mp.energy < mp.max) acts.push(`<button class="btn go" data-jy='{"op":"rest"}' title="Two hours at home: back to full">Rest</button>`);
+        if (!atHome){
+          if (mp.camp_supplies > 0) acts.push(`<button class="btn go" data-jy='{"op":"camp"}' title="Two hours: +8 energy, uses one Camp Supplies (you have ${mp.camp_supplies})">Make camp</button>`);
+          acts.push(`<button class="btn" data-jy='{"op":"rough"}' title="Four hours under the sky: +5 energy">Sleep rough</button>`);
+          acts.push(`<button class="btn${mp.energy < 1 ? " go" : ""}" data-jy='{"op":"home"}' title="The one fast trip: home, from anywhere">Go home</button>`);
+        }
+      }
+    }
     const working = /^Working/.test(st.activity);
     if (working) acts.push(B("Stop work", "end_shift"));
     else if (o && o.you.job) acts.push(B("Work 4h", "start_shift", {hours: 4}, true));
@@ -132,7 +157,7 @@ export function createUI(ctx){
     acts.push(`<button class="btn" data-me="1" title="Health, food and eating">Eat${hungry ? " \u26a0\ufe0f" : ""}</button>`);
     acts.push(`<button class="btn" data-tab="here">Here</button>`);
     // THE CONVOY (2026-11-01): carrying goods, set out with them (convoy.js).
-    const load = o && Object.entries(o.you.carrying || {}).some(([i, q]) => q > 0 && !/Bat|Dagger|Sword|Spear|Axe|Club/.test(i));
+    const load = o && Object.entries(o.you.carrying || {}).some(([i, q]) => q > 0 && !/Bat|Dagger|Sword|Spear|Axe|Club|Meal|Camp Supplies/.test(i));
     if (load && ctx.setOut && !(ctx.convoyOn && ctx.convoyOn())) acts.unshift(`<button class="btn go" data-setout="1" title="Take your load somewhere by convoy">Set out</button>`);
     acts.push(`<button class="btn" data-cam="1">${ctx.mode && ctx.mode() === "third" ? "Overview (Tab)" : "Take control (Tab)"}</button>`);
     $("unitacts").innerHTML = acts.join("");
@@ -449,7 +474,7 @@ export function createUI(ctx){
     const far = !me.city || p.city !== me.city;
     return (buildingId ? `<button class="btn go" data-gobiz="${esc(buildingId)}">Walk there</button>`
                        : `<button class="btn go" data-walk="${esc(place)}">Walk there</button>`)
-      + `<button class="btn${far ? " go" : ""}" data-fast="${esc(place)}">Fast travel</button>`;
+      + (S.ST && S.ST.map ? "" : `<button class="btn${far ? " go" : ""}" data-fast="${esc(place)}">Fast travel</button>`);
   }
 
   function buildingPanel(id, c){
@@ -1228,8 +1253,47 @@ export function createUI(ctx){
           + `<input class="price" type="number" min="0" step="5" value="25" data-dowry="${esc(h.agent)}" title="Dowry"><button class="btn go" data-propose="${esc(h.agent)}">Propose</button></div>` : "") + `</div>`).join("")
       : `<div class="empty">No other house has anyone grown and unmarried right now.</div>`;
     if (H.offers_out.length) out += `<h3>Your proposals</h3>` + H.offers_out.map(o => `<div class="row"><div class="grow">To ${esc(o.house)} \u00b7 dowry ${money(o.dowry)}</div><span class="dim">${esc(o.status)}</span></div>`).join("");
+    out += mapHouse(H);
     return out;
   }
+  /* THE MAP, FROM HOME (2026-11-01, convoy/journey.py): rest better, and
+     send people exploring for you -- family, or a scout hired for the trip. */
+  const DIRS = ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"];
+  function mapHouse(H){
+    const mp = S.ST && S.ST.map; if (!mp) return "";
+    let out = `<h3>Rest better at home</h3><div class="tip">You can walk ${mp.max} hexes between rests. Your mount sets most of it (donkey 10, horse 12, a chariot 15); your home adds the rest.</div>`;
+    out += (mp.upgrades.length ? `<div class="dim">Your home has: ${mp.upgrades.map(esc).join(", ")}</div>` : "")
+      + mp.upgrades_for_sale.map(u => `<div class="mk-row"><div class="mk-who"><b>${esc(u.kind)}</b><small>${esc(u.what)}</small></div><div class="mk-act"><button class="btn go" data-jy='${JSON.stringify({op: "upgrade", kind: u.kind})}'>${money(u.price)}</button></div></div>`).join("");
+    out += `<h3>Explorers</h3><div class="tip">Send someone to a spot you pick on the map, or roaming one way for some days. They walk hex by hex, camp when spent, and everything they see goes on your map.</div>`;
+    out += mp.explorers.map(e => `<div class="mk-row"><div class="mk-who"><b>${esc(e.name)}</b> <span class="chip">${e.kind === "hired" ? "scout" : "family"}</span><small>${e.status === "camp" ? "camping" : e.mode === "roam" ? `roaming ${esc(e.direction)}` : e.target ? "heading for your spot" : "coming home"} \u00b7 ${e.found} hexes found</small></div><div class="mk-act"><button class="btn" data-jy='${JSON.stringify({op: "recall", id: e.id})}'>Call home</button></div></div>`).join("");
+    const out_ = new Set(mp.explorers.map(e => e.member));
+    const free = H.members.filter(m => m.adult && !out_.has(m.id));
+    const sendRow = (who, label, body) => `<div class="mk-row"><div class="mk-who"><b>${esc(label)}</b>${who}</div><div class="mk-act">`
+      + `<button class="btn go" data-jypick='${JSON.stringify({label, body})}'>To a spot\u2026</button>`
+      + `<select data-dir>${DIRS.map(d => `<option>${d}</option>`).join("")}</select><select data-days>${[1, 2, 3].map(d => `<option value="${d}">${d} day${d > 1 ? "s" : ""}</option>`).join("")}</select>`
+      + `<button class="btn" data-jyroam='${JSON.stringify(body)}'>Roam</button></div></div>`;
+    out += free.map(m => sendRow(m.works_at ? `<small>leaves their work while away</small>` : "", m.name, {op: "explore", member: m.id})).join("");
+    out += sendRow(`<small>20 a day, paid when hired</small>`, "Hire a scout", {op: "scout"});
+    return out;
+  }
+  async function journey(body){
+    const r = await api.post("/api/journey", body);
+    toast(r.message || (r.ok ? "Done." : "Can't."), r.ok ? "milestone" : "bad");
+    if (r.map && S.ST) S.ST.map = r.map;
+    refreshSoon(); renderUnit();
+    if (view && view.ref === "house") renderView(true);
+    return r;
+  }
+  document.addEventListener("click", e => {
+    const b = e.target.closest("[data-jy],[data-jypick],[data-jyroam]"); if (!b) return;
+    e.stopPropagation();
+    if (b.dataset.jy) journey(JSON.parse(b.dataset.jy));
+    else if (b.dataset.jypick){ const p = JSON.parse(b.dataset.jypick); close(); if (ctx.pickTarget) ctx.pickTarget(p.label, p.body); }
+    else {
+      const row = b.closest(".mk-row");
+      journey({...JSON.parse(b.dataset.jyroam), direction: row.querySelector("[data-dir]").value, days: +row.querySelector("[data-days]").value});
+    }
+  });
   function wireHouse(H){
     $("pbody").querySelectorAll("[data-assign]").forEach(sel => sel.onchange = () =>
       act("assign_family", {member_id: sel.dataset.assign, business_id: sel.value}).then(() => renderView(true)));

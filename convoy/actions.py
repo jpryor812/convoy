@@ -1837,6 +1837,9 @@ def _apply_meal(world: World, log: EventLog, agent: Agent, meal: str, window: fl
     agent.hours_since_last_meal = 0.0
     agent.last_meal_window = window
     agent.sustenance_stage = "Normal"
+    # A meal puts a little back in your legs, too (convoy/journey.py).
+    from . import journey as JY
+    JY.meal(agent, world)
 
     # Researched variants carry an effect beyond the window.
     spec = D.MEALS.get(meal)

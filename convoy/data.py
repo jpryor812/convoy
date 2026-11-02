@@ -472,6 +472,9 @@ CRAFTING_RECIPES: dict[str, Recipe] = {
         # Other stores
         Recipe("Upgraded Tools", {"Lumber": 1, "Bronze": 1}, "Mining/Farming Equipment Store", 130),
         Recipe("Property Upgrade", {"Cut Stone": 1, "Fired Brick": 1, "Lumber": 1}, "Home Improvement Store", 50),
+        # A tent, a bedroll and a pot (2026-11-01): one night's camp out on
+        # the frontier, +8 energy (convoy/journey.py).
+        Recipe("Camp Supplies", {"Lumber": 1, "Tanned Leather": 1}, "Home Improvement Store", 24),
         # Tavern food. Every tier uses the same recipe -- Research changes the
         # Sustenance window and price, never the inputs (Research tab).
         #
@@ -646,6 +649,20 @@ VEHICLES: dict[str, Vehicle] = {
         Vehicle("River Barge", "Uncommon", "Fast", 1.5, 150, "None", 600),
     ]
 }
+
+# ENERGY (designer, 2026-11-01): how many hexes you can move between rests,
+# by what carries you -- "horses can go 12 instead of the 10 a donkey goes,
+# carriages can go 15". The chariots are the carriages of the Bronze Age.
+# See convoy/journey.py.
+# Goods only the player has a use for (settlers keep the timed roads and never
+# camp), kept out of the settlers' item lists and price table, which every
+# model call pays for.
+PLAYER_ONLY_ITEMS: frozenset = frozenset({"Camp Supplies"})
+
+ENERGY: dict[str, int] = {
+    "On Foot": 8, "Donkey": 10, "Camel": 10, "Donkey Cart": 10, "Horse": 12,
+    "2-Horse Chariot": 15, "4-Horse Chariot": 15, "River Barge": 10,
+}
 BOATS = ("River Barge",)
 BARGE_TIME_FACTOR = 0.5        # a barge takes half the road's time, before Canal locks
 
@@ -697,7 +714,7 @@ BUSINESS_TYPES: dict[str, BusinessType] = {
         # upgrades at Home Improvement.
         BusinessType(
             "Home Improvement Store", 250, STORE_MAX_EMPLOYEES, True, True, ("Store Clerk",),
-            ("Property Upgrade",),
+            ("Property Upgrade", "Camp Supplies"),
         ),
         BusinessType(
             "Mining/Farming Equipment Store", 275, STORE_MAX_EMPLOYEES, True, True, ("Store Clerk",),

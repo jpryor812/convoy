@@ -49,6 +49,8 @@ from . import delivery as DL
 from . import missions as MI
 from . import combat as CB
 from . import trek as TK
+from . import journey as JY
+from . import hexes as HX
 from . import ground as GR
 
 # Raiders leave a newcomer alone for their first game day.
@@ -245,6 +247,10 @@ class Game:
             max_decision_lag_minutes=20.0,
         ), on_checkpoint=lambda w: self.save())
         self._thread: threading.Thread | None = None
+        # THE MAP, HEX BY HEX (2026-11-01, convoy/journey.py): your steps and
+        # rests run with the clock.
+        self.engine.after_tick.append(self._journeys)
+        self._seen_location = world.agents[human_id].location
 
     # -- making and finding games -----------------------------------------
 
@@ -1285,14 +1291,92 @@ class Game:
 
     def seen_at(self, body: dict[str, Any]) -> dict[str, Any]:
         """Where the player is standing in the 3D world, in map metres, so
-        the people they walk past find them (outposts; see discovery.py)."""
+        the people they walk past find them (outposts; see discovery.py).
+        Riding a convoy, the road shows you the land beside it, and you stand
+        on the hex you have ridden to."""
         try:
             x, y = float(body.get("x")), float(body.get("y"))
         except (TypeError, ValueError):
             return {"ok": False}
         with self.engine.world_lock:
             self.world.positions[self.human_id] = [round(x, 1), round(y, 1)]
+            you = self.you
+            if self.world.outposts and TK.active(self.world, you) and you.hex is not None:
+                h = HX.to_hex(x, y)
+                you.hex = [h[0], h[1]]
+                JY.reveal(self.world, you, h)
         return {"ok": True}
+
+    # -- the map, hex by hex (2026-11-01, convoy/journey.py) --------------------
+
+    def _journeys(self) -> None:
+        """Every tick, with the world lock held: the step under way, or the
+        rest, comes to its end; a hex with a place in it is arriving there."""
+        w, you = self.world, self.you
+        if not w.outposts or not you.alive:
+            return
+        JY.ensure(w, you)
+        moved_on = you.location != self._seen_location     # by a trip or a convoy, not a step
+        ev = JY.advance(w, self.log, you)
+        if ev is None:
+            if moved_on:
+                JY.snap(w, you)
+            self._seen_location = you.location
+            return
+        if "stepped" in ev:
+            if ev["places"] and you.location not in ev["places"]:
+                self.arrive(ev["places"][0])
+            elif you.location in ev["left"] and you.location not in ev["places"]:
+                self.depart()
+            if ev["stopped"]:
+                self._push("alert", ev["stopped"][0].upper() + ev["stopped"][1:] + ".")
+        elif "home" in ev:
+            if you.location != you.home:
+                self.arrive(you.home)
+            self._push("wake", "You are home.")
+        elif "rested" in ev:
+            where = {"home": "at home", "camp": "in camp", "rough": "under the sky"}.get(ev["where"], "")
+            self._push("wake", f"You rested {where}: +{ev['rested']:.0f} energy.")
+        self._seen_location = you.location
+
+    def journey_op(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Moving on the map. Ops: move (a path of hexes), stop, rest, camp,
+        rough, home (fast travel home), upgrade (kind), explore (member,
+        target or direction, days), scout (target or direction, days),
+        recall (id), and state."""
+        op = str(body.get("op", "state"))
+        with self.engine.world_lock:
+            w, you = self.world, self.you
+            if not w.outposts:
+                return {"ok": False, "message": "the map moves hex by hex only with outposts"}
+            JY.ensure(w, you)
+            ok, msg = True, ""
+            target = body.get("target")
+            target = [int(target[0]), int(target[1])] if isinstance(target, (list, tuple)) and len(target) == 2 else None
+            if op == "move":
+                ok, msg = JY.set_route(w, self.log, you, list(body.get("path") or []))
+            elif op == "stop":
+                you.route.clear()
+                msg = "You stop after this hex."
+            elif op == "rest":
+                ok, msg = JY.rest(w, self.log, you)
+            elif op == "camp":
+                ok, msg = JY.make_camp(w, self.log, you)
+            elif op == "rough":
+                ok, msg = JY.sleep_rough(w, self.log, you)
+            elif op == "home":
+                ok, msg = JY.go_home(w, self.log, you)
+            elif op == "upgrade":
+                ok, msg = JY.upgrade_home(w, self.log, you, str(body.get("kind", "")))
+            elif op in ("explore", "scout"):
+                ok, msg = JY.send(w, self.log, you, member_id=str(body.get("member", "")), target=target,
+                                  direction=str(body.get("direction", "")), days=float(body.get("days") or 1),
+                                  hired=op == "scout")
+            elif op == "recall":
+                ok, msg = JY.recall(w, self.log, you, str(body.get("id", "")))
+            if msg and op != "state":
+                self._push("did" if ok else "alert", msg)
+            return {"ok": ok, "message": msg, "map": JY.view(w, you)}
 
     def settle(self, body: dict[str, Any]) -> dict[str, Any]:
         """Found your outpost at (x, y), borrowing `borrow` from the state."""
@@ -1645,6 +1729,9 @@ class Game:
         # on, is not news to someone looking at the screen. A shift, a
         # journey or a raid ending is.
         if reason == "activity_complete" and agent.activity.kind == "idle":
+            return
+        # Steps, rests and the trip home tell their own news (_journeys).
+        if reason == "activity_complete" and agent.activity.kind in ("move", "rest", "camp", "homeward"):
             return
         haul = ""
         if reason == "arrived":            # fast travel ends here: load or hand over, as on foot
@@ -2137,11 +2224,11 @@ class Game:
         """One action, exactly as an agent's tool call would run it."""
         if not isinstance(args, dict):
             return {"ok": False, "message": "arguments must be an object"}
-        # GOODS GO BY CONVOY (2026-11-01): no fast travel with a load worth
-        # robbing -- you ride it, and the road has its say (convoy/trek.py).
-        if action == "travel_to" and self.world.outposts and TK.value(self.world, self.you) >= TK.MIN_VALUE:
-            return {"ok": False, "message": ("Goods go by convoy: you carry "
-                    f"{TK.value(self.world, self.you):.0f} worth. Set out with them, or leave them behind.")}
+        # FAST TRAVEL ONLY HOME (2026-11-01): everywhere else is walked hex by
+        # hex (convoy/journey.py), or ridden by convoy with goods (trek.py).
+        if action == "travel_to" and self.world.outposts and str(args.get("destination", "")) != self.you.home:
+            return {"ok": False, "message": "Walk there hex by hex on the map, or take goods by convoy. "
+                                            "Only home is a fast trip."}
         with self.engine.world_lock:
             # "WORK HERE MYSELF" MEANS WORK. For an agent, joining its own
             # business's roster and starting a shift are two decisions; for the
@@ -2198,6 +2285,18 @@ class Game:
             return f"Working at {where} \u00b7 {left:.1f}h left"
         if act.kind == "raid":
             return f"Lying in wait on {act.detail.get('segment', 'the road')} \u00b7 {left:.1f}h left"
+        # The map, hex by hex (convoy/journey.py). "Travelling" so the page
+        # shows its trip screen and then puts you at home.
+        if act.kind == "homeward":
+            return f"Travelling home \u00b7 {left * 60:.0f} min left"
+        if act.kind == "move":
+            n = len(you.route)
+            return f"Walking \u00b7 {n} hex{'es' if n != 1 else ''} to go" if n > 1 else "Walking"
+        if act.kind in ("rest", "camp"):
+            where = {"home": "at home", "camp": "in camp", "rough": "under the sky"}.get(act.detail.get("where"), "")
+            return f"Resting {where} \u00b7 {left * 60:.0f} min left"
+        if w.outposts and you.hex is not None and you.location not in JY.places_in(w, JY.here(you)):
+            return "Out on the open land"
         return f"Idle at {you.location}"
 
     def status(self) -> dict[str, Any]:
@@ -2224,6 +2323,7 @@ class Game:
         return {"upcoming": upcoming, "market_keys": market_keys, "delivery": you.delivery, "mission": you.mission,
             "haul": haul, "health": round(you.health, 1), "fight": CB.view(self.fight, you),
             "trek": self.trek_view(),
+            "map": JY.view(self.world, you) if self.world.outposts else None,
             "activity": self.activity(),
             "location": you.location,
             # What the player rides, and how much faster than walking it is:

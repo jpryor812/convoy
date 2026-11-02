@@ -372,7 +372,7 @@ core action/event of the game." Agreed in chat, in three steps:
    own names (they weigh it every hour; models can also `rob_convoy`). Win
    and they pay; lose and what they take is theirs. No fast travel with
    goods. See `convoy/trek.py`, `game3d/convoy.js`.
-2. **The map and energy (next).** The map is the main way to play: still
+2. **The map and energy (built, 2026-11-01).** The map is the main way to play: still
    foggy, found by moving, one hex at a time. Each step costs energy,
    separate from hunger: 10 on foot or a donkey, 12 a horse, 15 a carriage.
    Rest at home (2 hours for 10) or at a camp (Camp Supplies, 8); some meals
@@ -380,6 +380,10 @@ core action/event of the game." Agreed in chat, in three steps:
    travel home. Units drawn big, as in Civilization. Third person is for
    looking round your unit, and for the convoy. Send grown family or hired
    hands to explore for you. Position and fog move to the server.
+   Built as: 250 m hexes (`convoy/hexes.py`, `game3d/hexes.js`); a step is
+   ten game minutes at the game's speed; fast travel only home; convoys only
+   to found places; settlers keep the timed roads for now. See
+   `convoy/journey.py`, `game3d/hexmap.js`.
 3. **Territory and the refinery district (later).** Borders round your
    home, farms and mines. Refineries only in their own district round the
    state's refinery, with plots for sale -- outside your borders, so the

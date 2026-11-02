@@ -24,6 +24,7 @@ import { createUI } from "./ui.js";
 import { createLife } from "./life.js";
 import { createFight } from "./fight.js";
 import { createConvoy } from "./convoy.js";
+import { createHexMap } from "./hexmap.js";
 import { createTerrain, HAZE_GLSL } from "./terrain.js";
 import { createFlora } from "./flora.js";
 import { TUNE, readIntent, createWalker, createRider } from "./move.js";
@@ -1595,6 +1596,8 @@ function homeCentre(){
   return v ? v.pos : (S.player ? S.player.root.position : new THREE.Vector3());
 }
 function famSpot(m, i){
+  const out = HEXMAP.familyAt(m.id);         // out exploring (convoy/journey.py)
+  if (out) return out.clone();
   if (m.works_at && S.buildings.has(m.works_at)){
     const b = S.buildings.get(m.works_at), place = S.places[b.b.place];
     const toward = place ? place.c.clone().sub(b.pos).setY(0).normalize() : new THREE.Vector3(0, 0, 1);
@@ -1608,6 +1611,7 @@ const famIcon = m => m.adult ? (m.sex === "f" ? "\u{1F469}" : "\u{1F468}") : (m.
 function famStatus(m){
   if (!m.adult) return `grown in ${m.grows_in < 24 ? Math.ceil(m.grows_in) + "h" : (m.grows_in / 24).toFixed(1) + " days"}`;
   if (m.works_at) return `\u2692 ${(m.works_type || "work").split(" /")[0]}`;
+  if (typeof HEXMAP !== "undefined" && HEXMAP.familyAt(m.id)) return "\u{1F9ED} out exploring";
   if (m.partner && m.next_child_in != null) return `at home \u00b7 child in ${(m.next_child_in / 24).toFixed(0)}d`;
   return "at home";
 }
@@ -1684,8 +1688,13 @@ function flyTo(v, d){
   focusGoal.set(v.x, 0, v.z); if (d) sDist = d;
 }
 function modeChanged(){
+  // THE MAP (2026-11-01): outside a convoy you move by clicking hexes, and
+  // close up you only look.
+  const onMap = typeof HEXMAP !== "undefined" && mapDriven();
   $("keys").innerHTML = camMode === "strategy"
-    ? "<b>WASD</b>/<b>drag</b> pan &middot; <b>arrows</b> turn &middot; <b>scroll</b> zoom &middot; <b>click</b> to walk or open &middot; <b>Tab</b> take control &middot; <b>C</b> find me"
+    ? (onMap ? "<b>click</b> a hex to walk there &middot; <b>WASD</b>/<b>drag</b> pan &middot; <b>scroll</b> zoom &middot; <b>Tab</b> look round &middot; <b>C</b> find me"
+             : "<b>WASD</b>/<b>drag</b> pan &middot; <b>arrows</b> turn &middot; <b>scroll</b> zoom &middot; <b>click</b> to walk or open &middot; <b>Tab</b> take control &middot; <b>C</b> find me")
+    : onMap ? "<b>drag</b> or <b>arrows</b> to look round &middot; <b>scroll</b> zoom &middot; <b>Tab</b> back to the map"
     : riding()
       ? "<b>W</b> walk on &middot; tap <b>Shift</b> to spur (hold to keep the pace) &middot; <b>S</b> rein in &middot; <b>A/D</b> steer &middot; <b>E</b> get down &middot; " + (mouseLook ? "<b>Esc</b> free the mouse" : LOCK_OK ? "<b>click</b> to look" : "<b>drag</b> to look") + " &middot; <b>Tab</b> overview"
       : "<b>WASD</b> move &middot; " + (mouseLook ? "<b>mouse</b> look &middot; <b>LMB</b> swing &middot; <b>RMB</b> aim &middot; <b>Esc</b> free the mouse" : LOCK_OK ? "<b>click</b> to look" : "<b>drag</b> to look &middot; <b>RMB</b> aim") + " &middot; <b>Shift</b> sprint &middot; <b>Space</b> jump &middot; <b>C</b> slide &middot; <b>R</b> swing &middot; hold <b>F</b> block &middot; <b>E</b> use / ride &middot; <b>H</b> whistle &middot; <b>Tab</b> overview";
@@ -1763,6 +1772,16 @@ function updatePlayer(dt){
   const busyTravel = S.ST && /^Travelling/.test(S.ST.activity || "");
   if (camMode === "third" && orbiting()) orbitKeys(dt);
   else if (camMode === "third") arrowCamera(dt);
+  // THE MAP MOVES YOU (2026-11-01): outside a convoy your feet are the
+  // server's; third person is for looking round.
+  if (mapDriven()){
+    pressed.clear();
+    updateMapUnit(dt);
+    youRing.position.set(P.root.position.x, P.root.position.y + 0.12, P.root.position.z);
+    youRing.visible = !riding();
+    followSun(focusPoint());
+    return;
+  }
   // INPUT -> INTENT. In the overview WASD pans the map, not you.
   const control = camMode === "third" && !orbiting();
   let it = readIntent({held: control ? keys : new Set(), pressed: control ? pressed : new Set()}, yaw);
@@ -2180,7 +2199,7 @@ function checkKnown(){
   const k = (S.ST && S.ST.you && S.ST.you.known) || [];
   KNOWN = new Set(k);
   // Re-checked on every status: what you have explored grows as you ride.
-  const sig = `${k.length}|${((S.ST && S.ST.you.locations_from) || []).length}|${Math.floor(explored.size / 10)}`;
+  const sig = `${k.length}|${((S.ST && S.ST.you.locations_from) || []).length}|${HEXMAP.known.size}`;
   if (sig === SEEN_SIG) return;
   SEEN_SIG = sig;
   landKey = "";                                    // repaint the plots
@@ -2245,7 +2264,7 @@ let POV_SET = false;
 function defaultView(){
   if (POV_SET || !S.ST || !S.player) return;
   POV_SET = true;
-  if (camMode !== "third") enterThird();
+  if (camMode !== "third" && !outposts()) enterThird();
 }
 function landQuote(cx, cz){
   const key = `${Math.round(cx / CELL)},${Math.round(cz / CELL)}`;
@@ -2607,6 +2626,14 @@ renderer.domElement.addEventListener("pointerup", e => {
     // A free square: pick it. An owned one: open what stands there. Elsewhere: walk.
     const c = cellAt(p.point);
     const own = c && S.cellOwner.get(c.key);
+    // On the map (2026-11-01): a click walks you there, hex by hex; shift
+    // picks a free square instead.
+    if (mapMode() || HEXMAP.picking){
+      if (e.shiftKey && c && !own) toggleCell(c);
+      else if (own && own.business && S.buildings.has(own.business) && !HEXMAP.picking) UI.openBuilding(own.business);
+      else { if (S.selected.size) clearSelection(); HEXMAP.click(p.point); }
+      return;
+    }
     if (c && !own) toggleCell(c);
     else if (own && own.business && S.buildings.has(own.business)) UI.openBuilding(own.business);
     else { if (S.selected.size) clearSelection(); walkToPoint(p.point); }
@@ -2631,6 +2658,9 @@ function hover(e){
   const now = performance.now(); if (now - lastHover < 90) return; lastHover = now;
   const p = pick(e, false), tip = $("tooltip");
   renderer.domElement.style.cursor = p ? "pointer" : "default";
+  // On the map: the hex under the mouse, the way there and what it costs.
+  if (!p && mapMode() && HEXMAP.hover(groundPoint(e), tip, e)){ renderer.domElement.style.cursor = "pointer"; return; }
+  HEXMAP.hideHover();
   if (!p || p.kind === "you"){ tip.style.display = "none"; return; }
   let text = "";
   if (p.kind === "building"){ const v = S.buildings.get(p.id); text = v ? `${v.b.type} — ${v.b.owner === G.you ? "yours" : short(ownerName(v.b.owner))}` : ""; }
@@ -2675,6 +2705,7 @@ function walkToPoint(point, then){
 }
 function walkToPlace(name, then){
   const p = S.places[name]; if (!p) return;
+  if (mapDriven()){ HEXMAP.click(p.c); return; }      // hex by hex, on the map
   walkToPoint(p.c, then);
 }
 function walkToBuilding(id, then){
@@ -3065,49 +3096,15 @@ async function dismountAnimal(){
 /* THE MINIMAP IS CLOUD UNTIL YOU HAVE BEEN NEAR (2026-10-18). The world in
    front of you is always drawn; the map only remembers where you have been.
    Kept per game in this browser. */
-// FOG_SIGHT (2026-10-30): "very little land shown outside of my house --
-// just a few surrounding squares. Everything else has to be found by moving
-// around." About 160 m round you as you go; finding people is still
-// discovery.SIGHT_M on the server.
-const FOG_CELL = 8, FOG_SIGHT = 24;
-let explored = new Set(), fogGame = "", fogDirty = false, fogAt = 0;
+// THE FOG IS THE SERVER'S (2026-11-01): the hexes you have found
+// (convoy/journey.py, the status's map), drawn by hexmap.js. FOG_CELL is
+// only the ground veil's texture resolution now.
+const FOG_CELL = 8;
 const fogC = document.createElement("canvas"), fg = fogC.getContext("2d");
-function fogLoad(){
-  const game = S.ST && S.ST.game; if (!game || game === fogGame) return;
-  fogGame = game;
-  try { explored = new Set(JSON.parse(localStorage.getItem("convoy.fog8." + game) || "[]")); } catch (e) { explored = new Set(); }
+function updateFog(){
+  if (outposts() && HEXMAP.sync()){ GROUND_HAZE.n = -1; drawHaze(); }
+  else if (GROUND_HAZE.on < 0) drawHaze();
 }
-function reveal(x, z, r){
-  const n = Math.ceil(r / FOG_CELL), cx = Math.floor(x / FOG_CELL), cz = Math.floor(z / FOG_CELL);
-  for (let i = -n; i <= n; i++) for (let j = -n; j <= n; j++){
-    if ((i * i + j * j) * FOG_CELL * FOG_CELL > r * r) continue;
-    const k = `${cx + i},${cz + j}`;
-    if (!explored.has(k)){ explored.add(k); fogDirty = true; }
-  }
-}
-function updateFog(now){
-  fogLoad();
-  if (!S.player || now - fogAt < 300) return;
-  fogAt = now;
-  reveal(S.player.root.position.x, S.player.root.position.z, FOG_SIGHT);
-  // The state's trading posts are known to everyone.
-  for (const k of (S.DATA && S.DATA.cities) || []){ const m = S.places[k.market]; if (m) reveal(m.c.x, m.c.z, 32); }
-  // What you own is always known.
-  const home = S.homeObjs && S.homeObjs.get(G.you); if (home) reveal(home.pos.x, home.pos.z, FOG_SIGHT);
-  drawHaze();
-  for (const v of S.buildings.values()) if (v.b.owner === G.you) reveal(v.pos.x, v.pos.z, 20);
-  // Your own roads you know, end to end (2026-10-30).
-  for (const p of myLand()) if (p.path && p.path.length > 1){
-    const a = toScene(...p.path[0]), b = toScene(...p.path[p.path.length - 1]);
-    const n = Math.ceil(a.distanceTo(b) / FOG_CELL);
-    for (let i = 0; i <= n; i++) reveal(a.x + (b.x - a.x) * i / n, a.z + (b.z - a.z) * i / n, 10);
-  }
-}
-setInterval(() => {
-  if (!fogDirty || !fogGame) return;
-  fogDirty = false;
-  try { localStorage.setItem("convoy.fog8." + fogGame, JSON.stringify([...explored])); } catch (e) {}
-}, 5000);
 /* THE GROUND_HAZE ON THE GROUND (outposts, 2026-10-28): the same explored squares,
    painted into a texture the ground shader veils with. Clear where you have
    been (and the trading posts), hazy everywhere else. */
@@ -3125,19 +3122,12 @@ function drawHaze(){
   if (!GROUND_HAZE.uniforms) return;
   const on = outposts() && !GROUND_HAZE.off ? 1 : 0;
   if (on !== GROUND_HAZE.on){ GROUND_HAZE.on = on; GROUND_HAZE.uniforms.uHazeOn.value = on; }
-  if (!on || GROUND_HAZE.n === explored.size) return;
-  GROUND_HAZE.n = explored.size;
+  if (!on || GROUND_HAZE.n === HEXMAP.known.size) return;
+  GROUND_HAZE.n = HEXMAP.known.size;
   const c = GROUND_HAZE.cv.getContext("2d"), W = GROUND_HAZE.cv.width, H = GROUND_HAZE.cv.height, px = 2 / FOG_CELL;
   c.globalCompositeOperation = "source-over"; c.clearRect(0, 0, W, H);
   c.fillStyle = "#000"; c.fillRect(0, 0, W, H);
-  c.globalCompositeOperation = "destination-out";
-  for (const key of explored){
-    const [gx, gz] = key.split(",").map(Number);
-    const x = ((gx + 0.5) * FOG_CELL - GROUND_HAZE.box.x0) * px, z = ((gz + 0.5) * FOG_CELL - GROUND_HAZE.box.z0) * px;
-    const g = c.createRadialGradient(x, z, 0, x, z, 2.2);
-    g.addColorStop(0, "rgba(0,0,0,1)"); g.addColorStop(1, "rgba(0,0,0,0)");
-    c.fillStyle = g; c.fillRect(x - 2.2, z - 2.2, 4.4, 4.4);
-  }
+  HEXMAP.cutHexes(c, (x, z) => [(x - GROUND_HAZE.box.x0) * px, (z - GROUND_HAZE.box.z0) * px], 1.2);
   GROUND_HAZE.tex.needsUpdate = true;
 }
 
@@ -3145,7 +3135,7 @@ function drawHaze(){
    couple of seconds while you move, in map metres. */
 let posSent = null;
 setInterval(() => {
-  if (!S.player || !outposts() || !S.ST.you.settled) return;
+  if (!S.player || !outposts() || !S.ST.you.settled || !CONVOY.active) return;
   const p = S.player.root.position;
   if (posSent && Math.hypot(p.x - posSent.x, p.z - posSent.z) < 4) return;
   posSent = p.clone();
@@ -3160,14 +3150,7 @@ function drawFog(sx, sz, k, W, H, ctx = mg){
   // A little texture, so it reads as cloud and not a blank.
   fg.fillStyle = "rgba(240,230,206,0.35)";
   for (let i = 0; i < 18; i++){ fg.beginPath(); fg.arc((i * 97) % W, (i * 53) % H, 18 + (i % 5) * 7, 0, 7); fg.fill(); }
-  fg.globalCompositeOperation = "destination-out";
-  const rad = Math.max(2, FOG_CELL * k * 0.95);
-  for (const key of explored){
-    const [gx, gz] = key.split(",").map(Number);
-    const px = sx((gx + 0.5) * FOG_CELL), pz = sz((gz + 0.5) * FOG_CELL);
-    if (px < -rad || pz < -rad || px > W + rad || pz > H + rad) continue;
-    fg.beginPath(); fg.arc(px, pz, rad, 0, 7); fg.fill();
-  }
+  HEXMAP.cutHexes(fg, (x, z) => [sx(x), sz(z)]);
   ctx.drawImage(fogC, 0, 0);
 }
 
@@ -3267,7 +3250,7 @@ mm.addEventListener("click", e => {
    so they follow you to another browser. Drag to pan, wheel to zoom, click
    for a waypoint or a pin. */
 const BIGMAP = {open: false, cx: 0, cz: 0, k: 1, drag: null, el: null, cv: null};
-function exploredAt(x, z){ return explored.has(`${Math.floor(x / FOG_CELL)},${Math.floor(z / FOG_CELL)}`); }
+function exploredAt(x, z){ return HEXMAP.knownAt(x, z); }
 function sharedLocations(owner){ return !!(S.ST && S.ST.you && (S.ST.you.locations_from || []).includes(owner)); }
 /* A found person's land shows where you have seen it, or anywhere once they
    share where it is. Yours, the state's, and everything without outposts: always. */
@@ -3471,6 +3454,11 @@ function frame(now){
   CONVOY.update(dt, now);
   CONVOY.dressWalker(S.player, CONVOY.load(), riding());
   updateDonkey(dt, now);
+  scaleUnits();
+  HEXMAP.updateScouts(dt, unitScale());
+  HEXMAP.camp(S.player && mapDriven() ? S.player.root.position : null, unitScale());
+  if (HEXMAP.grid) HEXMAP.grid.visible = camMode === "strategy";
+  if (outposts() && S.ST && S.ST.map) HEXMAP.drawGrid();
   if (border && border.userData.edge){
     const pulse = 0.5 + 0.5 * Math.sin(now / 420);
     border.userData.line.opacity = 0.7 + 0.3 * pulse;
@@ -3519,7 +3507,7 @@ window.convoy = {camera, scene, S, renderer, set idleAt(v){ IDLE_AT = v; for (co
   floors(id, n){ const v = S.buildings.get(id); if (v) setFloors(v.root, n); },
   haze(on){ GROUND_HAZE.off = !on; GROUND_HAZE.n = -1; drawHaze(); },
   get trek(){ return CONVOY.trek; }, trekSkip: share => CONVOY.skip(share), convoyPanel: () => CONVOY.open(),
-  get fight(){ return FIGHT; }};
+  get fight(){ return FIGHT; }, get hexmap(){ return HEXMAP; }};
 
 /* ------------------------------------------------------------ start */
 const UI = createUI({api, S, walkToPlace, walkToBuilding, fastTravel, findMe, short,
@@ -3530,7 +3518,8 @@ const UI = createUI({api, S, walkToPlace, walkToBuilding, fastTravel, findMe, sh
   // A delivery taken: down into the saddle, Red Dead style -- and if the
   // goods are already on you, off by convoy.
   onDelivery: () => { if (camMode !== "third") enterThird(); if (CONVOY.load() > 0) CONVOY.open(); },
-  setOut: () => CONVOY.open(), convoyOn: () => CONVOY.active});
+  setOut: () => CONVOY.open(), convoyOn: () => CONVOY.active,
+  pickTarget: (label, body) => { if (camMode !== "strategy") enterStrategy(S.player.root.position); HEXMAP.pick(label, body); }});
 const FIGHT = createFight({THREE, scene, S, api, makePerson, setAnim, CSS2DObject, UI, placeAt, campInfo, groundAt,
   banditModel: () => CAST.m[CAST.m.length > 1 ? 1 : 0], makeMount: () => makeDonkey(), short, convoy: () => CONVOY.active});
 /* THE CONVOY (2026-11-01, convoy.js; the score in convoy/trek.py). */
@@ -3538,7 +3527,43 @@ const CONVOY = createConvoy({THREE, scene, S, api, UI, SCALE, roadSegs, distToRo
   you: () => G.you, FIGHT: () => FIGHT, makePerson, setAnim, makeMount: () => makeDonkey(),
   enterThird: () => { if (camMode !== "third") enterThird(); },
   stopMount: () => { if (riding()){ RIDER.s.speed = Math.min(RIDER.s.speed, 1.5); RIDER.setGait(0); } },
-  teleport: (x, z) => window.convoy.teleport(x, z)});
+  teleport: (x, z) => window.convoy.teleport(x, z), found: c => !outposts() || HEXMAP.knownPlace(c)});
+/* THE MAP, HEX BY HEX (2026-11-01, hexmap.js; the rules in convoy/journey.py). */
+const HEXMAP = createHexMap({THREE, scene, S, api, UI, SCALE, toScene, toWorld: v => toWorld(v), groundAt, makePerson, setAnim, CSS2DObject});
+/* Moving is the map's, not your feet's: with outposts, outside a convoy. */
+function mapDriven(){ return outposts() && !!(S.ST && S.ST.map && S.ST.map.hex) && !CONVOY.active; }
+function mapMode(){ return mapDriven() && camMode === "strategy"; }
+/* Units drawn big on the map, as Civilization's are; life size close up. */
+function unitScale(){ return camMode === "strategy" && outposts() ? Math.max(1.6, Math.min(5, sDist / 16)) : 1; }
+function scaleUnits(){
+  const k = unitScale(), P = S.player;
+  if (P) P.root.scale.setScalar(k);
+  if (DONKEY.root){ DONKEY.root.userData.base = DONKEY.root.userData.base || DONKEY.root.scale.x; DONKEY.root.scale.setScalar(DONKEY.root.userData.base * k); }
+  for (const v of S.agents.values()) v.root.scale.setScalar(k);
+  for (const v of S.family.values()) v.root.scale.setScalar((v.m && !v.m.adult ? 0.68 : 1) * k);
+}
+/* Your unit, where the server's map says: on its hex, or crossing to the
+   next in time with the clock. Riding, the donkey carries you. */
+function updateMapUnit(dt){
+  const P = S.player, u = HEXMAP.unitAt(liveHour() * 3600); if (!u) return;
+  const ride = riding(), body = ride ? DONKEY.root : P.root, cur = body.position;
+  const d = Math.hypot(u.pos.x - cur.x, u.pos.z - cur.z);
+  if (d > 60){ cur.x = u.pos.x; cur.z = u.pos.z; }
+  else { const k = Math.min(1, dt * 3); cur.x += (u.pos.x - cur.x) * k; cur.z += (u.pos.z - cur.z) * k; }
+  cur.y = groundAt(cur.x, cur.z);
+  if (u.moving) P.heading = u.heading;
+  if (ride){
+    DONKEY.root.rotation.y = P.heading; DONKEY.heading = P.heading;
+    RIDER.s.heading = P.heading; RIDER.s.speed = u.moving ? 2.5 : 0;
+    P.root.position.set(cur.x, cur.y + SADDLE * unitScale(), cur.z);
+    setAnim(P, "idle", 1);
+  } else {
+    WALKER.s.vx = WALKER.s.vz = 0; WALKER.s.y = cur.y;
+    setAnim(P, u.moving ? "walk" : "idle", 1);
+  }
+  P.root.rotation.y = P.heading;
+  P.mixer.update(dt);
+}
 /* BANDIT GANGS (2026-10-30, convoy/robbery.py): a gang coming for one of
    your buildings walks in from its hideout in the hills, then mills about
    the building while it loots; a red banner counts the hour down. Only
@@ -3643,7 +3668,10 @@ function startLife(){
     // Open over your shoulder (2026-10-30): your home is already put down,
     // so there is nothing to place first. Tab gives the overview.
     camera.position.copy(S.player.root.position).add(new THREE.Vector3(0, 4, 9));
-    enterThird(); POV_SET = true;
+    // THE MAP FIRST (2026-11-01): with outposts the game opens on the map;
+    // Tab looks round over your shoulder.
+    if (outposts()){ sDist = 70; enterStrategy(S.player.root.position); } else enterThird();
+    POV_SET = true;
     bar.style.width = "100%";
     setTimeout(() => $("cover").remove(), 250);
     requestAnimationFrame(animate);
