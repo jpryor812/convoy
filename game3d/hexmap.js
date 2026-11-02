@@ -209,6 +209,120 @@ export function createHexMap(ctx){
     return {pos: hexScene(m.hex), moving: false};
   }
 
+  /* ------------------------------------------------------------ borders */
+  /* BORDERS (step 3, 2026-11-01; convoy/territory.py): each house's hexes,
+     outlined in its colour on the ground where its land meets anyone else's
+     or nobody's -- yours gold. The refinery districts, open to all, in a
+     dashed blue-grey. A ribbon a little inside each hex's edge, so two
+     neighbours' borders lie side by side. */
+  let borderMesh = null, borderSig = "", districtLabels = [];
+  function edgeRibbons(keys, ownerOf, colourOf, dashed, pos, col){
+    for (const k of keys){
+      const h = HX.parse(k), o = ownerOf(k), cs = HX.corners(h), [cx, cy] = HX.centre(h);
+      for (let i = 0; i < 6; i++){
+        const a = cs[i], b = cs[(i + 1) % 6];
+        const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+        const nb = HX.key(HX.toHex(cx + 2 * (mx - cx), cy + 2 * (my - cy)));
+        if (ownerOf(nb) === o) continue;
+        const c = colourOf(o);
+        const pa = toScene(a[0] + (cx - a[0]) * 0.035, a[1] + (cy - a[1]) * 0.035);
+        const pb = toScene(b[0] + (cx - b[0]) * 0.035, b[1] + (cy - b[1]) * 0.035);
+        const inA = toScene(a[0] + (cx - a[0]) * 0.075, a[1] + (cy - a[1]) * 0.075);
+        const inB = toScene(b[0] + (cx - b[0]) * 0.075, b[1] + (cy - b[1]) * 0.075);
+        const n = 6;
+        for (let j = 0; j < n; j++){
+          if (dashed && j % 2) continue;
+          const t0 = j / n, t1 = (j + 1) / n;
+          const p0 = pa.clone().lerp(pb, t0), p1 = pa.clone().lerp(pb, t1), q0 = inA.clone().lerp(inB, t0), q1 = inA.clone().lerp(inB, t1);
+          const y = v => groundAt(v.x, v.z) + 0.5;
+          pos.push(p0.x, y(p0), p0.z, p1.x, y(p1), p1.z, q1.x, y(q1), q1.z, p0.x, y(p0), p0.z, q1.x, y(q1), q1.z, q0.x, y(q0), q0.z);
+          for (let v = 0; v < 6; v++) col.push(c.r, c.g, c.b);
+        }
+      }
+    }
+  }
+  function drawBorders(){
+    const m = map(); if (!m || !m.territory) return;
+    const sig = `${Object.keys(m.territory).length}|${Object.values(m.territory).join("").length}|${(m.districts || []).join()}`;
+    if (sig === borderSig) return;
+    borderSig = sig;
+    if (borderMesh){ scene.remove(borderMesh); borderMesh.geometry.dispose(); }
+    for (const l of districtLabels){ scene.remove(l); l.element.remove(); }
+    districtLabels = [];
+    const pos = [], col = [];
+    const terr = m.territory, colours = new Map();
+    const colourOf = o => { if (!colours.has(o)) colours.set(o, ctx.ownerColour(o)); return colours.get(o); };
+    edgeRibbons(Object.keys(terr), k => terr[k], colourOf, false, pos, col);
+    // The districts: the state refinery's hex and two rings.
+    const dist = new Set(), blue = new THREE.Color("#8fb3d1");
+    for (const name of m.districts || []){
+      const pl = S.places[name]; if (!pl) continue;
+      for (const h of HX.ring(hexOf(pl.c), 2)) dist.add(HX.key(h));
+      const el = document.createElement("div"); el.className = "lbl-place district"; el.innerHTML = "Refinery district<small>plots for sale \u00b7 outside every border</small>";
+      const lbl = new CSS2DObject(el); lbl.position.set(pl.c.x, 40, pl.c.z); scene.add(lbl); districtLabels.push(lbl);
+    }
+    edgeRibbons([...dist], k => dist.has(k) ? "district" : "", () => blue, true, pos, col);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+    borderMesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({vertexColors: true, transparent: true, opacity: 0.85,
+      depthWrite: false, side: THREE.DoubleSide, fog: false}));
+    borderMesh.raycast = () => {}; borderMesh.renderOrder = 3;
+    scene.add(borderMesh);
+  }
+
+  /* ------------------------------------------------------------ herds */
+  /* WILD HERDS (step 3; convoy/herds.py): a few head grazing on each herd's
+     hex you have found -- cattle dark and white, horses chestnut -- drawn big
+     on the map like every unit, with a label. */
+  const HERDS = new Map();
+  function tinted(kind){
+    const g = ctx.makeAnimal(), cattle = kind === "cattle";
+    let i = 0;
+    g.traverse(o => {
+      if (!o.isMesh || !o.material) return;
+      o.material = o.material.clone();
+      if (o.material.color) o.material.color.multiply(new THREE.Color(cattle ? (i++ % 3 ? "#4a3a30" : "#f2ece4") : "#b0623a"));
+      o.raycast = () => {};
+    });
+    g.userData.base = (g.scale.x || 1) * (cattle ? 1.25 : 1.12);
+    return g;
+  }
+  function herds(dt, scale){
+    const m = map(); const list = (m && m.herds) || [];
+    const live = new Set(list.map(h => h.id));
+    for (const [id, v] of HERDS) if (!live.has(id)){ scene.remove(v.group); v.el.remove(); HERDS.delete(id); }
+    const t = performance.now() / 1000;
+    for (const h of list){
+      let v = HERDS.get(h.id);
+      if (!v){
+        const group = new THREE.Group(), animals = [];
+        const c = hexScene(h.hex);
+        for (let i = 0; i < 5; i++){
+          const a = tinted(h.kind);
+          a.userData.home = new THREE.Vector3(c.x + Math.cos(i * 2.4) * (5 + i * 2), 0, c.z + Math.sin(i * 2.4) * (5 + i * 2));
+          a.userData.phase = i * 1.7;
+          group.add(a); animals.push(a);
+        }
+        const el = document.createElement("div"); el.className = "lbl-place herd";
+        const lbl = new CSS2DObject(el); lbl.position.set(c.x, 9, c.z); group.add(lbl);
+        scene.add(group);
+        v = {group, animals, el};
+        HERDS.set(h.id, v);
+      }
+      v.el.innerHTML = `${h.kind === "cattle" ? "\u{1F404} Wild cattle" : "\u{1F40E} Wild horses"} \u00b7 ${h.size}<small>${h.kind === "cattle" ? "a farm here raises Hide" : "stand here to catch one"}</small>`;
+      v.animals.forEach((a, i) => {
+        a.visible = i < Math.min(5, h.size);
+        const ph = a.userData.phase, hm = a.userData.home;
+        const x = hm.x + Math.sin(t * 0.07 + ph) * 3, z = hm.z + Math.cos(t * 0.05 + ph * 1.3) * 3;
+        a.position.set(x, groundAt(x, z), z);
+        a.rotation.y = t * 0.07 + ph + Math.PI / 2;
+        a.scale.setScalar(a.userData.base * scale);
+        if (a.userData.body) a.userData.body.rotation.x = 0.12 + Math.sin(t * 0.9 + ph) * 0.04;      // grazing
+      });
+    }
+  }
+
   /* A camp while you rest out there: a canvas tent and a small fire beside
      your unit, gone when you wake. */
   let tent = null;
@@ -260,6 +374,6 @@ export function createHexMap(ctx){
     }
   }
 
-  return {sync, knownAt, knownPlace, cutHexes, drawGrid, hover, hideHover, click, pick, unitAt, familyAt, updateScouts, camp,
+  return {sync, knownAt, knownPlace, cutHexes, drawGrid, drawBorders, herds, hover, hideHover, click, pick, unitAt, familyAt, updateScouts, camp,
           hexOf, hexScene, get grid(){ return M.grid; }, get picking(){ return !!M.picking; }, get known(){ return M.known; }};
 }

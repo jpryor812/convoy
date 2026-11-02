@@ -396,7 +396,10 @@ def test_prefix_cost_is_within_budget():
     # bandit gangs' sentence. Measured 21,041.
     # 2026-11-01: THE CONVOY (rob_convoy and a briefing sentence). Measured
     # 21,186; the budget is unchanged, and nearly spent.
-    ok("outposts prefix under 21.2k tokens", out_tok < 21200, f"~{out_tok} tokens")
+    # 21,200 -> 21,300 on 2026-11-01: the refinery districts and wild cattle,
+    # one sentence settlers need or they found refineries and raise Hide
+    # where they cannot. Measured 21,215.
+    ok("outposts prefix under 21.3k tokens", out_tok < 21300, f"~{out_tok} tokens")
     ok("prefix is large enough to cache", prefix_tok > 1024, f"~{prefix_tok} tokens")
 
 

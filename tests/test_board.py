@@ -53,9 +53,14 @@ def _world(seed: int = 7):
 
 def _found(world, log, a, kind, output, seed=1):
     a.denari = max(a.denari, 1500.0)
-    x, y = CL.sample_sites(world, *CL.place_xy(world, a.home), random.Random(seed), n=1, near=90, far=400)[0]
-    _, _, c = CL.claim(world, log, a, x, y, kind)
-    a.location = c.name
+    if kind == "Refinery":
+        # Refineries stand only in a refinery district (convoy/territory.py).
+        from convoy import territory as TR
+        a.location = TR.district_places(world)[seed % len(TR.district_places(world))]
+    else:
+        x, y = CL.sample_sites(world, *CL.place_xy(world, a.home), random.Random(seed), n=1, near=90, far=400, who=a.id)[0]
+        _, _, c = CL.claim(world, log, a, x, y, kind)
+        a.location = c.name
     A.start_business(world, log, a, kind)
     b = world.businesses[a.owned_businesses[-1]]
     A.set_production(world, log, a, b.id, output)

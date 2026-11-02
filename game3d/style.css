@@ -737,3 +737,7 @@ body.cinema #keys, body.cinema #minimapbox, body.cinema #eprompt, body.cinema .l
 /* ---------- THE MAP, HEX BY HEX (2026-11-01, hexmap.js) ---------- */
 #t-energybox .en-ic{font-size:18px;width:26px;text-align:center;filter:drop-shadow(0 1px 0 #0004)}
 body.picking #scene canvas{cursor:crosshair}
+/* Step 3 (2026-11-01): the refinery districts and wild herds on the map. */
+.lbl-place.district{color:#dbe9f5;font-size:13px;text-align:center}
+.lbl-place.district small,.lbl-place.herd small{display:block;font:600 11px var(--body);opacity:.85;text-transform:none;letter-spacing:0}
+.lbl-place.herd{color:#fff2d6;font-size:13px;text-align:center}

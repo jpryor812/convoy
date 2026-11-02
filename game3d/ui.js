@@ -140,8 +140,11 @@ export function createUI(ctx){
     if (mp){
       const atHome = mp.home && mp.hex && mp.home[0] === mp.hex[0] && mp.home[1] === mp.hex[1];
       if (mp.moving || (mp.route && mp.route.length)) acts.push(`<button class="btn" data-jy='{"op":"stop"}'>Stop</button>`);
-      else if (!mp.resting && !mp.homeward){
+      else if (!mp.resting && !mp.homeward && !mp.catching){
         if (atHome && mp.energy < mp.max) acts.push(`<button class="btn go" data-jy='{"op":"rest"}' title="Two hours at home: back to full">Rest</button>`);
+        // Wild horses on this hex (convoy/herds.py): catch one.
+        if ((mp.herds || []).some(h => h.kind === "horses" && h.size > 0 && h.hex[0] === mp.hex[0] && h.hex[1] === mp.hex[1]))
+          acts.push(`<button class="btn go" data-jy='{"op":"catch"}' title="Two hours with a rope: a horse of your own (12 hexes between rests)">Catch a horse</button>`);
         if (!atHome){
           if (mp.camp_supplies > 0) acts.push(`<button class="btn go" data-jy='{"op":"camp"}' title="Two hours: +8 energy, uses one Camp Supplies (you have ${mp.camp_supplies})">Make camp</button>`);
           acts.push(`<button class="btn" data-jy='{"op":"rough"}' title="Four hours under the sky: +5 energy">Sleep rough</button>`);

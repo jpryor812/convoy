@@ -384,12 +384,18 @@ core action/event of the game." Agreed in chat, in three steps:
    ten game minutes at the game's speed; fast travel only home; convoys only
    to found places; settlers keep the timed roads for now. See
    `convoy/journey.py`, `game3d/hexmap.js`.
-3. **Territory and the refinery district (later).** Borders round your
+3. **Territory and the refinery district (built, 2026-11-01).** Borders round your
    home, farms and mines. Refineries only in their own district round the
    state's refinery, with plots for sale -- outside your borders, so the
    trip there and on to market is the trek, and a refinery of yours needs
    guards. And wild herds: Hide and Wool only from land with cattle or sheep
    you have found and claimed, as Civilization's resources.
+   Built as: borders are hexes (home and claims, ring of one; first claimer
+   keeps a shared hex); districts are the state refinery's hex and two
+   rings, plots as before (24 at a refinery junction); robbery odds x1.5
+   outside your borders; wild cattle (Hide) and wild horses (caught, not
+   bought) -- the designer chose horses over Wool. See `convoy/territory.py`,
+   `convoy/herds.py`.
 
 Open: whether the state's pickup and the board's porters (goods moved
 unseen, asked for on 2026-10-30) become convoys too -- a hired driver,

@@ -104,7 +104,18 @@ def hourly_chance(world: "World", biz: "Business") -> float:
     v = min(VALUE_RANGE[1], max(VALUE_RANGE[0], yard_value(world, biz) / VALUE_REF))
     r = min(REMOTE_RANGE[1], max(REMOTE_RANGE[0], 0.8 + _remote_km(world, biz)))
     watch = 1.0 / (1.0 + LOOKOUT_DETERRENCE * len(lookouts_near(world, owner, biz.location)))
-    return BASE_CHANCE * v * r * watch
+    return BASE_CHANCE * v * r * watch * outside(world, biz)
+
+
+def outside(world: "World", biz: "Business") -> float:
+    """Outside its owner's borders -- a refinery in the district, say -- a
+    building is the easier mark (2026-11-01, convoy/territory.py)."""
+    from . import claims as CL
+    from . import territory as TR
+    at = CL.place_xy(world, biz.location)
+    if not world.outposts or at is None or TR.inside(world, biz.owner, *at):
+        return 1.0
+    return TR.OUTSIDE_BORDERS
 
 
 def _eligible(world: "World", owner: "Agent") -> bool:

@@ -201,6 +201,10 @@ def advance(world: "World", log: "EventLog", agent: "Agent") -> dict[str, Any] |
     if act.kind in ("rest", "camp") and world.sim_time >= act.ends_at:
         gain = _wake(world, agent)
         return {"rested": round(gain, 1), "where": act.detail.get("where", "")}
+    if act.kind == "catch" and world.sim_time >= act.ends_at:
+        from . import herds as HD
+        agent.activity = Activity("idle", world.sim_time)
+        return {"caught": HD.caught(world, log, agent, act.detail.get("herd", ""))}
     if act.kind == "homeward" and world.sim_time >= act.ends_at:
         h = hex_of_place(world, agent.home)
         agent.hex = [h[0], h[1]]
@@ -269,8 +273,8 @@ def _resting(world: "World", agent: "Agent", where: str, hours: float, gain: flo
 def _check_still(agent: "Agent") -> str:
     if agent.in_transit:
         return "you are on the road"
-    if agent.activity.kind in ("move", "homeward"):
-        return "you are on your way; stop first"
+    if agent.activity.kind in ("move", "homeward", "catch"):
+        return "you are busy; stop first"
     if agent.activity.kind in ("rest", "camp"):
         return "you are resting already"
     if agent.activity.kind == "work" and agent.activity.ends_at > 0:
@@ -310,6 +314,23 @@ def sleep_rough(world: "World", log: "EventLog", agent: "Agent") -> tuple[bool, 
         return False, why
     _resting(world, agent, "rough", ROUGH_H, ROUGH_GAIN)
     return True, f"You sleep rough for {ROUGH_H:.0f} hours: +{ROUGH_GAIN:.0f} energy."
+
+
+def catch(world: "World", log: "EventLog", agent: "Agent") -> tuple[bool, str]:
+    """Standing among wild horses: two hours with a rope, and one is yours."""
+    from . import herds as HD
+    ensure(world, agent)
+    if agent.activity.kind in ("rest", "camp"):
+        _wake(world, agent)                  # up from the fire: there are horses
+    why = _check_still(agent)
+    if why:
+        return False, why
+    herd = HD.horse_here(world, agent)
+    if herd is None:
+        return False, "there are no wild horses on this hex"
+    agent.route.clear()
+    agent.activity = Activity("catch", world.sim_time + HD.CATCH_H * 3600.0, {"herd": herd.id})
+    return True, f"You go after the horses with a rope: {HD.CATCH_H:.0f} hours."
 
 
 def meal(agent: "Agent", world: "World") -> None:
@@ -487,6 +508,17 @@ def view(world: "World", agent: "Agent") -> dict[str, Any]:
                       for e in world.explorers.values() if e.owner == agent.id],
         "terrain": _terrain_near(world, agent),
     }
+    # STEP 3 (2026-11-01): herds you have found, borders, and the refinery
+    # districts (convoy/herds.py, convoy/territory.py).
+    from . import herds as HD
+    from . import territory as TR
+    found = set(agent.explored)
+    own = TR.owners(world)
+    out["herds"] = HD.view(world, agent)
+    out["territory"] = {k: o for k, o in own.items() if o == agent.id or k in found}
+    out["houses"] = {o: TR.house_name(world, o) for o in set(out["territory"].values())}
+    out["districts"] = TR.district_places(world)
+    out["catching"] = {"ends": act.ends_at} if act.kind == "catch" else None
     return out
 
 

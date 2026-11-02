@@ -1330,6 +1330,8 @@ class Game:
                 self.depart()
             if ev["stopped"]:
                 self._push("alert", ev["stopped"][0].upper() + ev["stopped"][1:] + ".")
+        elif "caught" in ev:
+            self._push("did", ev["caught"])
         elif "home" in ev:
             if you.location != you.home:
                 self.arrive(you.home)
@@ -1366,6 +1368,8 @@ class Game:
                 ok, msg = JY.sleep_rough(w, self.log, you)
             elif op == "home":
                 ok, msg = JY.go_home(w, self.log, you)
+            elif op == "catch":
+                ok, msg = JY.catch(w, self.log, you)
             elif op == "upgrade":
                 ok, msg = JY.upgrade_home(w, self.log, you, str(body.get("kind", "")))
             elif op in ("explore", "scout"):
@@ -1387,7 +1391,7 @@ class Game:
             except (TypeError, ValueError):
                 return {"ok": False, "message": "where?"}
             if body.get("quote"):
-                q = CL.quote(self.world, x, y, home=not self.you.home)
+                q = CL.quote(self.world, x, y, home=not self.you.home, who=self.human_id)
                 if not self.you.home:
                     # The first home and its road are free (2026-10-28).
                     q.update(total=0.0, land_cost=0.0, road_cost=0.0, free=True)
@@ -1408,7 +1412,7 @@ class Game:
             except (TypeError, ValueError):
                 return {"ok": False, "message": "where?"}
             if body.get("quote"):
-                return {"ok": True, **CL.quote(self.world, x, y)}
+                return {"ok": True, **CL.quote(self.world, x, y, who=self.human_id)}
             ok, msg, c = CL.claim(self.world, self.log, self.you, x, y, str(body.get("purpose", "")))
         self._push("did" if ok else "alert", msg)
         self._map_dirty = True
@@ -1731,7 +1735,7 @@ class Game:
         if reason == "activity_complete" and agent.activity.kind == "idle":
             return
         # Steps, rests and the trip home tell their own news (_journeys).
-        if reason == "activity_complete" and agent.activity.kind in ("move", "rest", "camp", "homeward"):
+        if reason == "activity_complete" and agent.activity.kind in ("move", "rest", "camp", "homeward", "catch"):
             return
         haul = ""
         if reason == "arrived":            # fast travel ends here: load or hand over, as on foot
@@ -2292,6 +2296,8 @@ class Game:
         if act.kind == "move":
             n = len(you.route)
             return f"Walking \u00b7 {n} hex{'es' if n != 1 else ''} to go" if n > 1 else "Walking"
+        if act.kind == "catch":
+            return f"Catching a horse \u00b7 {left * 60:.0f} min left"
         if act.kind in ("rest", "camp"):
             where = {"home": "at home", "camp": "in camp", "rough": "under the sky"}.get(act.detail.get("where"), "")
             return f"Resting {where} \u00b7 {left * 60:.0f} min left"

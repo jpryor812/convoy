@@ -30,6 +30,7 @@ from . import board as BD
 from . import robbery as RB
 from . import trek as TK
 from . import journey as JY
+from . import herds as HD
 from . import data as D
 from . import economy as E
 from . import world_map as M
@@ -355,6 +356,7 @@ class Engine:
                 BD.ai_tick(w, self.log, self._board_rng)
                 # Settlers weigh the convoys on the road (convoy/trek.py).
                 TK.tick(w, self.log, self._trek_rng)
+                HD.tick(w)
             # Explorers walk their hexes (convoy/journey.py).
             JY.tick_explorers(w, self.log, self._explore_rng)
         self._debt_interest(hours)

@@ -1146,6 +1146,19 @@ class Robbery:
 
 
 @dataclass
+class Herd:
+    """Wild cattle or horses on a hex of open land (2026-11-01). Cattle let
+    a farm on their land raise Hide; horses can be caught. See
+    `convoy/herds.py`."""
+    id: str
+    kind: str                        # "cattle" | "horses"
+    hex: list[int]
+    size: int
+    max_size: int
+    regrow_at: float = 0.0
+
+
+@dataclass
 class Explorer:
     """Someone out exploring for a house (2026-11-01): a grown member of the
     family, or a scout hired for the trip. They walk hex by hex, to a spot or
@@ -1581,6 +1594,7 @@ class World:
     robberies: dict[str, "Robbery"] = field(default_factory=dict)
     treks: dict[str, "Trek"] = field(default_factory=dict)     # owner id -> their latest convoy
     explorers: dict[str, "Explorer"] = field(default_factory=dict)
+    herds: dict[str, "Herd"] = field(default_factory=dict)
     board: dict[str, "BoardPost"] = field(default_factory=dict)
     buy_orders: dict[str, "BuyOrder"] = field(default_factory=dict)
     marriage_offers: dict[str, "MarriageOffer"] = field(default_factory=dict)

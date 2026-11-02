@@ -809,6 +809,8 @@ def static_briefing(
             "everyone: board_post goods for sale or a wanted, board_take others' "
             "posts; porters carry the goods, 2% to the post. Goods ridden between places go by "
             "CONVOY: a rich one is worth robbing (rob_convoy), a poor one or a friend's is not. "
+            "Refineries go only in the refinery district round each state refinery; Hide only "
+            "from a farm where wild cattle graze. "
             "A citizen who makes what the state "
             "sells and prices it under the state takes its customers.\n"
             "HOW TO START. Your grown family works any business you own for "

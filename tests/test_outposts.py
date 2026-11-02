@@ -61,7 +61,8 @@ def _world(seed: int = 7):
 
 def _open_spot(world, rng, near, far, city="aldermarch", home=False):
     ax, ay = CL.anchors(world)[city]
-    return CL.sample_sites(world, ax, ay, rng, n=20 if home else 1, near=near, far=far, home=home)[0]
+    # who="": open land outside everyone's borders (convoy/territory.py).
+    return CL.sample_sites(world, ax, ay, rng, n=20 if home else 1, near=near, far=far, home=home, who="")[0]
 
 
 def test_land_is_dear_near_the_anchors_and_cheap_far_out() -> None:
@@ -88,7 +89,7 @@ def test_first_homes_stand_apart() -> None:
     b = list(world.agents.values())[1]
     b.home = ""
     okb, msg, _ = CL.settle(world, log, b, at[0] + 300, at[1])
-    ok("you cannot settle right beside someone", not okb and "settled within" in msg, msg)
+    ok("you cannot settle right beside someone", not okb and ("settled within" in msg or "borders" in msg), msg)
     ok("and smoke shows them from afar", isinstance(DS.glimpses(world, a), list))
 
 
@@ -513,10 +514,11 @@ def test_you_can_only_trade_with_people_you_have_found() -> None:
     DS.tick(world, log)
     a, b = _pair_apart(world)
     a.denari = b.denari = 3000.0
-    for p, r in ((a, 11), (b, 12)):
-        x, y = CL.sample_sites(world, *CL.place_xy(world, p.home), random.Random(r), n=1, near=90, far=300)[0]
-        _, _, c = CL.claim(world, log, p, x, y, "Farm")
-        p.location = c.name
+    x, y = CL.sample_sites(world, *CL.place_xy(world, a.home), random.Random(11), n=1, near=90, far=300, who=a.id)[0]
+    _, _, c = CL.claim(world, log, a, x, y, "Farm")
+    a.location = c.name
+    from convoy import territory as TR
+    b.location = TR.district_places(world)[0]          # refineries stand in a district
     A.start_business(world, log, a, "Farm")
     A.start_business(world, log, b, "Refinery")
     farm = world.businesses[a.owned_businesses[-1]]

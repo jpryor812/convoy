@@ -1247,7 +1247,7 @@ function syncLand(){
   // grass alike, so it reads wherever your land is.
   if (border){ scene.remove(border); border.traverse(o => { if (o.isCSS2DObject) o.element.remove(); }); border = null; }
   const ownKeys = [...S.cellOwner].filter(([, o]) => o.owner === G.you).map(([k]) => k);
-  if (ownKeys.length){
+  if (ownKeys.length && !outposts()){         // with outposts: hex borders, hexmap.js
     const terr = new Set();
     for (const k of ownKeys){
       const [gx, gz] = k.split(",").map(Number);
@@ -2283,6 +2283,19 @@ function startPlacing(type){
   if (type === "Road"){ startRoad(); return; }
   placing = {type, ghost: holo(type)};
   renderer.domElement.style.cursor = "crosshair";
+  // THE REFINERY DISTRICT (2026-11-01, convoy/territory.py): a refinery
+  // goes only on the plots round a state refinery. Off you go to the nearest.
+  const dist = refineryDistricts();
+  if (type === "Refinery" && dist.length && S.player){
+    const P = S.player.root.position;
+    const near = dist.map(n => S.places[n]).filter(Boolean).sort((a, b) => a.c.distanceTo(P) - b.c.distanceTo(P))[0];
+    if (near && !(S.here && dist.includes(S.here))){
+      S.waypoint = Object.assign(near.c.clone(), {label: `${short(near.name)}: refinery district`});
+      flyTo(near.c);
+      UI.toast(`Refineries go only in a refinery district: the nearest is ${short(near.name)}. Place it on its plots.`);
+      return;
+    }
+  }
   UI.toast(`Choose where to build the ${type.split(" /")[0]}: click to place, Esc to cancel`);
   if (lastGround) updatePlacement(lastGround);
 }
@@ -2487,6 +2500,9 @@ function confirmPlacement(){
   if (!placing.valid){ UI.toast(placing.why, "bad"); return; }
   const {type, place, cells, wild, cx, cz} = placing;
   const spec = (S.BOARD ? S.BOARD.business_types : []).find(t => t.name === type) || {};
+  if (type === "Refinery" && refineryDistricts().length && (wild || !refineryDistricts().includes(place))){
+    UI.toast("A refinery goes only on a refinery district's plots.", "bad"); return;
+  }
   stopPlacing();
   if (wild){ wildFound(type, cx, cz, !!spec.claim); return; }
   if (spec.claim) buyOn(place, cells);
@@ -3458,7 +3474,7 @@ function frame(now){
   HEXMAP.updateScouts(dt, unitScale());
   HEXMAP.camp(S.player && mapDriven() ? S.player.root.position : null, unitScale());
   if (HEXMAP.grid) HEXMAP.grid.visible = camMode === "strategy";
-  if (outposts() && S.ST && S.ST.map) HEXMAP.drawGrid();
+  if (outposts() && S.ST && S.ST.map){ HEXMAP.drawGrid(); HEXMAP.drawBorders(); HEXMAP.herds(dt, unitScale()); }
   if (border && border.userData.edge){
     const pulse = 0.5 + 0.5 * Math.sin(now / 420);
     border.userData.line.opacity = 0.7 + 0.3 * pulse;
@@ -3529,7 +3545,9 @@ const CONVOY = createConvoy({THREE, scene, S, api, UI, SCALE, roadSegs, distToRo
   stopMount: () => { if (riding()){ RIDER.s.speed = Math.min(RIDER.s.speed, 1.5); RIDER.setGait(0); } },
   teleport: (x, z) => window.convoy.teleport(x, z), found: c => !outposts() || HEXMAP.knownPlace(c)});
 /* THE MAP, HEX BY HEX (2026-11-01, hexmap.js; the rules in convoy/journey.py). */
-const HEXMAP = createHexMap({THREE, scene, S, api, UI, SCALE, toScene, toWorld: v => toWorld(v), groundAt, makePerson, setAnim, CSS2DObject});
+const HEXMAP = createHexMap({THREE, scene, S, api, UI, SCALE, toScene, toWorld: v => toWorld(v), groundAt, makePerson, setAnim, CSS2DObject,
+  ownerColour: id => id === G.you ? new THREE.Color("#e8b947") : LIFE ? LIFE.ownerColour(id) : new THREE.Color("#bbbbbb"), makeAnimal: () => makeDonkey(), you: () => G.you});
+function refineryDistricts(){ return (S.ST && S.ST.map && S.ST.map.districts) || []; }
 /* Moving is the map's, not your feet's: with outposts, outside a convoy. */
 function mapDriven(){ return outposts() && !!(S.ST && S.ST.map && S.ST.map.hex) && !CONVOY.active; }
 function mapMode(){ return mapDriven() && camMode === "strategy"; }

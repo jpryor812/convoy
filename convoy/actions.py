@@ -787,7 +787,16 @@ def start_business(
     # With outposts anything goes anywhere (designer request, 2026-10-30:
     # "remove any restrictions on where I can build things").
     if world.outposts:
-        pass
+        # THE REFINERY DISTRICT (2026-11-01, convoy/territory.py): a new
+        # refinery stands only on the plots round a state refinery -- outside
+        # anyone's borders, where it must be guarded.
+        if type == "Refinery":
+            from . import territory as TR
+            if agent.location not in TR.district_places(world):
+                from . import claims as CL
+                at = CL.place_xy(world, agent.location) or (0.0, 0.0)
+                return False, (f"refineries go only in a refinery district, on the plots round a state "
+                               f"refinery: the nearest is {TR.nearest_district(world, *at)}")
     elif type in world_map.PLOT_CONSUMING_BUSINESSES:
         if not D.is_spur(agent.location):
             return False, f"a {type} can only be founded down a spur road"
@@ -1120,6 +1129,13 @@ def set_production(
         return False, "not your business"
     if output not in biz.spec.outputs:
         return False, f"{biz.type} cannot produce {output}"
+    # HIDE NEEDS CATTLE (2026-11-01, convoy/herds.py): wild cattle on the
+    # farm's land. Farms already raising it keep on.
+    if world.outposts and output == "Hide" and biz.active_production != "Hide":
+        from . import herds as HD
+        why = HD.cattle_for(world, agent, biz.location)
+        if why:
+            return False, why
     biz.active_production = output
     biz.production_buffer = 0.0
     return True, f"{biz.name} now producing {output}"

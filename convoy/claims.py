@@ -73,9 +73,11 @@ def nearest_road(world: "World", x: float, y: float) -> tuple[float, float, floa
     return best
 
 
-def check(world: "World", x: float, y: float, home: bool = False) -> str:
+def check(world: "World", x: float, y: float, home: bool = False, who: str | None = None) -> str:
     """Why a claim cannot be made here, or "" if it can. `home`: a first
-    home, which may have a longer road and must stand apart from others."""
+    home, which may have a longer road and must stand apart from others.
+    `who`: the claimant, who may claim inside their own borders and nobody
+    else's (None: borders are not asked about, as for a plain survey)."""
     cities = list(world.cities)
     places = L.places_cached(cities)
     minx, miny, maxx, maxy = L.bounds(places)
@@ -103,6 +105,14 @@ def check(world: "World", x: float, y: float, home: bool = False) -> str:
     for c in world.claims.values():
         if math.hypot(x - c.x, y - c.y) < MIN_FROM_CLAIM:
             return f"that is part of {c.name}"
+    # BORDERS AND THE REFINERY DISTRICTS (2026-11-01, convoy/territory.py).
+    if world.outposts:
+        from . import territory as TR
+        if TR.district_at(world, x, y):
+            return f"that is the refinery district round {TR.district_at(world, x, y)}: open to all, claimed by none"
+        holder = TR.owner_at(world, x, y) if who is not None else ""
+        if holder and holder != who:
+            return f"that is inside {TR.house_name(world, holder)}'s borders"
     d, _, _ = nearest_road(world, x, y)
     if d < 30:
         return "that is on a road"
@@ -182,7 +192,7 @@ def land_price(world: "World", x: float, y: float) -> float:
     return round(LAND_FLOOR + LAND_PREMIUM * pull, 2)
 
 
-def quote(world: "World", x: float, y: float, home: bool = False) -> dict:
+def quote(world: "World", x: float, y: float, home: bool = False, who: str | None = None) -> dict:
     """What a claim here would cost and where its road would come from.
     `home`: as a first home (a longer road, apart from other homes)."""
     d, rx, ry = nearest_road(world, x, y)
@@ -193,7 +203,7 @@ def quote(world: "World", x: float, y: float, home: bool = False) -> dict:
     return {"road_m": round(d), "road_cost": road, "from": [rx, ry], "road_included": not world.outposts,
             "plot_price": plot, "land_cost": round(plot * M.CLAIM_PLOTS, 2),
             "total": round(laid + plot * M.CLAIM_PLOTS, 2),
-            "why_not": check(world, x, y, home=home)}
+            "why_not": check(world, x, y, home=home, who=who)}
 
 
 def _nearest_junction(world: "World", x: float, y: float) -> str:
@@ -217,7 +227,7 @@ def claim(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
           purpose: str = "", free: bool = False) -> tuple[bool, str, Claim | None]:
     """Make a claim at (x, y): lay and pay for its road; its four plots are
     then for sale like any others. Returns (ok, message, claim)."""
-    why = check(world, x, y, home=(purpose == "home"))
+    why = check(world, x, y, home=(purpose == "home"), who=agent.id)
     if why:
         return False, why, None
     d, rx, ry = nearest_road(world, x, y)
@@ -407,7 +417,7 @@ def settle(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
     if agent.home:
         return False, f"you have settled already, at {agent.home}", None
     borrow = max(0.0, min(MAX_SETTLE_LOAN, round(float(borrow or 0.0), 2)))
-    why = check(world, x, y, home=True)
+    why = check(world, x, y, home=True, who=agent.id)
     if why:
         return False, why, None
     agent.denari += borrow
@@ -438,7 +448,7 @@ def settle(world: "World", log: "EventLog", agent: "Agent", x: float, y: float,
 
 def sample_sites(world: "World", cx: float, cy: float, rng, n: int = 40,
                  near: float = 150.0, far: float = 1100.0,
-                 home: bool = False) -> list[tuple[float, float]]:
+                 home: bool = False, who: str | None = None) -> list[tuple[float, float]]:
     """Valid open land in a ring around (cx, cy), nearest first."""
     out = []
     for _ in range(n * 6):
@@ -447,7 +457,7 @@ def sample_sites(world: "World", cx: float, cy: float, rng, n: int = 40,
         r = rng.uniform(near, far)
         a = rng.uniform(0.0, 2 * math.pi)
         x, y = cx + r * math.cos(a), cy + r * math.sin(a)
-        if not check(world, x, y, home=home):
+        if not check(world, x, y, home=home, who=who):
             out.append((round(x, 1), round(y, 1)))
     out.sort(key=lambda p: math.hypot(p[0] - cx, p[1] - cy))
     return out
@@ -516,7 +526,11 @@ def random_home(world: "World", log: "EventLog", agent: "Agent", rng) -> bool:
 
 def ground_hint(world: "World", x: float, y: float) -> str:
     """What the land here is good for, as the hologram and agents are told."""
+    from . import herds as HD
     from . import land as LAND
+    herd = HD.hint(world, x, y)
+    if herd:
+        return herd
     farm = LAND.affinity_at(world, x, y, "Farm")
     mine = LAND.affinity_at(world, x, y, "Mining Operation")
     if max(farm, mine) < 0.25:
@@ -537,9 +551,9 @@ def sites_near(world: "World", agent: "Agent", n: int = 5) -> list[dict]:
     rng = random.Random(f"{world.land_seed}:{agent.id}:{int(world.sim_hour // 6)}")
     spots: list[tuple[float, float]] = []
     if home:
-        spots += sample_sites(world, home[0], home[1], rng, n=3, near=90.0, far=450.0)
+        spots += sample_sites(world, home[0], home[1], rng, n=3, near=90.0, far=450.0, who=agent.id)
     if anchor:
-        spots += sample_sites(world, anchor[0], anchor[1], rng, n=n - len(spots), near=150.0, far=700.0)
+        spots += sample_sites(world, anchor[0], anchor[1], rng, n=n - len(spots), near=150.0, far=700.0, who=agent.id)
     out = []
     for x, y in spots[:n]:
         q = quote(world, x, y)

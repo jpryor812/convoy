@@ -373,6 +373,20 @@ rise back up.
   some days; they camp when spent and what they see goes on your map. Tab
   looks round over your shoulder without moving you. Convoys go only to
   places you have found. Debugging: `convoy.hexmap`.
+- **Borders, the refinery district and wild herds** (2026-11-01,
+  `convoy/territory.py`, `convoy/herds.py`): your land is the hex of your home
+  and of each claim, and the ring round each -- outlined gold on the map;
+  a neighbour's, once found, in their colour. Nobody claims inside another
+  house's borders; a shared hex is the first claimer's. A new **refinery**
+  goes only in a **refinery district**: the plots round each state refinery
+  (Refinery Row, Cinder Row, Kiln Row), dashed blue on the map, claimed by
+  nobody -- so it stands outside your borders, and gangs come for it half as
+  often again: hire lookouts or set a guard post. Refineries built before
+  stay where they are. **Wild cattle** and **wild horses** graze on the open
+  land: a farm raises **Hide** only on a cattle herd's hex or the ring round
+  it, once you have found the herd; stand among wild horses and **Catch a
+  horse** (two hours) for a Horse of your own (12 hexes between rests). Herds
+  grow back a head every three days.
 - **The convoy** (2026-11-01, `convoy/trek.py`, `game3d/convoy.js`): goods
   go by convoy. Leave a place carrying anything and you are asked where to
   take it -- or press **Set out** by your portrait. The panel shows the
